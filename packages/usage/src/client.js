@@ -1382,8 +1382,8 @@ window.__ModuleLoader__.load({
 
     /** A sign-in action and inline OAuth flow for provider cards. */
     function ProviderLoginAction(props) {
-      const route = props.provider?.provider
-      const nativeAuth = props.provider?.nativeAuth
+      const route = typeof props.provider === 'string' ? props.provider : props.provider?.provider
+      const nativeAuth = props.nativeAuth ?? props.provider?.nativeAuth
       const oauthRoute = ['openai-codex', 'anthropic'].includes(route) ? route : null
       const oauthEnabled = nativeAuth?.oauth === true
       const [busy, setBusy] = React.useState(false)
@@ -1662,7 +1662,7 @@ window.__ModuleLoader__.load({
       },
       {
         id: 'codex',
-        px: 'pup',
+        px: 'kmup',
         title: 'OpenAI Codex',
         namespace: 'codexUsage',
         store: makeStore(),
@@ -1676,7 +1676,7 @@ window.__ModuleLoader__.load({
       },
       {
         id: 'anthropic',
-        px: 'pup',
+        px: 'kmup',
         title: 'Claude',
         namespace: 'anthropicUsage',
         store: makeStore(),

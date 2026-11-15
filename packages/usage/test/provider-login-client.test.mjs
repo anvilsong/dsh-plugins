@@ -87,6 +87,7 @@ async function boot(route, options = {}) {
   }
 
   const cards = new Map()
+  const editor = new Map()
   const calls = []
   const statusCalls = []
   const usageRefreshes = []
@@ -140,6 +141,7 @@ async function boot(route, options = {}) {
       inject(_name, callback) {
         const registration = callback()
         if (registration.meta.name === 'settings.models.provider-card') cards.set(registration.meta.key, registration.component)
+        if (registration.meta.name === 'settings.models.provider-editor') editor.set(registration.meta.key, registration.component)
       },
       register(meta, component) { return { meta, component } },
     },
@@ -148,6 +150,7 @@ async function boot(route, options = {}) {
   if (options.usageState) globalThis.__testProviders.find((provider) => provider.gate.includes(route)).store.state = options.usageState
   await immediate()
   const component = cards.get('llm-pi-ai')
+  const loginComponent = editor.get('llm-pi-ai') ?? cards.get('llm-pi-ai')
   const props = {
     provider: { provider: route, nativeAuth: { env: [], oauth: true } },
     configured: false,
@@ -168,12 +171,30 @@ async function boot(route, options = {}) {
     }
     return rendered
   }
+  const renderLogin = () => {
+    loginRendered = React.createElement(loginComponent, props)
+    const effects = pendingEffects
+    pendingEffects = []
+    for (const run of effects) run()
+    return loginRendered
+  }
+  const settleLogin = async () => {
+    for (let index = 0; index < 3; index += 1) {
+      await immediate()
+      renderLogin()
+    }
+    return loginRendered
+  }
+  let loginRendered
   render()
   await settle()
   return {
     get rendered() { return rendered },
+    get loginRendered() { return loginRendered },
     render,
     settle,
+    renderLogin,
+    settleLogin,
     calls,
     statusCalls,
     usageRefreshes,
@@ -219,8 +240,10 @@ function assertThemedControl(control) {
 for (const [route, providerName] of [['openai-codex', 'ChatGPT'], ['anthropic', 'Claude']]) {
   test(`${route} card runs OAuth inside Models and settles signed in`, async () => {
     const h = await boot(route)
+    h.renderLogin()
+    await h.settleLogin()
     const label = `Sign in with ${providerName}`
-    const button = findByText(h.rendered, label)
+    const button = findByText(h.loginRendered, label)
     assert.ok(button)
     assert.equal(button.props.type, 'button')
     assert.equal(button.props.variant, 'outline')
@@ -229,22 +252,22 @@ for (const [route, providerName] of [['openai-codex', 'ChatGPT'], ['anthropic', 
     assert.ok(h.statusCalls.every((call) => call.provider === route))
 
     const pending = button.props.onClick()
-    await h.settle()
-    const select = findByType(h.rendered, 'select')
+    await h.settleLogin()
+    const select = findByType(h.loginRendered, 'select')
     assertThemedControl(select)
-    const submit = findByText(h.rendered, 'Submit')
+    const submit = findByText(h.loginRendered, 'Submit')
     assert.equal(submit.props.type, 'button')
     assert.equal(submit.props.variant, 'outline')
     assert.equal(submit.props.size, 'sm')
     submit.props.onClick()
     await pending
-    await h.settle()
+    await h.settleLogin()
 
     assert.deepEqual(h.calls, [{ provider: route, method: 'oauth' }])
     assert.deepEqual(h.answers, [{ type: 'answer', id: 'prompt-1', answer: 'code' }])
-    assert.ok(findByText(h.rendered, `Signed in with ${providerName}`))
-    assert.equal(findByText(h.rendered, label), null)
-    assert.equal(findByText(h.rendered, 'Authorized. You can now select this provider.'), null)
+    assert.ok(findByText(h.loginRendered, `Signed in with ${providerName}`))
+    assert.equal(findByText(h.loginRendered, label), null)
+    assert.equal(findByText(h.loginRendered, 'Authorized. You can now select this provider.'), null)
 
     const statusDescriptor = h.mountedContribution.descriptors.find((item) => item.method === 'status')
     assert.equal(statusDescriptor.invocation.kind, 'direct')
@@ -262,15 +285,17 @@ for (const [route, providerName] of [['openai-codex', 'ChatGPT'], ['anthropic', 
 for (const [route, providerName] of [['openai-codex', 'ChatGPT'], ['anthropic', 'Claude']]) {
   test(`${route} stored OAuth renders signed in after reload, independent of API-key state`, async () => {
     const h = await boot(route, { configured: true, keyConfigured: true })
+    h.renderLogin()
+    await h.settleLogin()
     assert.equal(h.statusCalls.length, 2)
     assert.ok(h.statusCalls.every((call) => call.provider === route))
-    assert.ok(findByText(h.rendered, `Signed in with ${providerName}`))
-    const reauthenticate = findByText(h.rendered, 'Re-authenticate')
+    assert.ok(findByText(h.loginRendered, `Signed in with ${providerName}`))
+    const reauthenticate = findByText(h.loginRendered, 'Re-authenticate')
     assert.ok(reauthenticate)
     assert.equal(reauthenticate.props.variant, 'outline')
     assert.equal(reauthenticate.props.size, 'sm')
-    assert.equal(findByText(h.rendered, `Sign in with ${providerName}`), null)
-    assert.equal(findByText(h.rendered, 'Checking sign-in…'), null)
+    assert.equal(findByText(h.loginRendered, `Sign in with ${providerName}`), null)
+    assert.equal(findByText(h.loginRendered, 'Checking sign-in…'), null)
   })
 }
 
@@ -286,7 +311,9 @@ test('configured OAuth makes the usage card visible', async () => {
     },
   })
   assert.ok(findByText(h.rendered, '7d 100.0%'))
-  assert.ok(findByText(h.rendered, 'Signed in with ChatGPT'))
+  h.renderLogin()
+  await h.settleLogin()
+  assert.ok(findByText(h.loginRendered, 'Signed in with ChatGPT'))
 })
 
 test('Claude scoped Fable limit appears in summary and panel', async () => {
@@ -303,7 +330,7 @@ test('Claude scoped Fable limit appears in summary and panel', async () => {
     },
   })
   assert.ok(find(h.rendered, (node) => (node.children ?? []).some((child) => typeof child === 'string' && child.includes('Fable 4.0%'))))
-  const summaryButton = find(h.rendered, (node) => node.props?.className === 'pup-btn')
+  const summaryButton = find(h.rendered, (node) => node.props?.className === 'kmup-btn')
   summaryButton.props.onClick()
   h.render()
   assert.ok(findByText(h.rendered, 'Fable limit'))
@@ -313,25 +340,27 @@ test('text prompt uses theme tokens and native secondary button styling', async 
   const h = await boot('anthropic', {
     prompt: { kind: 'text', message: 'Enter the code', placeholder: 'Paste code' },
   })
-  const pending = findByText(h.rendered, 'Sign in with Claude').props.onClick()
-  await h.settle()
-  const input = findByType(h.rendered, 'input')
+  h.renderLogin()
+  await h.settleLogin()
+  const pending = findByText(h.loginRendered, 'Sign in with Claude').props.onClick()
+  await h.settleLogin()
+  const input = findByType(h.loginRendered, 'input')
   assertThemedControl(input)
   assert.equal(input.props.type, 'text')
   assert.equal(input.props.placeholder, 'Paste code')
   assert.match(clientSource, /\.pup-login-control::placeholder\{color:var\(--dsw-alias-label-secondary\);opacity:1\}/)
 
   input.props.onChange({ target: { value: 'oauth-code' } })
-  h.render()
-  const submit = findByText(h.rendered, 'Submit')
+  h.renderLogin()
+  const submit = findByText(h.loginRendered, 'Submit')
   assert.equal(submit.props.type, 'button')
   assert.equal(submit.props.variant, 'outline')
   assert.equal(submit.props.size, 'sm')
   submit.props.onClick()
   await pending
-  await h.settle()
+  await h.settleLogin()
   assert.deepEqual(h.answers, [{ type: 'answer', id: 'prompt-1', answer: 'oauth-code' }])
-  assert.ok(findByText(h.rendered, 'Signed in with Claude'))
+  assert.ok(findByText(h.loginRendered, 'Signed in with Claude'))
 })
 
 function expandUsage(h, title) {
@@ -374,6 +403,7 @@ test('Codex summary and quota panel present plan, credits, progress, and seconda
   assert.ok(findByText(h.rendered, 'Included usage is currently blocked.'))
   assert.ok(findByText(h.rendered, 'Spend control reached.'))
   assert.equal(findByText(h.rendered, '5-hour window'), null)
+  assert.ok(findByClass(h.rendered, 'kmup-root'))
   assert.ok(findByClass(h.rendered, 'kmup-grid'))
   const bar = findByClass(h.rendered, 'kmup-bar')
   assert.equal(bar.children[0].props.style.width, '42.5%')
@@ -418,6 +448,7 @@ test('Claude summary and quota panel present only returned windows and account d
   assert.ok(findByText(h.rendered, 'limit $50.00'))
   assert.ok(findByText(h.rendered, 'Claude Code: 100%'))
   assert.equal(findByText(h.rendered, '5-hour window'), null)
+  assert.ok(findByClass(h.rendered, 'kmup-root'))
   assert.ok(findByClass(h.rendered, 'kmup-grid'))
   const bar = findByClass(h.rendered, 'kmup-bar')
   assert.equal(bar.children[0].props.style.width, '100%')
