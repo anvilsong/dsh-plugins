@@ -42,6 +42,7 @@ active provider.
 |---|---|---|
 | [`packages/usage`](packages/usage) | `dsh-plugin-provider-usage` | Provider-card usage, active-provider composer chips, and `/usage-*` commands |
 | [`packages/ultracode`](packages/ultracode) | `dsh-plugin-ultracode` | Per-session exhaustive orchestration mode, a composer switch, and `/ultracode` |
+| [`packages/provider-login`](packages/provider-login) | `dsh-plugin-provider-login` | `/login <provider>` for OAuth and interactive-key sign-in flows |
 
 ## Repository layout
 

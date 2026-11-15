@@ -1,0 +1,4 @@
+# Bundle patch for dsh-plugin-provider-login.
+- insert:
+    - id: provider-login
+      name: dsh-plugin-provider-login
