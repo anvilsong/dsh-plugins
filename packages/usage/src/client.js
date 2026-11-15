@@ -800,9 +800,31 @@ window.__ModuleLoader__.load({
       return amount.toFixed(2) + (currency ? ' ' + currency : '')
     }
 
+    /** A minor-unit money amount, with the exponent supplied by the API. */
+    function minorFiat(amount, currency, exponent = 2) {
+      if (!Number.isFinite(amount) || !Number.isFinite(exponent)) return '—'
+      return fiat(amount / 10 ** exponent, currency)
+    }
+
+    /** The plan name supplied by a quota provider, without inventing one. */
+    function quotaPlan(d) {
+      const plan = d && (d.planType || d.level)
+      return typeof plan === 'string' && plan.length > 0 ? plan + ' plan' : null
+    }
+
+    /** Codex credit state, preserving its string-valued balance. */
+    function creditText(credits) {
+      if (!credits) return null
+      if (credits.unlimited) return 'unlimited'
+      if (credits.balance !== null && credits.balance !== undefined) return String(credits.balance)
+      if (credits.hasCredits === false) return 'none'
+      if (credits.hasCredits === true) return 'available'
+      return null
+    }
+
     /**
-     * Generic quota panel (GLM, MiniMax): window metrics with reset times,
-     * an optional plan-level pill, and GLM's per-tool call breakdown.
+     * Generic quota panel: window metrics with reset times, an optional plan
+     * pill, provider-supplied credit metrics, and secondary detail text.
      */
     function QuotaPanel({ store, getNs, title }) {
       const state = useStore(store)
@@ -814,6 +836,7 @@ window.__ModuleLoader__.load({
       const status = s ? s.status : 'idle'
       const worst = d ? worstWindow(d.windows) : null
       const wlv = worst !== null ? quotaLevel(worst) : null
+      const plan = d ? quotaPlan(d) : null
 
       const rows = []
       if (d) {
@@ -834,10 +857,49 @@ window.__ModuleLoader__.load({
             sub: p.resetAt ? 'resets ' + (when(p.resetAt) ?? p.resetAt) : null,
           }))
         }
+        const credits = creditText(d.credits)
+        if (credits !== null) {
+          rows.push(React.createElement(Metric, {
+            px: 'pup', key: 'credits', label: 'Credits', value: credits,
+          }))
+        }
+        if (d.resetCreditsAvailable !== null && d.resetCreditsAvailable !== undefined) {
+          rows.push(React.createElement(Metric, {
+            px: 'pup', key: 'reset-credits', label: 'Rate-limit reset credits',
+            value: d.resetCreditsAvailable, sub: 'available',
+          }))
+        }
+        if (d.extra && typeof d.extra.enabled === 'boolean') {
+          const extra = d.extra
+          rows.push(React.createElement(Metric, {
+            px: 'pup', key: 'extra', label: 'Extra usage used',
+            value: centsMoney(extra.balanceCents, extra.currency),
+            sub: [
+              extra.monthlyLimitCents !== null && extra.monthlyLimitCents !== undefined
+                ? 'monthly limit ' + centsMoney(extra.monthlyLimitCents, extra.currency)
+                : null,
+              extra.enabled ? null : 'disabled',
+              extra.disabledReason || null,
+            ].filter(Boolean).join(' · ') || null,
+          }))
+        }
+        if (d.spend) {
+          const spend = d.spend
+          rows.push(React.createElement(Metric, {
+            px: 'pup', key: 'spend', label: 'Usage credits spent',
+            value: minorFiat(spend.usedMinor, spend.currency, spend.exponent),
+            cls: spend.reached ? 'bad' : null,
+            sub: [
+              spend.limitMinor !== null && spend.limitMinor !== undefined
+                ? 'limit ' + minorFiat(spend.limitMinor, spend.limitCurrency ?? spend.currency, spend.limitExponent ?? spend.exponent)
+                : null,
+              spend.reached ? 'spend limit reached' : null,
+            ].filter(Boolean).join(' · ') || null,
+          }))
+        }
       }
 
       const note = []
-      if (d && d.level) note.push('plan ' + d.level)
       if (s && s.endpoint) note.push(s.endpoint.replace(/^https:\/\//, ''))
       if (s && s.fetchedAt) note.push('read ' + new Date(s.fetchedAt).toLocaleTimeString())
 
@@ -853,13 +915,29 @@ window.__ModuleLoader__.load({
           ),
         )
       }
+      const breakdown = d && Array.isArray(d.breakdown) ? d.breakdown : []
+      if (breakdown.length > 0) {
+        detailBlocks.push(
+          React.createElement(
+            'div',
+            { className: 'pup-code', key: 'breakdown' },
+            breakdown.map((row) => `${row.displayName}: ${row.percent}%`).join(' · '),
+          ),
+        )
+      }
+      if (d && d.ordinaryUsageAllowed === false) {
+        detailBlocks.push(React.createElement('div', { className: 'pup-code', key: 'ordinary-usage' }, 'Included usage is currently blocked.'))
+      }
+      if (d && d.spendControlReached === true) {
+        detailBlocks.push(React.createElement('div', { className: 'pup-code', key: 'spend-control' }, 'Spend control reached.'))
+      }
 
       const children = [
         React.createElement(
           'div',
           { className: 'pup-head', key: 'head' },
           React.createElement('span', { className: 'pup-title' }, title),
-          React.createElement('span', { className: 'pup-scope' }, 'subscription quota'),
+          React.createElement('span', { className: 'pup-scope' }, plan ?? 'subscription quota'),
           React.createElement('span', { className: 'pup-spacer' }),
           React.createElement(
             'button',
@@ -1086,6 +1164,16 @@ window.__ModuleLoader__.load({
       return []
     }
 
+    /** Compact window label for a provider-card summary. */
+    function summaryWindowLabel(w) {
+      const short = { fiveHour: '5h', sevenDay: '7d', monthTotal: 'mo', monthCode: 'code' }
+      if (short[w.key]) return short[w.key]
+      return String(w.label ?? w.key ?? 'window')
+        .replace(/-hour window$/, 'h')
+        .replace(/-day window$/, 'd')
+        .replace(/-minute window$/, 'm')
+    }
+
     /** One compact usage summary per provider, from its latest state. */
     function summarize(p, s) {
       const d = s && s.data ? s.data : null
@@ -1098,11 +1186,19 @@ window.__ModuleLoader__.load({
         return parts.join(' · ')
       }
       if (d.kind === 'quota' || d.quotas) {
-        const short = { fiveHour: '5h', sevenDay: '7d', monthTotal: 'mo', monthCode: 'code' }
         const parts = windowsOf(d)
           .filter((w) => typeof w.usedRatio === 'number')
-          .map((w) => `${short[w.key] ?? w.label} ${pct(w.usedRatio)}`)
-        if (d.extra) parts.push(`extra ${centsMoney(d.extra.balanceCents, d.extra.currency)}`)
+          .map((w) => `${summaryWindowLabel(w)} ${pct(w.usedRatio)}`)
+        const credits = creditText(d.credits)
+        if (credits !== null) parts.push(`credits ${credits}`)
+        if (d.extra) {
+          parts.push(typeof d.extra.enabled === 'boolean'
+            ? `extra used ${centsMoney(d.extra.balanceCents, d.extra.currency)}`
+            : `extra ${centsMoney(d.extra.balanceCents, d.extra.currency)}`)
+        }
+        if (d.spend && Number.isFinite(d.spend.usedMinor)) {
+          parts.push(`spent ${minorFiat(d.spend.usedMinor, d.spend.currency, d.spend.exponent)}`)
+        }
         return parts.join(' · ') || null
       }
       if (d.kind === 'balance') {
@@ -1138,13 +1234,29 @@ window.__ModuleLoader__.load({
      * Renders nothing until the owner confirms the row's key is configured —
      * usage belongs to set-up providers only. Click expands the full panel.
      */
-    function CardExtras({ p, store, getNs, keyConfigured }) {
+    function CardExtras({ p, store, getNs, keyConfigured, provider, getLoginNs }) {
       const state = useStore(store)
       const [open, setOpen] = React.useState(false)
-      if (keyConfigured === false) return null
+      const [oauthConfigured, setOauthConfigured] = React.useState(null)
+      const route = provider?.provider
+      React.useEffect(() => {
+        if (!['openai-codex', 'anthropic'].includes(route)) return undefined
+        let active = true
+        const ns = getLoginNs?.()
+        if (!ns?.status) return undefined
+        void ns.status({ provider: route }).then((result) => {
+          const value = result?.ok === true ? result.value : result
+          if (active) setOauthConfigured(value?.configured === true)
+        }).catch(() => {
+          if (active) setOauthConfigured(false)
+        })
+        return () => { active = false }
+      }, [route])
+      if (keyConfigured === false && oauthConfigured !== true) return null
       const wireError = state && state.ok === false ? state.error : null
       const s = wireError ? null : state
       const summary = summarize(p, s)
+      const plan = s && s.data ? quotaPlan(s.data) : null
       const lv = summaryLevel(p, s)
       const errText = wireError
         ? wireError.message || 'The Remote call failed.'
@@ -1165,13 +1277,14 @@ window.__ModuleLoader__.load({
             title: `${p.title} usage`,
           },
           React.createElement('span', { className: `${p.px}-dot` + (lv ? ` ${p.px}-${lv}` : '') }),
+          plan ? React.createElement('span', { className: `${p.px}-scope` }, plan) : null,
           React.createElement('span', null, summary ?? 'Usage unavailable'),
           React.createElement('span', { className: `${p.px}-code`, style: { marginTop: 0 } }, open ? '▴ less' : '▾ details'),
         ),
         errText && !summary
           ? React.createElement('div', { className: `${p.px}-err`, style: { marginTop: 6 } }, errText)
           : null,
-        open ? React.createElement(p.panel, { store, getNs }) : null,
+        open ? React.createElement(p.panel, { store, getNs, title: p.title }) : null,
       )
     }
 
@@ -1663,7 +1776,7 @@ window.__ModuleLoader__.load({
               if (state && state.ui && state.ui.composerChip === false) return null
               const gates = state && state.ui && Array.isArray(state.ui.gate) ? state.ui.gate : p.gate
               if (!gates.includes(provider)) return null
-              return React.createElement(p.chip, { ...props, store: p.store, getNs })
+              return React.createElement(p.chip, { ...props, store: p.store, getNs, title: p.title })
             },
           ),
         )
@@ -1684,7 +1797,7 @@ window.__ModuleLoader__.load({
             const route = props && props.provider && typeof props.provider.provider === 'string' ? props.provider.provider : null
             const p = PROVIDERS.find((candidate) => candidate.gate.includes(route))
             const card = p
-              ? React.createElement(CardExtras, { ...props, p, store: p.store, getNs: () => namespaces.get(p.namespace) })
+              ? React.createElement(CardExtras, { ...props, p, store: p.store, getNs: () => namespaces.get(p.namespace), getLoginNs: () => providerLoginNs })
               : null
             const login = React.createElement(ProviderLoginAction, { ...props, getLoginNs: () => providerLoginNs, getLoginError: () => providerLoginMountError })
             return React.createElement(React.Fragment, null, card, login)

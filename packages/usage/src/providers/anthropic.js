@@ -7,19 +7,47 @@
  * seven_day_breakdown.
  */
 
-import { fetchUsageJson, mountProvider, num } from './net.js'
+import { fetchUsageJson, isRecord, mountProvider, num } from './net.js'
 
 const DEFAULT_CREDENTIAL_REF = 'llm-pi-ai/anthropic'
 const DEFAULT_BASE = 'https://api.anthropic.com'
 
 function parseWindow(key, value, label) {
-  if (!value || typeof value !== 'object') return null
+  if (!isRecord(value)) return null
   const utilization = num(value.utilization)
   return {
     key,
     label,
     usedRatio: utilization === null ? null : utilization / 100,
     resetAt: typeof value.resets_at === 'string' ? value.resets_at : null,
+  }
+}
+
+/** Keep auxiliary limits distinct from the top-level usage windows. */
+function parseLimit(value) {
+  if (!isRecord(value)) return null
+  const percent = num(value.percent)
+  const scope = isRecord(value.scope) ? value.scope : null
+  const model = isRecord(scope?.model) ? scope.model : null
+  return {
+    kind: typeof value.kind === 'string' ? value.kind : null,
+    group: typeof value.group === 'string' ? value.group : null,
+    percent,
+    usedRatio: percent === null ? null : percent / 100,
+    severity: typeof value.severity === 'string' ? value.severity : null,
+    resetAt: typeof value.resets_at === 'string' ? value.resets_at : null,
+    scope: scope
+      ? {
+          model: model
+            ? {
+                id: typeof model.id === 'string' ? model.id : null,
+                displayName: typeof model.display_name === 'string' ? model.display_name : null,
+              }
+            : null,
+          surface: typeof scope.surface === 'string' ? scope.surface : null,
+        }
+      : null,
+    isActive: typeof value.is_active === 'boolean' ? value.is_active : null,
   }
 }
 
@@ -85,41 +113,50 @@ export function mountAnthropic(ctx, config = {}) {
       const windows = [
         parseWindow('fiveHour', body.five_hour, '5-hour window'),
         parseWindow('sevenDay', body.seven_day, '7-day window'),
+        parseWindow('sevenDayOpus', body.seven_day_opus, '7-day Opus window'),
+        parseWindow('sevenDaySonnet', body.seven_day_sonnet, '7-day Sonnet window'),
       ].filter(Boolean)
-      const limits = Array.isArray(body.limits) ? body.limits : []
+      const rawLimits = Array.isArray(body.limits) ? body.limits : []
+      const limits = rawLimits.map(parseLimit).filter(Boolean)
       for (const limit of limits) {
-        if (limit?.kind !== 'weekly_all') continue
+        if (limit.kind !== 'weekly_all') continue
         const existing = windows.find((window) => window.key === 'sevenDay')
         if (!existing) {
           windows.push({
             key: 'sevenDay',
             label: '7-day window',
-            usedRatio: num(limit.percent) === null ? null : num(limit.percent) / 100,
-            resetAt: typeof limit.resets_at === 'string' ? limit.resets_at : null,
+            usedRatio: limit.usedRatio,
+            resetAt: limit.resetAt,
           })
         }
       }
       if (windows.length === 0) {
         return { failure: 'bad-response', detail: 'Reply has no five-hour or seven-day usage window.' }
       }
-      const extra = body.extra_usage && typeof body.extra_usage === 'object' ? body.extra_usage : null
-      const spend = body.spend && typeof body.spend === 'object' ? body.spend : null
+      const extra = isRecord(body.extra_usage) ? body.extra_usage : null
+      const spend = isRecord(body.spend) ? body.spend : null
       const breakdown = Array.isArray(body.seven_day_breakdown?.rows)
-        ? body.seven_day_breakdown.rows.filter((row) => typeof row?.display_name === 'string' && num(row.percent) !== null).map((row) => ({
+        ? body.seven_day_breakdown.rows.filter((row) => isRecord(row) && typeof row.display_name === 'string' && num(row.percent) !== null).map((row) => ({
             displayName: row.display_name,
             percent: num(row.percent),
           }))
         : []
+      const extraUtilization = num(extra?.utilization)
       return {
         endpoint: baseUrl,
         data: {
           kind: 'quota',
           windows,
+          limits,
           extra: extra
             ? {
-                enabled: extra.is_enabled === true,
+                enabled: typeof extra.is_enabled === 'boolean' ? extra.is_enabled : null,
+                // used_credits and monthly_limit are major currency units.
+                // The shared panel calls this amount balanceCents; retain that
+                // public field name even though Claude reports usage, not a wallet balance.
                 balanceCents: num(extra.used_credits) === null ? null : num(extra.used_credits) * 100,
                 monthlyLimitCents: num(extra.monthly_limit) === null ? null : num(extra.monthly_limit) * 100,
+                usedRatio: extraUtilization === null ? null : extraUtilization / 100,
                 currency: typeof extra.currency === 'string' ? extra.currency : 'USD',
                 disabledReason: typeof extra.disabled_reason === 'string' ? extra.disabled_reason : null,
               }
@@ -130,7 +167,9 @@ export function mountAnthropic(ctx, config = {}) {
                 currency: typeof spend.used?.currency === 'string' ? spend.used.currency : 'USD',
                 exponent: num(spend.used?.exponent) ?? 2,
                 limitMinor: num(spend.limit?.amount_minor),
-                reached: spend.spend_limit_reached === true,
+                limitCurrency: typeof spend.limit?.currency === 'string' ? spend.limit.currency : null,
+                limitExponent: num(spend.limit?.exponent),
+                reached: typeof spend.spend_limit_reached === 'boolean' ? spend.spend_limit_reached : null,
               }
             : null,
           breakdown,

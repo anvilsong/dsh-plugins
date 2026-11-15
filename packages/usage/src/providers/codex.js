@@ -88,19 +88,24 @@ export function mountCodex(ctx, config = {}) {
       }
       const credits = body.credits && typeof body.credits === 'object'
         ? {
-            hasCredits: body.credits.has_credits === true,
-            unlimited: body.credits.unlimited === true,
-            balance: typeof body.credits.balance === 'string' ? body.credits.balance : null,
+            hasCredits: typeof body.credits.has_credits === 'boolean' ? body.credits.has_credits : null,
+            unlimited: typeof body.credits.unlimited === 'boolean' ? body.credits.unlimited : null,
+            // The live API uses null or a decimal amount; accept either JSON
+            // numbers or numeric strings without turning a missing balance into 0.
+            balance: num(body.credits.balance),
           }
         : null
+      const planType = typeof body.plan_type === 'string' ? body.plan_type : null
       return {
         endpoint: baseUrl,
         data: {
           kind: 'quota',
-          planType: typeof body.plan_type === 'string' ? body.plan_type : null,
+          // QuotaPanel's common plan field plus the provider-specific alias.
+          level: planType,
+          planType,
           windows,
           ordinaryUsageAllowed: typeof rateLimit.allowed === 'boolean' ? rateLimit.allowed : null,
-          spendControlReached: body.spend_control?.reached === true,
+          spendControlReached: typeof body.spend_control?.reached === 'boolean' ? body.spend_control.reached : null,
           resetCreditsAvailable: num(body.rate_limit_reset_credits?.available_count),
           credits,
         },

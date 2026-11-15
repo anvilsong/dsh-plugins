@@ -13,7 +13,10 @@ function sameDeps(left, right) {
 async function boot(route, options = {}) {
   let factory
   globalThis.window = { __ModuleLoader__: { load(value) { factory = value.factory } } }
-  vm.runInThisContext(clientSource)
+  const source = options.usageState
+    ? clientSource.replace('const PROVIDERS = [', 'const PROVIDERS = globalThis.__testProviders = [')
+    : clientSource
+  vm.runInThisContext(source)
 
   // A small hook-aware renderer: effects run after each render and state
   // setters persist until the explicit rerender, like the client slot host.
@@ -86,6 +89,7 @@ async function boot(route, options = {}) {
   const cards = new Map()
   const calls = []
   const statusCalls = []
+  const usageRefreshes = []
   const answers = []
   let mountedContribution
   let resolveAnswer
@@ -119,6 +123,16 @@ async function boot(route, options = {}) {
           begin(request) { calls.push(request); return stream },
         }
       }
+      const usageNamespace = route === 'openai-codex' ? 'codexUsage' : 'anthropicUsage'
+      if (options.usageState && name === 'remote.' + usageNamespace) {
+        return {
+          snapshot: async () => options.usageState,
+          async refresh() {
+            usageRefreshes.push(route)
+            return options.usageState
+          },
+        }
+      }
       return undefined
     },
     remote: { $mount: async (value) => { mountedContribution = value; return () => {} } },
@@ -131,6 +145,7 @@ async function boot(route, options = {}) {
     },
   }
   factory((specifier) => specifier === 'react' ? React : { Button: 'Button' }).apply(ctx)
+  if (options.usageState) globalThis.__testProviders.find((provider) => provider.gate.includes(route)).store.state = options.usageState
   await immediate()
   const component = cards.get('llm-pi-ai')
   const props = {
@@ -161,6 +176,7 @@ async function boot(route, options = {}) {
     settle,
     calls,
     statusCalls,
+    usageRefreshes,
     answers,
     mountedContribution,
   }
@@ -187,6 +203,10 @@ function findByType(node, type) {
   return find(node, (candidate) => candidate.type === type)
 }
 
+function findByClass(node, className) {
+  return find(node, (candidate) => candidate.props?.className?.split(' ').includes(className))
+}
+
 function assertThemedControl(control) {
   assert.ok(control)
   assert.equal(control.props.className, 'pup-login-control')
@@ -205,7 +225,8 @@ for (const [route, providerName] of [['openai-codex', 'ChatGPT'], ['anthropic', 
     assert.equal(button.props.type, 'button')
     assert.equal(button.props.variant, 'outline')
     assert.equal(button.props.size, 'sm')
-    assert.deepEqual(h.statusCalls, [{ provider: route }])
+    assert.equal(h.statusCalls.length, 2)
+    assert.ok(h.statusCalls.every((call) => call.provider === route))
 
     const pending = button.props.onClick()
     await h.settle()
@@ -241,7 +262,8 @@ for (const [route, providerName] of [['openai-codex', 'ChatGPT'], ['anthropic', 
 for (const [route, providerName] of [['openai-codex', 'ChatGPT'], ['anthropic', 'Claude']]) {
   test(`${route} stored OAuth renders signed in after reload, independent of API-key state`, async () => {
     const h = await boot(route, { configured: true, keyConfigured: true })
-    assert.deepEqual(h.statusCalls, [{ provider: route }])
+    assert.equal(h.statusCalls.length, 2)
+    assert.ok(h.statusCalls.every((call) => call.provider === route))
     assert.ok(findByText(h.rendered, `Signed in with ${providerName}`))
     const reauthenticate = findByText(h.rendered, 'Re-authenticate')
     assert.ok(reauthenticate)
@@ -251,6 +273,21 @@ for (const [route, providerName] of [['openai-codex', 'ChatGPT'], ['anthropic', 
     assert.equal(findByText(h.rendered, 'Checking sign-in…'), null)
   })
 }
+
+test('configured OAuth makes the usage card visible', async () => {
+  const h = await boot('openai-codex', {
+    configured: true,
+    usageState: {
+      status: 'ready',
+      data: {
+        kind: 'quota',
+        windows: [{ key: 'sevenDay', label: '7-day window', usedRatio: 1, resetAt: '2026-11-16T06:00:00Z' }],
+      },
+    },
+  })
+  assert.ok(findByText(h.rendered, '7d 100.0%'))
+  assert.ok(findByText(h.rendered, 'Signed in with ChatGPT'))
+})
 
 test('text prompt uses theme tokens and native secondary button styling', async () => {
   const h = await boot('anthropic', {
@@ -275,4 +312,90 @@ test('text prompt uses theme tokens and native secondary button styling', async 
   await h.settle()
   assert.deepEqual(h.answers, [{ type: 'answer', id: 'prompt-1', answer: 'oauth-code' }])
   assert.ok(findByText(h.rendered, 'Signed in with Claude'))
+})
+
+function expandUsage(h, title) {
+  const toggle = find(h.rendered, (node) => node.type === 'button' && node.props?.title === `${title} usage`)
+  assert.ok(toggle, `${title} usage summary is visible`)
+  toggle.props.onClick()
+  h.render()
+}
+
+test('Codex summary and quota panel present plan, credits, progress, and secondary details', async () => {
+  const h = await boot('openai-codex', {
+    configured: true,
+    usageState: {
+      status: 'ready',
+      endpoint: 'https://chatgpt.com/backend-api',
+      fetchedAt: '2026-11-15T12:00:00Z',
+      data: {
+        kind: 'quota',
+        planType: 'free',
+        windows: [{ key: 'primary', label: '30-day window', usedRatio: 0.425, resetAt: '2026-12-15T12:00:00Z' }],
+        credits: { hasCredits: true, unlimited: false, balance: '12.50' },
+        resetCreditsAvailable: 2,
+        ordinaryUsageAllowed: false,
+        spendControlReached: true,
+      },
+    },
+  })
+
+  assert.ok(findByText(h.rendered, 'free plan'))
+  assert.ok(findByText(h.rendered, '30d 42.5% · credits 12.50'))
+  expandUsage(h, 'OpenAI Codex')
+
+  assert.ok(findByText(h.rendered, 'OpenAI Codex'))
+  assert.ok(findByText(h.rendered, '30-day window'))
+  assert.ok(findByText(h.rendered, 'Credits'))
+  assert.ok(findByText(h.rendered, '12.50'))
+  assert.ok(findByText(h.rendered, 'Rate-limit reset credits'))
+  assert.ok(findByText(h.rendered, 2))
+  assert.ok(findByText(h.rendered, 'Included usage is currently blocked.'))
+  assert.ok(findByText(h.rendered, 'Spend control reached.'))
+  assert.equal(findByText(h.rendered, '5-hour window'), null)
+  assert.ok(findByClass(h.rendered, 'pup-grid'))
+  const bar = findByClass(h.rendered, 'pup-bar')
+  assert.equal(bar.children[0].props.style.width, '42.5%')
+  assert.ok(find(h.rendered, (node) => node.props?.className === 'pup-code' && node.children?.some((child) => typeof child === 'string' && child.includes('chatgpt.com/backend-api'))))
+
+  const refresh = findByText(h.rendered, 'Refresh')
+  assert.equal(refresh.props.type, 'button')
+  assert.equal(refresh.props.className, 'pup-btn')
+  refresh.props.onClick()
+  await h.settle()
+  assert.deepEqual(h.usageRefreshes, ['openai-codex'])
+})
+
+test('Claude summary and quota panel present only returned windows and account details', async () => {
+  const h = await boot('anthropic', {
+    configured: true,
+    usageState: {
+      status: 'ready',
+      endpoint: 'https://api.anthropic.com',
+      fetchedAt: '2026-11-15T12:00:00Z',
+      data: {
+        kind: 'quota',
+        windows: [{ key: 'sevenDay', label: '7-day window', usedRatio: 1, resetAt: '2026-11-16T06:00:00Z' }],
+        extra: { enabled: true, balanceCents: 1250, monthlyLimitCents: 5000, currency: 'USD', disabledReason: null },
+        spend: { usedMinor: 1250, limitMinor: 5000, currency: 'USD', exponent: 2, reached: false },
+        breakdown: [{ displayName: 'Claude Code', percent: 100 }],
+      },
+    },
+  })
+
+  assert.ok(findByText(h.rendered, '7d 100.0% · extra used $12.50 · spent $12.50'))
+  expandUsage(h, 'Claude')
+
+  assert.ok(findByText(h.rendered, 'Claude'))
+  assert.ok(findByText(h.rendered, 'subscription quota'))
+  assert.ok(findByText(h.rendered, '7-day window'))
+  assert.ok(findByText(h.rendered, 'Extra usage used'))
+  assert.ok(findByText(h.rendered, 'monthly limit $50.00'))
+  assert.ok(findByText(h.rendered, 'Usage credits spent'))
+  assert.ok(findByText(h.rendered, 'limit $50.00'))
+  assert.ok(findByText(h.rendered, 'Claude Code: 100%'))
+  assert.equal(findByText(h.rendered, '5-hour window'), null)
+  assert.ok(findByClass(h.rendered, 'pup-grid'))
+  const bar = findByClass(h.rendered, 'pup-bar')
+  assert.equal(bar.children[0].props.style.width, '100%')
 })
