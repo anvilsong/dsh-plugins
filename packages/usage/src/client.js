@@ -1445,7 +1445,7 @@ window.__ModuleLoader__.load({
 
       // An environment/API-key configuration suppresses only the sign-in
       // action. It must not hide a separately stored OAuth identity.
-      if (oauthConfigured !== true && props.keyConfigured !== false) return null
+      if (oauthConfigured !== true && props.keyConfigured !== false && !busy) return null
       if (oauthConfigured === null) {
         return React.createElement(
           'div',
@@ -1456,7 +1456,9 @@ window.__ModuleLoader__.load({
 
       const start = async () => {
         if (busy) return
+        const wasConfigured = oauthConfigured === true
         setBusy(true)
+        setOauthConfigured(false)
         setMessage(null)
         setLink(null)
         setPromptEvent(null)
@@ -1478,11 +1480,13 @@ window.__ModuleLoader__.load({
                 setMessage(null)
                 setLink(null)
               } else {
+                setOauthConfigured(wasConfigured)
                 setMessage('Sign-in cancelled.')
               }
             }
           }
         } catch (error) {
+          setOauthConfigured(wasConfigured)
           setMessage(error instanceof Error ? error.message : String(error))
         } finally {
           streamRef.current = null
