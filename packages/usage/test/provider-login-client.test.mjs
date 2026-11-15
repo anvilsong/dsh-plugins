@@ -296,6 +296,7 @@ test('Claude scoped Fable limit appears in summary and panel', async () => {
       status: 'ready',
       data: {
         kind: 'quota',
+        quotas: { sevenDay: { label: '7-day window', usedRatio: 1, resetAt: '2026-11-16T06:00:00Z' } },
         windows: [{ key: 'sevenDay', label: '7-day window', usedRatio: 1, resetAt: '2026-11-16T06:00:00Z' }],
         limits: [{ kind: 'weekly_scoped', usedRatio: 0.04, scope: { model: { displayName: 'Fable' } }, resetAt: '2026-11-16T06:00:00Z', isActive: false }],
       },
@@ -350,6 +351,7 @@ test('Codex summary and quota panel present plan, credits, progress, and seconda
       data: {
         kind: 'quota',
         planType: 'free',
+        quotas: { monthTotal: { label: '30-day window', usedRatio: 0.425, resetAt: '2026-12-15T12:00:00Z' } },
         windows: [{ key: 'primary', label: '30-day window', usedRatio: 0.425, resetAt: '2026-12-15T12:00:00Z' }],
         credits: { hasCredits: true, unlimited: false, balance: '12.50' },
         resetCreditsAvailable: 2,
@@ -372,14 +374,14 @@ test('Codex summary and quota panel present plan, credits, progress, and seconda
   assert.ok(findByText(h.rendered, 'Included usage is currently blocked.'))
   assert.ok(findByText(h.rendered, 'Spend control reached.'))
   assert.equal(findByText(h.rendered, '5-hour window'), null)
-  assert.ok(findByClass(h.rendered, 'pup-grid'))
-  const bar = findByClass(h.rendered, 'pup-bar')
+  assert.ok(findByClass(h.rendered, 'kmup-grid'))
+  const bar = findByClass(h.rendered, 'kmup-bar')
   assert.equal(bar.children[0].props.style.width, '42.5%')
-  assert.ok(find(h.rendered, (node) => node.props?.className === 'pup-code' && node.children?.some((child) => typeof child === 'string' && child.includes('chatgpt.com/backend-api'))))
+  assert.ok(find(h.rendered, (node) => node.props?.className === 'kmup-code' && node.children?.some((child) => typeof child === 'string' && child.includes('chatgpt.com/backend-api'))))
 
   const refresh = findByText(h.rendered, 'Refresh')
   assert.equal(refresh.props.type, 'button')
-  assert.equal(refresh.props.className, 'pup-btn')
+  assert.equal(refresh.props.className, 'kmup-btn')
   refresh.props.onClick()
   await h.settle()
   assert.deepEqual(h.usageRefreshes, ['openai-codex'])
@@ -394,6 +396,7 @@ test('Claude summary and quota panel present only returned windows and account d
       fetchedAt: '2026-11-15T12:00:00Z',
       data: {
         kind: 'quota',
+        quotas: { sevenDay: { label: '7-day window', usedRatio: 1, resetAt: '2026-11-16T06:00:00Z' } },
         windows: [{ key: 'sevenDay', label: '7-day window', usedRatio: 1, resetAt: '2026-11-16T06:00:00Z' }],
         extra: { enabled: true, balanceCents: 1250, monthlyLimitCents: 5000, currency: 'USD', disabledReason: null },
         spend: { usedMinor: 1250, limitMinor: 5000, currency: 'USD', exponent: 2, reached: false },
@@ -408,13 +411,14 @@ test('Claude summary and quota panel present only returned windows and account d
   assert.ok(findByText(h.rendered, 'Claude'))
   assert.ok(findByText(h.rendered, 'subscription quota'))
   assert.ok(findByText(h.rendered, '7-day window'))
-  assert.ok(findByText(h.rendered, 'Extra usage used'))
-  assert.ok(findByText(h.rendered, 'monthly limit $50.00'))
+  assert.ok(findByText(h.rendered, 'Extra Usage balance'))
+  assert.ok(findByText(h.rendered, 'Monthly cap'))
+  assert.ok(find(h.rendered, (node) => (node.children ?? []).some((child) => typeof child === 'string' && child.includes('$50.00'))))
   assert.ok(findByText(h.rendered, 'Usage credits spent'))
   assert.ok(findByText(h.rendered, 'limit $50.00'))
   assert.ok(findByText(h.rendered, 'Claude Code: 100%'))
   assert.equal(findByText(h.rendered, '5-hour window'), null)
-  assert.ok(findByClass(h.rendered, 'pup-grid'))
-  const bar = findByClass(h.rendered, 'pup-bar')
+  assert.ok(findByClass(h.rendered, 'kmup-grid'))
+  const bar = findByClass(h.rendered, 'kmup-bar')
   assert.equal(bar.children[0].props.style.width, '100%')
 })

@@ -575,14 +575,14 @@ window.__ModuleLoader__.load({
     function quotaMetric(key, label, q) {
       if (!q) return null
       return React.createElement(Metric, {
-        px: 'kmup', key, label,
+        px: 'kmup', key, label: q.label ?? label,
         value: pct(q.usedRatio) + ' used',
         cls: quotaLevel(q.usedRatio),
         sub: q.resetAt ? 'resets ' + (when(q.resetAt) ?? q.resetAt) : null,
       })
     }
 
-    function KimiPanel({ store, getNs }) {
+    function KimiPanel({ store, getNs, title = 'Kimi Code' }) {
       const state = useStore(store)
       const { busy, onRefresh } = useRefresher(store, getNs)
 
@@ -590,8 +590,9 @@ window.__ModuleLoader__.load({
       const s = wireError ? null : state
       const d = s && s.data ? s.data : null
       const status = s ? s.status : 'idle'
-      const worst = d ? worstRatio(d.quotas) : null
+      const worst = d ? (d.quotas ? worstRatio(d.quotas) : worstWindow(d.windows)) : null
       const wlv = worst !== null ? quotaLevel(worst) : null
+      const plan = d && (d.planType || d.level)
 
       const rows = []
       if (d) {
@@ -605,6 +606,20 @@ window.__ModuleLoader__.load({
           const m = quotaMetric(key, label, q[key])
           if (m) rows.push(m)
         }
+        for (const limit of d.limits ?? []) {
+          if (limit.kind === 'weekly_all') continue
+          const model = limit.scope?.model?.displayName ?? limit.kind ?? 'Scoped'
+          rows.push(React.createElement(Metric, {
+            px: 'kmup', key: `limit-${limit.kind}-${model}`,
+            label: `${model} limit`,
+            value: pct(limit.usedRatio) + ' used',
+            cls: limit.severity === 'critical' ? 'bad' : quotaLevel(limit.usedRatio),
+            sub: [
+              limit.resetAt ? 'resets ' + (when(limit.resetAt) ?? limit.resetAt) : null,
+              limit.isActive === false ? 'inactive' : null,
+            ].filter(Boolean).join(' · ') || null,
+          }))
+        }
         if (d.requests) {
           rows.push(
             React.createElement(Metric, {
@@ -616,6 +631,32 @@ window.__ModuleLoader__.load({
               sub: d.requests.resetAt ? 'resets ' + (when(d.requests.resetAt) ?? d.requests.resetAt) : null,
             }),
           )
+        }
+        const credits = creditText(d.credits)
+        if (credits !== null) {
+          rows.push(React.createElement(Metric, {
+            px: 'kmup', key: 'credits', label: 'Credits', value: credits,
+          }))
+        }
+        if (d.resetCreditsAvailable !== null && d.resetCreditsAvailable !== undefined) {
+          rows.push(React.createElement(Metric, {
+            px: 'kmup', key: 'reset-credits', label: 'Rate-limit reset credits',
+            value: d.resetCreditsAvailable, sub: 'available',
+          }))
+        }
+        if (d.spend) {
+          const spend = d.spend
+          rows.push(React.createElement(Metric, {
+            px: 'kmup', key: 'spend', label: 'Usage credits spent',
+            value: minorFiat(spend.usedMinor, spend.currency, spend.exponent),
+            cls: spend.reached ? 'bad' : null,
+            sub: [
+              spend.limitMinor !== null && spend.limitMinor !== undefined
+                ? 'limit ' + minorFiat(spend.limitMinor, spend.currency, spend.exponent)
+                : null,
+              spend.reached ? 'spend limit reached' : null,
+            ].filter(Boolean).join(' · ') || null,
+          }))
         }
       }
 
@@ -641,26 +682,44 @@ window.__ModuleLoader__.load({
                     ? 'warn'
                     : 'ok',
             }),
-            React.createElement(Metric, {
-              px: 'kmup', key: 'topped', label: 'Topped up',
-              value: centsMoney(extra.totalCents, extra.currency),
-            }),
-            extra.monthlyChargeLimitEnabled
+            extra.totalCents !== null && extra.totalCents !== undefined
+              ? React.createElement(Metric, {
+                  px: 'kmup', key: 'topped', label: 'Topped up',
+                  value: centsMoney(extra.totalCents, extra.currency),
+                })
+              : null,
+            extra.monthlyLimitCents !== null && extra.monthlyLimitCents !== undefined
               ? React.createElement(Metric, {
                   px: 'kmup', key: 'cap', label: 'Monthly cap',
-                  value: centsMoney(extra.monthlyUsedCents, extra.currency) + ' / ' + centsMoney(extra.monthlyChargeLimitCents, extra.currency),
+                  value: centsMoney(extra.balanceCents, extra.currency) + ' / ' + centsMoney(extra.monthlyLimitCents, extra.currency),
                 })
               : null,
           ),
         )
       }
 
+      if (d && Array.isArray(d.breakdown) && d.breakdown.length > 0) {
+        extraBlocks.push(
+          React.createElement(
+            'div',
+            { className: 'kmup-code', key: 'breakdown' },
+            d.breakdown.map((row) => `${row.displayName}: ${row.percent}%`).join(' · '),
+          ),
+        )
+      }
+      if (d && d.ordinaryUsageAllowed === false) {
+        extraBlocks.push(React.createElement('div', { className: 'kmup-code', key: 'ordinary-usage' }, 'Included usage is currently blocked.'))
+      }
+      if (d && d.spendControlReached === true) {
+        extraBlocks.push(React.createElement('div', { className: 'kmup-code', key: 'spend-control' }, 'Spend control reached.'))
+      }
+
       const children = [
         React.createElement(
           'div',
           { className: 'kmup-head', key: 'head' },
-          React.createElement('span', { className: 'kmup-title' }, 'Kimi Code'),
-          React.createElement('span', { className: 'kmup-scope' }, 'subscription quota'),
+          React.createElement('span', { className: 'kmup-title' }, title),
+          React.createElement('span', { className: 'kmup-scope' }, plan ?? 'subscription quota'),
           React.createElement('span', { className: 'kmup-spacer' }),
           React.createElement(
             'button',
@@ -732,7 +791,7 @@ window.__ModuleLoader__.load({
      * present, the Extra Usage balance, with a colour dot. Click opens the
      * panel in a popover.
      */
-    function KimiChip({ store, getNs }) {
+    function KimiChip({ store, getNs, title = 'Kimi Code' }) {
       const state = useStore(store)
       const [open, setOpen] = React.useState(false)
 
@@ -740,7 +799,7 @@ window.__ModuleLoader__.load({
       const s = wireError ? null : state
       const d = s && s.data ? s.data : null
 
-      const worst = d ? worstRatio(d.quotas) : null
+      const worst = d ? (d.quotas ? worstRatio(d.quotas) : worstWindow(d.windows)) : null
       const wlv = worst !== null ? quotaLevel(worst) : null
       const extra = d && d.extra ? d.extra : null
       const elv =
@@ -768,14 +827,14 @@ window.__ModuleLoader__.load({
           {
             className: 'kmup-chip', type: 'button',
             onClick: () => setOpen((v) => !v),
-            title: 'Kimi Code usage',
+            title: `${title} usage`,
           },
           React.createElement('span', { className: 'kmup-dot' + (dot ? ' kmup-' + dot : '') }),
-          React.createElement('span', null, 'Kimi Code'),
+          React.createElement('span', null, title),
           ...parts,
           React.createElement('span', { className: 'kmup-code' }, wireError ? '!' : s && s.status === 'error' ? '!' : ''),
         ),
-        open ? React.createElement('div', { className: 'kmup-pop' }, React.createElement(KimiPanel, { store, getNs })) : null,
+        open ? React.createElement('div', { className: 'kmup-pop' }, React.createElement(KimiPanel, { store, getNs, title })) : null,
       )
     }
 
@@ -1607,8 +1666,8 @@ window.__ModuleLoader__.load({
         title: 'OpenAI Codex',
         namespace: 'codexUsage',
         store: makeStore(),
-        panel: QuotaPanel,
-        chip: QuotaChip,
+        panel: KimiPanel,
+        chip: KimiChip,
         settingsId: 'codex-usage',
         chipId: 'codex-usage-chip',
         label: 'OpenAI Codex usage',
@@ -1621,8 +1680,8 @@ window.__ModuleLoader__.load({
         title: 'Claude',
         namespace: 'anthropicUsage',
         store: makeStore(),
-        panel: QuotaPanel,
-        chip: QuotaChip,
+        panel: KimiPanel,
+        chip: KimiChip,
         settingsId: 'anthropic-usage',
         chipId: 'anthropic-usage-chip',
         label: 'Claude usage',

@@ -100,6 +100,7 @@ export function mountCodex(ctx, config = {}) {
         endpoint: baseUrl,
         data: {
           kind: 'quota',
+          quotas: Object.fromEntries(windows.map((window) => [window.key === 'primary' ? 'monthTotal' : window.key === 'secondary' ? 'monthCode' : window.key, window])),
           // QuotaPanel's common plan field plus the provider-specific alias.
           level: planType,
           planType,
@@ -107,6 +108,9 @@ export function mountCodex(ctx, config = {}) {
           ordinaryUsageAllowed: typeof rateLimit.allowed === 'boolean' ? rateLimit.allowed : null,
           spendControlReached: typeof body.spend_control?.reached === 'boolean' ? body.spend_control.reached : null,
           resetCreditsAvailable: num(body.rate_limit_reset_credits?.available_count),
+          extra: credits?.balance !== null && credits?.balance !== undefined
+            ? { balanceCents: credits.balance * 100, currency: 'USD' }
+            : null,
           credits,
         },
       }

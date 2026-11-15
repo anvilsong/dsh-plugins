@@ -151,6 +151,7 @@ export function mountAnthropic(ctx, config = {}) {
         endpoint: baseUrl,
         data: {
           kind: 'quota',
+          quotas: Object.fromEntries(windows.map((window) => [window.key, window])),
           windows,
           limits,
           extra: extra
