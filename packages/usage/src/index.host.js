@@ -24,6 +24,7 @@ import { mountZhipu } from './providers/zhipu.js'
 import { mountMiniMax } from './providers/minimax.js'
 import { mountNewApi } from './providers/newapi.js'
 import { mountCodex } from './providers/codex.js'
+import { mountAnthropic } from './providers/anthropic.js'
 
 export const name = 'usage'
 
@@ -44,6 +45,7 @@ export function apply(ctx, config = {}) {
     ['minimax', mountMiniMax, providers.minimax ?? {}],
     ['newapi', mountNewApi, providers.newapi ?? {}],
     ['codex', mountCodex, providers.codex ?? {}],
+    ['anthropic', mountAnthropic, providers.anthropic ?? {}],
   ]
 
   for (const [id, mount, cfg] of mounts) {

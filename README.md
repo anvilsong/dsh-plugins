@@ -2,7 +2,7 @@
 
 Provider balances and subscription quota inside DeepSeek Harness.
 OpenRouter, Kimi Code, DeepSeek, GLM Coding Plan, MiniMax Coding Plan, NewAPI,
-and OpenAI Codex are supported in one package.
+OpenAI Codex, and Anthropic Claude are supported in one package.
 
 ## Install
 

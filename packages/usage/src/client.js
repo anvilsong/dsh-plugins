@@ -1477,6 +1477,20 @@ window.__ModuleLoader__.load({
         chipLabel: 'OpenAI Codex usage chip',
         gate: ['openai-codex'],
       },
+      {
+        id: 'anthropic',
+        px: 'pup',
+        title: 'Claude',
+        namespace: 'anthropicUsage',
+        store: makeStore(),
+        panel: QuotaPanel,
+        chip: QuotaChip,
+        settingsId: 'anthropic-usage',
+        chipId: 'anthropic-usage-chip',
+        label: 'Claude usage',
+        chipLabel: 'Claude usage chip',
+        gate: ['anthropic'],
+      },
     ]
 
     /** Insert one stylesheet into the document, removed when the plugin unloads. */
