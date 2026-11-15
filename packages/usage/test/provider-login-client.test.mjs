@@ -40,7 +40,7 @@ function boot() {
       register(meta, component) { return { meta, component } },
     },
   }
-  factory(() => React).apply(ctx)
+  factory((specifier) => specifier === 'react' ? React : { Button: 'Button' }).apply(ctx)
   return { component: cards.get('llm-pi-ai'), calls }
 }
 
@@ -55,7 +55,7 @@ function props(route) {
 
 function findButton(node) {
   if (!node || typeof node !== 'object') return null
-  if (node.type === 'button') return node
+  if (node.type === 'button' || node.type === 'Button') return node
   for (const child of node.children ?? []) {
     const found = findButton(child)
     if (found) return found
@@ -70,6 +70,8 @@ for (const [route, label] of [['openai-codex', 'Sign in with ChatGPT'], ['anthro
     const button = findButton(rendered)
     assert.ok(button)
     assert.equal(button.children[0], label)
+    assert.equal(button.props.variant, 'outline')
+    assert.equal(button.props.size, 'sm')
     await button.props.onClick()
     assert.deepEqual(calls, [{ sessionId: 'session-test', line: `/provider-login ${route}` }])
   })

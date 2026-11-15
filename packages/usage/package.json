@@ -26,6 +26,7 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-commands",
+        "@deepseek-ai/dsh-client-ui-primitives",
         "@deepseek-ai/dsh-api-gateway"
       ],
       "platform": "web"

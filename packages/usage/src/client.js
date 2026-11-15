@@ -20,6 +20,7 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
 
     const React = require('react')
+    const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
 
     const CARD_SLOT = 'settings.models.provider-card'
     const CHIP_SLOT = 'conversation.composer.dock'
@@ -1212,22 +1213,12 @@ window.__ModuleLoader__.load({
         'div',
         { style: { marginTop: 8, padding: '0 12px 8px' } },
         React.createElement(
-          'button',
+          primitives.Button,
           {
-            type: 'button',
+            variant: 'outline',
+            size: 'sm',
             onClick: start,
             disabled: busy || !sessionId,
-            style: {
-              border: '1px solid var(--dsw-alias-border-default)',
-              borderRadius: 'var(--dsw-radius-md)',
-              background: 'var(--dsw-alias-interactive-bg-default)',
-              color: 'var(--dsw-alias-label-primary)',
-              cursor: busy || !sessionId ? 'default' : 'pointer',
-              font: 'inherit',
-              fontSize: 12,
-              padding: '4px 10px',
-              opacity: busy || !sessionId ? 0.6 : 1,
-            },
           },
           busy ? 'Waiting for sign-in…' : label,
         ),
