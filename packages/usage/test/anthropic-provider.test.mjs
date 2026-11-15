@@ -102,6 +102,7 @@ test('Claude usage parses the live weekly window, scoped limit, extra usage, spe
     assert.match(report.text, /100.0% used/)
     assert.match(report.text, /Extra usage: 0.00 USD/)
     assert.match(report.text, /Usage credits spent: 0.00 USD/)
+    assert.match(report.text, /Fable limit: 4.0% used/)
     assert.match(report.text, /Breakdown: Claude Code 100% · Chats 0% · Cowork 0% · Other 0%/)
     assert.doesNotMatch(report.text, /5-hour window/)
   } finally {

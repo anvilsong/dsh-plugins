@@ -289,6 +289,25 @@ test('configured OAuth makes the usage card visible', async () => {
   assert.ok(findByText(h.rendered, 'Signed in with ChatGPT'))
 })
 
+test('Claude scoped Fable limit appears in summary and panel', async () => {
+  const h = await boot('anthropic', {
+    configured: true,
+    usageState: {
+      status: 'ready',
+      data: {
+        kind: 'quota',
+        windows: [{ key: 'sevenDay', label: '7-day window', usedRatio: 1, resetAt: '2026-11-16T06:00:00Z' }],
+        limits: [{ kind: 'weekly_scoped', usedRatio: 0.04, scope: { model: { displayName: 'Fable' } }, resetAt: '2026-11-16T06:00:00Z', isActive: false }],
+      },
+    },
+  })
+  assert.ok(find(h.rendered, (node) => (node.children ?? []).some((child) => typeof child === 'string' && child.includes('Fable 4.0%'))))
+  const summaryButton = find(h.rendered, (node) => node.props?.className === 'pup-btn')
+  summaryButton.props.onClick()
+  h.render()
+  assert.ok(findByText(h.rendered, 'Fable limit'))
+})
+
 test('text prompt uses theme tokens and native secondary button styling', async () => {
   const h = await boot('anthropic', {
     prompt: { kind: 'text', message: 'Enter the code', placeholder: 'Paste code' },

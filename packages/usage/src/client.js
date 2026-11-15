@@ -848,6 +848,20 @@ window.__ModuleLoader__.load({
             sub: w.resetAt ? 'resets ' + (when(w.resetAt) ?? w.resetAt) : null,
           }))
         }
+        for (const limit of d.limits ?? []) {
+          if (limit.kind === 'weekly_all') continue
+          const model = limit.scope?.model?.displayName ?? limit.kind ?? 'Scoped'
+          rows.push(React.createElement(Metric, {
+            px: 'pup', key: `limit-${limit.kind}-${model}`,
+            label: `${model} limit`,
+            value: pct(limit.usedRatio) + ' used',
+            cls: limit.severity === 'critical' ? 'bad' : quotaLevel(limit.usedRatio),
+            sub: [
+              limit.resetAt ? 'resets ' + (when(limit.resetAt) ?? limit.resetAt) : null,
+              limit.isActive === false ? 'inactive' : null,
+            ].filter(Boolean).join(' · ') || null,
+          }))
+        }
         const p = d.prompts
         if (p) {
           rows.push(React.createElement(Metric, {
@@ -1189,6 +1203,11 @@ window.__ModuleLoader__.load({
         const parts = windowsOf(d)
           .filter((w) => typeof w.usedRatio === 'number')
           .map((w) => `${summaryWindowLabel(w)} ${pct(w.usedRatio)}`)
+        for (const limit of d.limits ?? []) {
+          if (limit.kind === 'weekly_all') continue
+          const model = limit.scope?.model?.displayName ?? limit.kind ?? 'Scoped'
+          parts.push(`${model} ${pct(limit.usedRatio)}`)
+        }
         const credits = creditText(d.credits)
         if (credits !== null) parts.push(`credits ${credits}`)
         if (d.extra) {

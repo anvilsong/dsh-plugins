@@ -66,6 +66,11 @@ function formatReport(state) {
   const d = state.data
   if (d) {
     for (const window of d.windows) lines.push(windowLine(window.label, window))
+    for (const limit of d.limits ?? []) {
+      if (limit.kind === 'weekly_all') continue
+      const model = limit.scope?.model?.displayName ?? limit.kind ?? 'Scoped'
+      lines.push(windowLine(`${model} limit`, limit))
+    }
     if (d.extra) {
       const e = d.extra
       const used = moneyMinor(e.balanceCents, 2)
