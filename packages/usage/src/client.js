@@ -1414,7 +1414,7 @@ window.__ModuleLoader__.load({
         method: 'begin',
         mode: 'stream',
         invocation: { kind: 'direct' },
-        parameters: [{ name: 'request', source: 'json', codec: strictJson }],
+        parameters: [{ name: 'request', wire: 'request', source: 'json', codec: strictJson }],
         uplink: { codec: strictJson },
         cancellation: { parameter: 'signal' },
         result: { mode: 'src-json' },

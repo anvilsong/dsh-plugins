@@ -84,6 +84,7 @@ for (const [route, label] of [['openai-codex', 'Sign in with ChatGPT'], ['anthro
     assert.deepEqual(calls, [{ provider: route, method: 'oauth' }])
     assert.deepEqual(answers, [{ type: 'answer', id: 'prompt-1', answer: 'code' }])
     const descriptor = mountedContribution.descriptors.find((item) => item.method === 'begin')
+    assert.equal(descriptor.parameters[0].wire, 'request')
     assert.equal(descriptor.parameters[0].codec.mode, 'strict')
     assert.equal(descriptor.uplink.codec.mode, 'strict')
     assert.deepEqual(descriptor.parameters[0].codec.create().parse({ provider: route }), { provider: route })
