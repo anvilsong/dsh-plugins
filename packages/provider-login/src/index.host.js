@@ -4,7 +4,7 @@ export const name = 'provider-login'
 export const inject = ['authorization', 'userQuestions', 'commands']
 
 const PROVIDER = /^[a-z0-9][a-z0-9-]*$/
-const USAGE = 'Usage: /login <provider> [oauth|api-key]. Example: /login openai-codex'
+const USAGE = 'Usage: /provider-login <provider> [oauth|api-key]. Example: /provider-login openai-codex'
 
 function notify(agent, notice) {
   const parts = [notice.message]
@@ -41,7 +41,7 @@ async function prompt(ctx, agent, request) {
 
 export function apply(ctx) {
   ctx.commands.register({
-      name: 'login',
+      name: 'provider-login',
       definitionId: 'dsh-plugin-provider-login',
       description: 'Start a provider OAuth or interactive-key sign-in flow.',
       source: { kind: 'user' },

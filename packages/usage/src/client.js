@@ -1172,6 +1172,70 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /** Return the active main-view Session for provider authorization. */
+    function activeSessionId(props) {
+      if (typeof props.useSessions !== 'function') return undefined
+      return props.useSessions((state) => {
+        if (state.currentId) return state.currentId
+        const current = Object.values(state.byId ?? {}).find((row) => (row.retainedBy?.mainView ?? 0) > 0)
+        return current?.id ?? state.ids?.[0]
+      })
+    }
+
+    /** A sign-in action for OAuth-capable providers without a credential. */
+    function ProviderLoginAction(props) {
+      const route = props.provider?.provider
+      const nativeAuth = props.provider?.nativeAuth
+      const [busy, setBusy] = React.useState(false)
+      const [message, setMessage] = React.useState(null)
+      const sessionId = activeSessionId(props)
+      if (!['openai-codex', 'anthropic'].includes(route)) return null
+      if (nativeAuth?.oauth !== true || props.keyConfigured !== false) return null
+      const label = route === 'openai-codex' ? 'Sign in with ChatGPT' : 'Sign in with Claude'
+      const start = async () => {
+        if (!sessionId || busy) return
+        setBusy(true)
+        setMessage(null)
+        try {
+          const commandUi = props.ctx.get('commandUi')
+          if (!commandUi?.execute) throw new Error('The command service is unavailable.')
+          const outcome = await commandUi.execute({ sessionId }, `/provider-login ${route}`)
+          if (outcome?.kind === 'error') throw new Error(outcome.text ?? 'Sign-in failed.')
+          setMessage('Authorized. You can now select this provider.')
+        } catch (error) {
+          setMessage(error instanceof Error ? error.message : String(error))
+        } finally {
+          setBusy(false)
+        }
+      }
+      return React.createElement(
+        'div',
+        { style: { marginTop: 8, padding: '0 12px 8px' } },
+        React.createElement(
+          'button',
+          {
+            type: 'button',
+            onClick: start,
+            disabled: busy || !sessionId,
+            style: {
+              border: '1px solid var(--dsw-alias-border-default)',
+              borderRadius: 'var(--dsw-radius-md)',
+              background: 'var(--dsw-alias-interactive-bg-default)',
+              color: 'var(--dsw-alias-label-primary)',
+              cursor: busy || !sessionId ? 'default' : 'pointer',
+              font: 'inherit',
+              fontSize: 12,
+              padding: '4px 10px',
+              opacity: busy || !sessionId ? 0.6 : 1,
+            },
+          },
+          busy ? 'Waiting for sign-in…' : label,
+        ),
+        !sessionId ? React.createElement('span', { style: { marginLeft: 8, fontSize: 12 } }, 'Open a session first.') : null,
+        message ? React.createElement('div', { role: 'status', style: { marginTop: 6, fontSize: 12 } }, message) : null,
+      )
+    }
+
     // ---------- registration ----------
 
     /**
@@ -1437,8 +1501,11 @@ window.__ModuleLoader__.load({
           function UsageCardOccupant(props) {
             const route = props && props.provider && typeof props.provider.provider === 'string' ? props.provider.provider : null
             const p = PROVIDERS.find((candidate) => candidate.gate.includes(route))
-            if (!p) return null
-            return React.createElement(CardExtras, { ...props, p, store: p.store, getNs: () => namespaces.get(p.namespace) })
+            const card = p
+              ? React.createElement(CardExtras, { ...props, p, store: p.store, getNs: () => namespaces.get(p.namespace) })
+              : null
+            const login = React.createElement(ProviderLoginAction, { ...props, ctx })
+            return React.createElement(React.Fragment, null, card, login)
           },
         ),
       )

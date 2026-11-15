@@ -34,10 +34,10 @@ function harness() {
   return { ctx, agent, command: () => command, notices, questions, begins }
 }
 
-test('registers /login and runs the provider OAuth flow', async () => {
+test('registers /provider-login and runs the provider OAuth flow', async () => {
   const h = harness()
   apply(h.ctx)
-  assert.equal(h.command().name, 'login')
+  assert.equal(h.command().name, 'provider-login')
   const result = await h.command().handler({ agent: h.agent, rawInput: 'openai-codex' })
   assert.equal(result.kind, 'success')
   assert.match(result.text, /authorized/)
@@ -55,6 +55,6 @@ test('rejects invalid provider arguments', async () => {
   apply(h.ctx)
   const result = await h.command().handler({ agent: h.agent, rawInput: '' })
   assert.equal(result.kind, 'error')
-  assert.match(result.text, /Usage: \/login/)
+  assert.match(result.text, /Usage: \/provider-login/)
   assert.equal(h.begins.length, 0)
 })

@@ -1,14 +1,14 @@
 # Provider login
 
-Adds `/login <provider> [oauth|api-key]` to start a provider authorization flow
+Adds `/provider-login <provider> [oauth|api-key]` to start a provider authorization flow
 registered by `@deepseek-ai/dsh-llm-pi-ai`.
 
 Examples:
 
 ```text
-/login openai-codex
-/login anthropic
-/login anthropic api-key
+/provider-login openai-codex
+/provider-login anthropic
+/provider-login anthropic api-key
 ```
 
 The default method is `oauth`. Notices, browser URLs, and codes appear as user
