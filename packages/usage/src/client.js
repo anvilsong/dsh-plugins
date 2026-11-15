@@ -1195,7 +1195,7 @@ window.__ModuleLoader__.load({
         setPromptEvent(null)
         try {
           const ns = props.getLoginNs?.()
-          if (!ns?.begin) throw new Error('The provider login service is unavailable.')
+          if (!ns?.begin) throw new Error(props.getLoginError?.() ?? 'The provider login service is unavailable.')
           const stream = ns.begin({ provider: route, method: 'oauth' })
           streamRef.current = stream
           for await (const event of stream) {
@@ -1391,6 +1391,12 @@ window.__ModuleLoader__.load({
      * namespaces ride one mount — six separate mounts fail after the first
      * with "Remote package is already registered".
      */
+    const strictJson = {
+      mode: 'strict',
+      typeSymbol: 'dsh-plugin-provider-login#JsonValue',
+      create: () => ({ parse: (value) => value }),
+    }
+
     function contribution(namespaces) {
       const descriptor = (namespace, method) => ({
         id: `dsh-plugin-provider-usage#${namespace}/${method}`,
@@ -1408,8 +1414,8 @@ window.__ModuleLoader__.load({
         method: 'begin',
         mode: 'stream',
         invocation: { kind: 'direct' },
-        parameters: [{ name: 'request', source: 'json', codec: { mode: 'src-json' } }],
-        uplink: { codec: { mode: 'src-json' } },
+        parameters: [{ name: 'request', source: 'json', codec: strictJson }],
+        uplink: { codec: strictJson },
         cancellation: { parameter: 'signal' },
         result: { mode: 'src-json' },
       }
@@ -1444,11 +1450,13 @@ window.__ModuleLoader__.load({
        */
       const namespaces = new Map()
       let providerLoginNs
+      let providerLoginMountError
       ctx.effect(async () => {
         let dispose
         try {
           dispose = await ctx.remote.$mount(contribution(PROVIDERS.map((p) => p.namespace)))
-        } catch {
+        } catch (error) {
+          providerLoginMountError = error instanceof Error ? error.message : String(error)
           return () => {}
         }
         for (const p of PROVIDERS) {
@@ -1539,7 +1547,7 @@ window.__ModuleLoader__.load({
             const card = p
               ? React.createElement(CardExtras, { ...props, p, store: p.store, getNs: () => namespaces.get(p.namespace) })
               : null
-            const login = React.createElement(ProviderLoginAction, { ...props, getLoginNs: () => providerLoginNs })
+            const login = React.createElement(ProviderLoginAction, { ...props, getLoginNs: () => providerLoginNs, getLoginError: () => providerLoginMountError })
             return React.createElement(React.Fragment, null, card, login)
           },
         ),

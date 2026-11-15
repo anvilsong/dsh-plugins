@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 
 export const name = 'provider-login'
 export const inject = ['authorization', 'userQuestions', 'commands']
@@ -45,6 +45,14 @@ function createQueue() {
 /** A two-way Remote stream for provider OAuth and interactive-key flows. */
 export class ProviderLoginService extends TypertRemoteService {
   static provide = 'providerLogin'
+
+  constructor(ctx) {
+    super(ctx)
+    Remote({ mode: 'stream' })(this.begin, {
+      name: 'begin',
+      addInitializer: (fn) => fn.call(this),
+    })
+  }
 
   begin(request, signal) {
     validate(request.provider, request.method ?? 'oauth')

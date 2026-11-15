@@ -21,6 +21,7 @@ async function boot(route) {
   const cards = new Map()
   const calls = []
   const answers = []
+  let mountedContribution
   let resolveAnswer
   const stream = {
     send(value) { answers.push(value); resolveAnswer?.() },
@@ -39,7 +40,7 @@ async function boot(route) {
       }
       return undefined
     },
-    remote: { $mount: async () => () => {} },
+    remote: { $mount: async (value) => { mountedContribution = value; return () => {} } },
     slots: {
       inject(_name, callback) {
         const registration = callback()
@@ -56,7 +57,7 @@ async function boot(route) {
     configured: false,
     keyConfigured: false,
   })
-  return { rendered, calls, answers, sendAnswer: (value) => stream.send(value) }
+  return { rendered, calls, answers, mountedContribution, sendAnswer: (value) => stream.send(value) }
 }
 
 function findByText(node, text) {
@@ -71,7 +72,7 @@ function findByText(node, text) {
 
 for (const [route, label] of [['openai-codex', 'Sign in with ChatGPT'], ['anthropic', 'Sign in with Claude']]) {
   test(`${route} card runs OAuth inside Models`, async () => {
-    const { rendered, calls, answers, sendAnswer } = await boot(route)
+    const { rendered, calls, answers, mountedContribution, sendAnswer } = await boot(route)
     const button = findByText(rendered, label)
     assert.ok(button)
     assert.equal(button.props.variant, 'outline')
@@ -82,5 +83,9 @@ for (const [route, label] of [['openai-codex', 'Sign in with ChatGPT'], ['anthro
     await pending
     assert.deepEqual(calls, [{ provider: route, method: 'oauth' }])
     assert.deepEqual(answers, [{ type: 'answer', id: 'prompt-1', answer: 'code' }])
+    const descriptor = mountedContribution.descriptors.find((item) => item.method === 'begin')
+    assert.equal(descriptor.parameters[0].codec.mode, 'strict')
+    assert.equal(descriptor.uplink.codec.mode, 'strict')
+    assert.deepEqual(descriptor.parameters[0].codec.create().parse({ provider: route }), { provider: route })
   })
 }
