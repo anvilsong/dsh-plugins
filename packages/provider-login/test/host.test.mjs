@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
 import { apply, ProviderLoginService } from '../src/index.host.js'
 
 function harness() {
@@ -96,4 +97,38 @@ test('rejects invalid provider arguments', async () => {
   assert.equal(result.kind, 'error')
   assert.match(result.text, /Usage: \/provider-login/)
   assert.equal(h.begins.length, 0)
+})
+
+function statusHarness() {
+  const records = new Map()
+  const reads = []
+  const service = new ProviderLoginService({
+    reflect: { provide() {} },
+    credentials: {
+      async readRecord(key) {
+        reads.push(key)
+        return records.get(key)
+      },
+    },
+  })
+  return { service, records, reads }
+}
+
+for (const provider of ['openai-codex', 'anthropic']) {
+  test(`${provider} status reports only whether its credential record exists`, async () => {
+    const h = statusHarness()
+    const key = `llm-pi-ai/${provider}`
+    assert.deepEqual(await h.service.status({ provider }), { configured: false })
+    h.records.set(key, { secret: 'not returned' })
+    assert.deepEqual(await h.service.status({ provider }), { configured: true })
+    assert.deepEqual(h.reads, [key, key])
+  })
+}
+
+test('status has direct Remote metadata and rejects unsupported providers', async () => {
+  const h = statusHarness()
+  const marker = remoteMethods(h.service).find((method) => method.method === 'status')
+  assert.deepEqual(marker, { method: 'status', invocation: { kind: 'direct' } })
+  await assert.rejects(h.service.status({ provider: 'openai' }), /supports only openai-codex and anthropic/)
+  assert.deepEqual(h.reads, [])
 })

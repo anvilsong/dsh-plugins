@@ -165,6 +165,7 @@ window.__ModuleLoader__.load({
       'display:inline-flex;align-items:center;justify-content:center;gap:4px}',
       '.pup-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}',
       '.pup-btn:disabled{opacity:.5;cursor:default}',
+      '.pup-login-control::placeholder{color:var(--dsw-alias-label-secondary);opacity:1}',
       '.pup-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));',
       'gap:10px 14px}',
       '.pup-label{font-size:11px;color:var(--dsw-alias-label-secondary)}',
@@ -1174,19 +1175,105 @@ window.__ModuleLoader__.load({
       )
     }
 
+    const LOGIN_CONTROL_STYLE = {
+      font: 'inherit',
+      fontSize: 12,
+      lineHeight: '18px',
+      color: 'var(--dsw-alias-label-primary)',
+      background: 'var(--dsw-alias-bg-layer-1)',
+      border: '.5px solid var(--dsw-alias-border-l3)',
+      borderRadius: 'var(--dsw-radius-sm)',
+      height: 28,
+      padding: '0 8px',
+      minWidth: 0,
+      flex: 1,
+    }
+
     /** A sign-in action and inline OAuth flow for provider cards. */
     function ProviderLoginAction(props) {
       const route = props.provider?.provider
       const nativeAuth = props.provider?.nativeAuth
+      const oauthRoute = ['openai-codex', 'anthropic'].includes(route) ? route : null
+      const oauthEnabled = nativeAuth?.oauth === true
       const [busy, setBusy] = React.useState(false)
+      const [oauthConfigured, setOauthConfigured] = React.useState(null)
       const [message, setMessage] = React.useState(null)
       const [link, setLink] = React.useState(null)
       const [promptEvent, setPromptEvent] = React.useState(null)
       const [answer, setAnswer] = React.useState('')
       const streamRef = React.useRef(null)
-      if (!['openai-codex', 'anthropic'].includes(route)) return null
-      if (nativeAuth?.oauth !== true || props.keyConfigured !== false) return null
-      const label = route === 'openai-codex' ? 'Sign in with ChatGPT' : 'Sign in with Claude'
+
+      // Read the stored OAuth record on every mount. The namespace can appear
+      // just after the card, so retry briefly instead of flashing a stale
+      // sign-in button after a page reload.
+      React.useEffect(() => {
+        let active = true
+        let timer
+        setOauthConfigured(null)
+        setMessage(null)
+        setLink(null)
+        setPromptEvent(null)
+        setAnswer('')
+        if (!oauthRoute || !oauthEnabled) return () => { active = false }
+        const startedAt = Date.now()
+        const readStatus = async () => {
+          const ns = props.getLoginNs?.()
+          if (!ns?.status) {
+            if (!active) return
+            if (Date.now() - startedAt >= MOUNT_GRACE_MS) {
+              setOauthConfigured(false)
+              const error = props.getLoginError?.()
+              if (error) setMessage(error)
+              return
+            }
+            timer = setTimeout(readStatus, MOUNT_RETRY_MS)
+            return
+          }
+          try {
+            const result = await ns.status({ provider: oauthRoute })
+            if (!active) return
+            if (result?.ok === false) throw new Error(result.error?.message ?? 'Could not read the sign-in state.')
+            const value = result?.ok === true ? result.value : result
+            setOauthConfigured(value?.configured === true)
+          } catch (error) {
+            if (!active) return
+            setOauthConfigured(false)
+            setMessage(error instanceof Error ? error.message : String(error))
+          }
+        }
+        void readStatus()
+        return () => {
+          active = false
+          clearTimeout(timer)
+        }
+      }, [oauthRoute, oauthEnabled])
+
+      if (!oauthRoute || !oauthEnabled) return null
+      const providerName = route === 'openai-codex' ? 'ChatGPT' : 'Claude'
+      const label = `Sign in with ${providerName}`
+
+      if (oauthConfigured === true) {
+        return React.createElement(
+          'div',
+          { style: { marginTop: 8, padding: '0 12px 8px' } },
+          React.createElement(
+            'span',
+            { role: 'status', className: 'pup-ok', style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 } },
+            React.createElement('span', { className: 'pup-dot pup-ok' }),
+            `Signed in with ${providerName}`,
+          ),
+        )
+      }
+      // An environment/API-key configuration suppresses only the sign-in
+      // action. It must not hide a separately stored OAuth identity.
+      if (props.keyConfigured !== false) return null
+      if (oauthConfigured === null) {
+        return React.createElement(
+          'div',
+          { style: { marginTop: 8, padding: '0 12px 8px' }, role: 'status' },
+          'Checking sign-in…',
+        )
+      }
 
       const start = async () => {
         if (busy) return
@@ -1207,7 +1294,13 @@ window.__ModuleLoader__.load({
               setAnswer(event.prompt.kind === 'select' ? event.prompt.options?.[0]?.id ?? '' : '')
               setPromptEvent(event)
             } else if (event.type === 'settled') {
-              setMessage(event.status === 'authorized' ? 'Authorized. You can now select this provider.' : 'Sign-in cancelled.')
+              if (event.status === 'authorized') {
+                setOauthConfigured(true)
+                setMessage(null)
+                setLink(null)
+              } else {
+                setMessage('Sign-in cancelled.')
+              }
             }
           }
         } catch (error) {
@@ -1231,7 +1324,7 @@ window.__ModuleLoader__.load({
         { style: { marginTop: 8, padding: '0 12px 8px' } },
         React.createElement(
           primitives.Button,
-          { variant: 'outline', size: 'sm', onClick: start, disabled: busy },
+          { type: 'button', variant: 'outline', size: 'sm', onClick: start, disabled: busy },
           busy ? 'Waiting for sign-in…' : label,
         ),
         message ? React.createElement('div', { role: 'status', style: { marginTop: 6, fontSize: 12 } }, message) : null,
@@ -1242,18 +1335,20 @@ window.__ModuleLoader__.load({
         promptEvent ? React.createElement('div', { style: { marginTop: 8, display: 'flex', gap: 6, alignItems: 'center' } },
           promptEvent.prompt.kind === 'select'
             ? React.createElement('select', {
+                className: 'pup-login-control',
                 value: answer,
                 onChange: (event) => setAnswer(event.target.value),
-                style: { font: 'inherit', fontSize: 12, padding: 4 },
+                style: LOGIN_CONTROL_STYLE,
               }, promptEvent.prompt.options.map((option) => React.createElement('option', { key: option.id, value: option.id }, option.label)))
             : React.createElement('input', {
+                className: 'pup-login-control',
                 type: promptEvent.prompt.kind === 'secret' ? 'password' : 'text',
                 value: answer,
                 placeholder: promptEvent.prompt.placeholder,
                 onChange: (event) => setAnswer(event.target.value),
-                style: { font: 'inherit', fontSize: 12, padding: 4, minWidth: 0, flex: 1 },
+                style: LOGIN_CONTROL_STYLE,
               }),
-          React.createElement(primitives.Button, { variant: 'outline', size: 'sm', onClick: submit }, 'Submit'),
+          React.createElement(primitives.Button, { type: 'button', variant: 'outline', size: 'sm', onClick: submit }, 'Submit'),
         ) : null,
       )
     }
@@ -1422,6 +1517,15 @@ window.__ModuleLoader__.load({
         parameters: [],
         result: { mode: 'src-json' },
       })
+      const loginStatus = {
+        id: 'dsh-plugin-provider-login#providerLogin/status',
+        service: 'providerLogin',
+        namespace: 'providerLogin',
+        method: 'status',
+        invocation: { kind: 'direct' },
+        parameters: [{ name: 'request', wire: 'request', source: 'json', codec: strictJson }],
+        result: { mode: 'src-json' },
+      }
       const loginBegin = {
         id: 'dsh-plugin-provider-login#providerLogin/begin',
         service: 'providerLogin',
@@ -1436,7 +1540,7 @@ window.__ModuleLoader__.load({
       }
       return {
         package: 'dsh-plugin-provider-usage',
-        descriptors: [...namespaces.flatMap((ns) => [descriptor(ns, 'snapshot'), descriptor(ns, 'refresh')]), loginBegin],
+        descriptors: [...namespaces.flatMap((ns) => [descriptor(ns, 'snapshot'), descriptor(ns, 'refresh')]), loginStatus, loginBegin],
       }
     }
 

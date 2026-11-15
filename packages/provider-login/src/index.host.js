@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 
 export const name = 'provider-login'
-export const inject = ['authorization', 'userQuestions', 'commands']
+export const inject = ['authorization', 'userQuestions', 'commands', 'credentials']
 
 const PROVIDER = /^[a-z0-9][a-z0-9-]*$/
+const STATUS_PROVIDERS = new Set(['openai-codex', 'anthropic'])
 const USAGE = 'Usage: /provider-login <provider> [oauth|api-key]. Example: /provider-login openai-codex'
 
 function validate(provider, method) {
@@ -52,6 +53,19 @@ export class ProviderLoginService extends TypertRemoteService {
       name: 'begin',
       addInitializer: (fn) => fn.call(this),
     })
+    Remote(this.status, {
+      name: 'status',
+      addInitializer: (fn) => fn.call(this),
+    })
+  }
+
+  async status(request) {
+    const provider = request?.provider
+    if (!STATUS_PROVIDERS.has(provider)) {
+      throw new Error('provider-login: status supports only openai-codex and anthropic')
+    }
+    const record = await this.ctx.credentials.readRecord(`llm-pi-ai/${provider}`)
+    return { configured: record !== undefined }
   }
 
   begin(request, signal) {
