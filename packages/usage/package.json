@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-provider-usage",
   "description": "Provider usage for DSH — OpenRouter credits, Kimi Code quota, DeepSeek balance, GLM and MiniMax coding-plan windows, NewAPI quota; composer chips gated on the active provider; /usage-* report commands",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "main": "src/index.host.js",
   "meta": {
@@ -32,8 +32,11 @@
     }
   },
   "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.3"
+  },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.0.4"
+    "@deepseek-ai/cordis": "~4.1.0"
   },
   "files": [
     "src/index.host.js",

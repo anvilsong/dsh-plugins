@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
-import { apply, ProviderLoginService } from '../src/index.host.js'
+import { mountProviderLogin, ProviderLoginService } from '../src/providers/login.js'
 
 function harness() {
   let command
@@ -38,7 +38,7 @@ function harness() {
 
 test('registers /provider-login and runs the provider OAuth flow', async () => {
   const h = harness()
-  apply(h.ctx)
+  mountProviderLogin(h.ctx)
   assert.equal(h.command().name, 'provider-login')
   const result = await h.command().handler({ agent: h.agent, rawInput: 'openai-codex' })
   assert.equal(result.kind, 'success')
@@ -92,7 +92,7 @@ test('Remote stream carries notices, prompts, answers, and outcome', async () =>
 
 test('rejects invalid provider arguments', async () => {
   const h = harness()
-  apply(h.ctx)
+  mountProviderLogin(h.ctx)
   const result = await h.command().handler({ agent: h.agent, rawInput: '' })
   assert.equal(result.kind, 'error')
   assert.match(result.text, /Usage: \/provider-login/)

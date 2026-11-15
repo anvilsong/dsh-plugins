@@ -1252,21 +1252,9 @@ window.__ModuleLoader__.load({
       const providerName = route === 'openai-codex' ? 'ChatGPT' : 'Claude'
       const label = `Sign in with ${providerName}`
 
-      if (oauthConfigured === true) {
-        return React.createElement(
-          'div',
-          { style: { marginTop: 8, padding: '0 12px 8px' } },
-          React.createElement(
-            'span',
-            { role: 'status', className: 'pup-ok', style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 } },
-            React.createElement('span', { className: 'pup-dot pup-ok' }),
-            `Signed in with ${providerName}`,
-          ),
-        )
-      }
       // An environment/API-key configuration suppresses only the sign-in
       // action. It must not hide a separately stored OAuth identity.
-      if (props.keyConfigured !== false) return null
+      if (oauthConfigured !== true && props.keyConfigured !== false) return null
       if (oauthConfigured === null) {
         return React.createElement(
           'div',
@@ -1317,6 +1305,24 @@ window.__ModuleLoader__.load({
         streamRef.current.send({ type: 'answer', id: promptEvent.id, answer })
         setPromptEvent(null)
         setAnswer('')
+      }
+
+      if (oauthConfigured === true) {
+        return React.createElement(
+          'div',
+          { style: { marginTop: 8, padding: '0 12px 8px', display: 'flex', alignItems: 'center', gap: 8 } },
+          React.createElement(
+            'span',
+            { role: 'status', className: 'pup-ok', style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 } },
+            React.createElement('span', { className: 'pup-dot pup-ok' }),
+            `Signed in with ${providerName}`,
+          ),
+          React.createElement(
+            primitives.Button,
+            { type: 'button', variant: 'outline', size: 'sm', onClick: start, disabled: busy },
+            busy ? 'Waiting for sign-in…' : 'Re-authenticate',
+          ),
+        )
       }
 
       return React.createElement(

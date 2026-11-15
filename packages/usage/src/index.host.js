@@ -25,6 +25,7 @@ import { mountMiniMax } from './providers/minimax.js'
 import { mountNewApi } from './providers/newapi.js'
 import { mountCodex } from './providers/codex.js'
 import { mountAnthropic } from './providers/anthropic.js'
+import { mountProviderLogin } from './providers/login.js'
 
 export const name = 'usage'
 
@@ -32,7 +33,7 @@ export const name = 'usage'
  * Services this half needs. `credentials` resolves API keys per call;
  * `commands` mounts the report commands. Both ship in dsh-base.
  */
-export const inject = ['credentials', 'commands']
+export const inject = ['credentials', 'commands', 'authorization', 'userQuestions']
 
 export function apply(ctx, config = {}) {
   const providers = config && typeof config === 'object' ? (config.providers ?? {}) : {}
@@ -59,4 +60,7 @@ export function apply(ctx, config = {}) {
       console.error(`usage: provider "${id}" failed to mount:`, error)
     }
   }
+
+  // OAuth login and status share the same package and provider cards as usage.
+  mountProviderLogin(ctx)
 }

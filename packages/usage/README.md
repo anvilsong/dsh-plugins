@@ -95,6 +95,18 @@ If a live reply differs from the parser,
 Include the `/usage-<provider>` output, but remove all credentials and private
 account data first.
 
+## Provider login
+
+OAuth login is built into this package. Use `/provider-login <provider>` or the
+sign-in button on the provider card. When signed in, the card shows usage and a
+re-authentication action. When no OAuth record exists, it shows the sign-in
+button instead.
+
+```text
+/provider-login openai-codex
+/provider-login anthropic
+```
+
 ## Providers
 
 | Provider | Source | Shows | Command | Chip shows under |

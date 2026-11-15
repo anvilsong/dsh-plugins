@@ -1,9 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 
-export const name = 'provider-login'
-export const inject = ['authorization', 'userQuestions', 'commands', 'credentials']
-
 const PROVIDER = /^[a-z0-9][a-z0-9-]*$/
 const STATUS_PROVIDERS = new Set(['openai-codex', 'anthropic'])
 const USAGE = 'Usage: /provider-login <provider> [oauth|api-key]. Example: /provider-login openai-codex'
@@ -164,7 +161,7 @@ async function prompt(ctx, agent, request) {
   return answer?.custom ?? answer?.selected?.[0] ?? ''
 }
 
-export function apply(ctx) {
+export function mountProviderLogin(ctx) {
   new ProviderLoginService(ctx)
   ctx.commands.register({
       name: 'provider-login',
