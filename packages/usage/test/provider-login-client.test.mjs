@@ -3,7 +3,7 @@ import test from 'node:test'
 import vm from 'node:vm'
 import { readFileSync } from 'node:fs'
 
-function boot() {
+async function boot(route) {
   let factory
   globalThis.window = { __ModuleLoader__: { load(value) { factory = value.factory } } }
   vm.runInThisContext(readFileSync(new URL('../src/client.js', import.meta.url), 'utf8'))
@@ -20,14 +20,22 @@ function boot() {
   }
   const cards = new Map()
   const calls = []
+  const answers = []
+  let resolveAnswer
+  const stream = {
+    send(value) { answers.push(value); resolveAnswer?.() },
+    async *[Symbol.asyncIterator]() {
+      yield { type: 'notice', notice: { message: 'Continue', url: 'https://example.com' } }
+      yield { type: 'prompt', id: 'prompt-1', prompt: { kind: 'select', message: 'Choose', options: [{ id: 'code', label: 'Code' }] } }
+      await new Promise((resolve) => { resolveAnswer = resolve })
+      yield { type: 'settled', status: 'authorized' }
+    },
+  }
   const ctx = {
-    effect() {},
+    effect(fn, label) { if (label === 'usage: mount remotes') void fn() },
     get(name) {
-      if (name === 'commandUi') {
-        return { execute: async (session, line) => {
-          calls.push({ sessionId: session.sessionId, line })
-          return { kind: 'success', text: 'authorized' }
-        } }
+      if (name === 'remote.providerLogin') {
+        return { begin(request) { calls.push(request); return stream } }
       }
       return undefined
     },
@@ -41,38 +49,38 @@ function boot() {
     },
   }
   factory((specifier) => specifier === 'react' ? React : { Button: 'Button' }).apply(ctx)
-  return { component: cards.get('llm-pi-ai'), calls }
-}
-
-function props(route) {
-  return {
+  await new Promise((resolve) => setImmediate(resolve))
+  const component = cards.get('llm-pi-ai')
+  const rendered = component({
     provider: { provider: route, nativeAuth: { env: [], oauth: true } },
     configured: false,
     keyConfigured: false,
-    useSessions(selector) { return selector({ currentId: 'session-test', byId: {}, ids: [] }) },
-  }
+  })
+  return { rendered, calls, answers, sendAnswer: (value) => stream.send(value) }
 }
 
-function findButton(node) {
+function findByText(node, text) {
   if (!node || typeof node !== 'object') return null
-  if (node.type === 'button' || node.type === 'Button') return node
+  if ((node.children ?? []).includes(text)) return node
   for (const child of node.children ?? []) {
-    const found = findButton(child)
+    const found = findByText(child, text)
     if (found) return found
   }
   return null
 }
 
 for (const [route, label] of [['openai-codex', 'Sign in with ChatGPT'], ['anthropic', 'Sign in with Claude']]) {
-  test(`${route} card exposes a sign-in action`, async () => {
-    const { component, calls } = boot()
-    const rendered = component(props(route))
-    const button = findButton(rendered)
+  test(`${route} card runs OAuth inside Models`, async () => {
+    const { rendered, calls, answers, sendAnswer } = await boot(route)
+    const button = findByText(rendered, label)
     assert.ok(button)
-    assert.equal(button.children[0], label)
     assert.equal(button.props.variant, 'outline')
     assert.equal(button.props.size, 'sm')
-    await button.props.onClick()
-    assert.deepEqual(calls, [{ sessionId: 'session-test', line: `/provider-login ${route}` }])
+    const pending = button.props.onClick()
+    await new Promise((resolve) => setImmediate(resolve))
+    sendAnswer({ type: 'answer', id: 'prompt-1', answer: 'code' })
+    await pending
+    assert.deepEqual(calls, [{ provider: route, method: 'oauth' }])
+    assert.deepEqual(answers, [{ type: 'answer', id: 'prompt-1', answer: 'code' }])
   })
 }

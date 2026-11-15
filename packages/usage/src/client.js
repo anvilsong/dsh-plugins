@@ -1173,57 +1173,87 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** Return the active main-view Session for provider authorization. */
-    function activeSessionId(props) {
-      if (typeof props.useSessions !== 'function') return undefined
-      return props.useSessions((state) => {
-        if (state.currentId) return state.currentId
-        const current = Object.values(state.byId ?? {}).find((row) => (row.retainedBy?.mainView ?? 0) > 0)
-        return current?.id ?? state.ids?.[0]
-      })
-    }
-
-    /** A sign-in action for OAuth-capable providers without a credential. */
+    /** A sign-in action and inline OAuth flow for provider cards. */
     function ProviderLoginAction(props) {
       const route = props.provider?.provider
       const nativeAuth = props.provider?.nativeAuth
       const [busy, setBusy] = React.useState(false)
       const [message, setMessage] = React.useState(null)
-      const sessionId = activeSessionId(props)
+      const [link, setLink] = React.useState(null)
+      const [promptEvent, setPromptEvent] = React.useState(null)
+      const [answer, setAnswer] = React.useState('')
+      const streamRef = React.useRef(null)
       if (!['openai-codex', 'anthropic'].includes(route)) return null
       if (nativeAuth?.oauth !== true || props.keyConfigured !== false) return null
       const label = route === 'openai-codex' ? 'Sign in with ChatGPT' : 'Sign in with Claude'
+
       const start = async () => {
-        if (!sessionId || busy) return
+        if (busy) return
         setBusy(true)
         setMessage(null)
+        setLink(null)
+        setPromptEvent(null)
         try {
-          const commandUi = props.ctx.get('commandUi')
-          if (!commandUi?.execute) throw new Error('The command service is unavailable.')
-          const outcome = await commandUi.execute({ sessionId }, `/provider-login ${route}`)
-          if (outcome?.kind === 'error') throw new Error(outcome.text ?? 'Sign-in failed.')
-          setMessage('Authorized. You can now select this provider.')
+          const ns = props.getLoginNs?.()
+          if (!ns?.begin) throw new Error('The provider login service is unavailable.')
+          const stream = ns.begin({ provider: route, method: 'oauth' })
+          streamRef.current = stream
+          for await (const event of stream) {
+            if (event.type === 'notice') {
+              setMessage(event.notice.message)
+              setLink(event.notice.url ? { url: event.notice.url, code: event.notice.code } : null)
+            } else if (event.type === 'prompt') {
+              setAnswer(event.prompt.kind === 'select' ? event.prompt.options?.[0]?.id ?? '' : '')
+              setPromptEvent(event)
+            } else if (event.type === 'settled') {
+              setMessage(event.status === 'authorized' ? 'Authorized. You can now select this provider.' : 'Sign-in cancelled.')
+            }
+          }
         } catch (error) {
           setMessage(error instanceof Error ? error.message : String(error))
         } finally {
+          streamRef.current = null
           setBusy(false)
+          setPromptEvent(null)
         }
       }
+
+      const submit = () => {
+        if (!promptEvent || !streamRef.current) return
+        streamRef.current.send({ type: 'answer', id: promptEvent.id, answer })
+        setPromptEvent(null)
+        setAnswer('')
+      }
+
       return React.createElement(
         'div',
         { style: { marginTop: 8, padding: '0 12px 8px' } },
         React.createElement(
           primitives.Button,
-          {
-            variant: 'outline',
-            size: 'sm',
-            onClick: start,
-            disabled: busy || !sessionId,
-          },
+          { variant: 'outline', size: 'sm', onClick: start, disabled: busy },
           busy ? 'Waiting for sign-in…' : label,
         ),
-        !sessionId ? React.createElement('span', { style: { marginLeft: 8, fontSize: 12 } }, 'Open a session first.') : null,
         message ? React.createElement('div', { role: 'status', style: { marginTop: 6, fontSize: 12 } }, message) : null,
+        link ? React.createElement('div', { style: { marginTop: 6, fontSize: 12 } },
+          React.createElement('a', { href: link.url, target: '_blank', rel: 'noreferrer' }, link.url),
+          link.code ? React.createElement('div', null, `Code: ${link.code}`) : null,
+        ) : null,
+        promptEvent ? React.createElement('div', { style: { marginTop: 8, display: 'flex', gap: 6, alignItems: 'center' } },
+          promptEvent.prompt.kind === 'select'
+            ? React.createElement('select', {
+                value: answer,
+                onChange: (event) => setAnswer(event.target.value),
+                style: { font: 'inherit', fontSize: 12, padding: 4 },
+              }, promptEvent.prompt.options.map((option) => React.createElement('option', { key: option.id, value: option.id }, option.label)))
+            : React.createElement('input', {
+                type: promptEvent.prompt.kind === 'secret' ? 'password' : 'text',
+                value: answer,
+                placeholder: promptEvent.prompt.placeholder,
+                onChange: (event) => setAnswer(event.target.value),
+                style: { font: 'inherit', fontSize: 12, padding: 4, minWidth: 0, flex: 1 },
+              }),
+          React.createElement(primitives.Button, { variant: 'outline', size: 'sm', onClick: submit }, 'Submit'),
+        ) : null,
       )
     }
 
@@ -1371,9 +1401,21 @@ window.__ModuleLoader__.load({
         parameters: [],
         result: { mode: 'src-json' },
       })
+      const loginBegin = {
+        id: 'dsh-plugin-provider-login#providerLogin/begin',
+        service: 'providerLogin',
+        namespace: 'providerLogin',
+        method: 'begin',
+        mode: 'stream',
+        invocation: { kind: 'direct' },
+        parameters: [{ name: 'request', source: 'json', codec: { mode: 'src-json' } }],
+        uplink: { codec: { mode: 'src-json' } },
+        cancellation: { parameter: 'signal' },
+        result: { mode: 'src-json' },
+      }
       return {
         package: 'dsh-plugin-provider-usage',
-        descriptors: namespaces.flatMap((ns) => [descriptor(ns, 'snapshot'), descriptor(ns, 'refresh')]),
+        descriptors: [...namespaces.flatMap((ns) => [descriptor(ns, 'snapshot'), descriptor(ns, 'refresh')]), loginBegin],
       }
     }
 
@@ -1401,6 +1443,7 @@ window.__ModuleLoader__.load({
        * application. The surfaces keep polling until the namespaces appear.
        */
       const namespaces = new Map()
+      let providerLoginNs
       ctx.effect(async () => {
         let dispose
         try {
@@ -1416,7 +1459,8 @@ window.__ModuleLoader__.load({
             // A missing namespace leaves the provider's surfaces polling.
           }
         }
-        return () => dispose()
+        try { providerLoginNs = ctx.get('remote.providerLogin') } catch { providerLoginNs = undefined }
+        return () => { providerLoginNs = undefined; dispose() }
       }, 'usage: mount remotes')
 
       for (const p of PROVIDERS) {
@@ -1495,7 +1539,7 @@ window.__ModuleLoader__.load({
             const card = p
               ? React.createElement(CardExtras, { ...props, p, store: p.store, getNs: () => namespaces.get(p.namespace) })
               : null
-            const login = React.createElement(ProviderLoginAction, { ...props, ctx })
+            const login = React.createElement(ProviderLoginAction, { ...props, getLoginNs: () => providerLoginNs })
             return React.createElement(React.Fragment, null, card, login)
           },
         ),
