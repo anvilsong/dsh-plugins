@@ -41,6 +41,7 @@ active provider.
 | Directory | npm package | Purpose |
 |---|---|---|
 | [`packages/usage`](packages/usage) | `dsh-plugin-provider-usage` | Provider-card usage, active-provider composer chips, and `/usage-*` commands |
+| [`packages/ultracode`](packages/ultracode) | `dsh-plugin-ultracode` | Per-session exhaustive orchestration mode, a composer switch, and `/ultracode` |
 
 ## Repository layout
 

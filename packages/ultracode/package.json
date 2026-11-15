@@ -1,0 +1,59 @@
+{
+  "name": "dsh-plugin-ultracode",
+  "version": "0.1.0",
+  "description": "An opt-in exhaustive orchestration mode for DeepSeek Harness sessions.",
+  "type": "module",
+  "main": "src/index.host.js",
+  "meta": {
+    "title": "Ultracode",
+    "description": "Toggle exhaustive multi-agent orchestration per session."
+  },
+  "exports": {
+    ".": {
+      "default": "./src/index.host.js"
+    },
+    "./client": {
+      "default": "./src/client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-commands",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-api-gateway"
+      ]
+    }
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.0"
+  },
+  "license": "MIT",
+  "author": "anvilsong",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anvilsong/dsh-plugin-provider-usage.git",
+    "directory": "packages/ultracode"
+  }
+}

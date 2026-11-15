@@ -1,0 +1,5 @@
+# Bundle patch for dsh-plugin-ultracode.
+# One insert row; the client half loads through the package's dsh.client entry.
+- insert:
+    - id: ultracode
+      name: dsh-plugin-ultracode
