@@ -3,7 +3,7 @@ import { foldUltracode, INITIAL_ULTRACODE_STATE, viewUltracode } from './state.j
 
 export const name = 'ultracode'
 
-export const inject = ['systemPrompt', 'sessionProjections']
+export const inject = ['systemPrompt', 'sessionProjections', 'agentTeams']
 
 export const POLICY = `Exhaustive mode is active for this session. Optimize for exhaustive correctness, not speed or token cost.
 
@@ -17,11 +17,15 @@ const stateSchema = z.object({
   active: z.boolean(),
   pending: z.boolean().nullable(),
   commandId: z.string().nullable(),
+  teamEnabled: z.boolean(),
+  teamBeforeOn: z.boolean().nullable(),
+  teamChangedByUs: z.boolean(),
 })
 
 const viewSchema = z.object({
   active: z.boolean(),
   pending: z.boolean(),
+  teamEnabled: z.boolean(),
 })
 
 export async function apply(ctx) {
@@ -52,21 +56,25 @@ export async function apply(ctx) {
       name: 'ultracode',
       description: 'Toggle exhaustive multi-agent mode',
       input: { hint: '[on|off|status]' },
-      handler: ({ agent, rawInput }) => {
+      handler: async ({ agent, rawInput }) => {
         const arg = rawInput.trim().toLowerCase()
         const state = projection.stateOf(agent.session)
         if (arg === 'status') {
           return {
             kind: 'success',
-            text: state.active
-              ? 'Ultracode is on for this session.'
-              : 'Ultracode is off for this session.',
+            text: `${state.active ? 'Ultracode is on' : 'Ultracode is off'} for this session. AgentTeam is ${state.teamEnabled ? 'on' : 'off'}.`,
           }
         }
         if (arg !== '' && arg !== 'on' && arg !== 'off') {
           return { kind: 'error', text: 'Usage: /ultracode [on|off|status]' }
         }
         const active = arg === '' ? !state.active : arg === 'on'
+        if (active && !state.active && !state.teamEnabled) {
+          await ctx.agentTeams.setEnabled(agent, true)
+        }
+        if (!active && state.active && state.teamChangedByUs && state.teamEnabled) {
+          await ctx.agentTeams.setEnabled(agent, false)
+        }
         return {
           kind: 'success',
           text: active

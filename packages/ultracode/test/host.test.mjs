@@ -7,11 +7,16 @@ function harness() {
   let section
   let command
   const calls = []
+  const teamCalls = []
+  let state = { active: false, pending: null, commandId: null, teamEnabled: false, teamBeforeOn: null, teamChangedByUs: false }
   const ctx = {
+    agentTeams: {
+      async setEnabled(_agent, enabled) { teamCalls.push(enabled) },
+    },
     sessionProjections: {
       async register(value) {
         definition = value
-        return { stateOf: () => ({ active: false, pending: null, commandId: null }) }
+        return { stateOf: () => state }
       },
     },
     systemPrompt: {
@@ -25,7 +30,7 @@ function harness() {
       }
     },
   }
-  return { ctx, get: () => ({ definition, section, command, calls }) }
+  return { ctx, get: () => ({ definition, section, command, calls, teamCalls }), setState: (next) => { state = next } }
 }
 
 test('apply registers the projection, section, and command', async () => {
@@ -61,9 +66,20 @@ test('the command validates input and reports state', async () => {
   await apply(ctx)
   const { command } = get()
   const agent = { session: {} }
-  assert.equal(command.handler({ agent, rawInput: 'status' }).kind, 'success')
-  assert.equal(command.handler({ agent, rawInput: 'status' }).text, 'Ultracode is off for this session.')
-  assert.equal(command.handler({ agent, rawInput: 'on' }).kind, 'success')
-  assert.equal(command.handler({ agent, rawInput: 'off' }).kind, 'success')
-  assert.equal(command.handler({ agent, rawInput: 'bogus' }).kind, 'error')
+  assert.equal((await command.handler({ agent, rawInput: 'status' })).kind, 'success')
+  assert.equal((await command.handler({ agent, rawInput: 'status' })).text, 'Ultracode is off for this session. AgentTeam is off.')
+  assert.equal((await command.handler({ agent, rawInput: 'on' })).kind, 'success')
+  assert.equal((await command.handler({ agent, rawInput: 'off' })).kind, 'success')
+  assert.equal((await command.handler({ agent, rawInput: 'bogus' })).kind, 'error')
+  assert.deepEqual(get().teamCalls, [true])
+})
+
+test('off restores AgentTeam only when this plugin enabled it', async () => {
+  const { ctx, get, setState } = harness()
+  await apply(ctx)
+  const { command } = get()
+  setState({ active: true, pending: null, commandId: null, teamEnabled: true, teamBeforeOn: false, teamChangedByUs: true })
+  const agent = { session: {} }
+  assert.equal((await command.handler({ agent, rawInput: 'off' })).kind, 'success')
+  assert.deepEqual(get().teamCalls, [false])
 })

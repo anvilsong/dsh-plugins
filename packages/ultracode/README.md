@@ -25,8 +25,12 @@ While it is off, the plugin adds no prompt text.
 
 With no argument, `/ultracode` toggles the mode.
 
-The composer also gets an **Ultracode** switch. It runs the same command and
-shows the current state.
+Turning Ultracode on also enables AgentTeam when it is currently off.
+Turning it off restores the previous AgentTeam selection: a Team that was
+already enabled stays enabled, while a Team enabled by this plugin is disabled.
+
+The composer also gets an **Ultracode** switch beside AgentTeam. It runs the
+same command and shows the current state.
 
 ## State model
 
