@@ -1,8 +1,8 @@
 # dsh-plugin-provider-usage
 
 Provider balances and subscription quota inside DeepSeek Harness.
-OpenRouter, Kimi Code, DeepSeek, GLM Coding Plan, MiniMax Coding Plan, and
-NewAPI are supported in one package.
+OpenRouter, Kimi Code, DeepSeek, GLM Coding Plan, MiniMax Coding Plan, NewAPI,
+and OpenAI Codex are supported in one package.
 
 ## Install
 

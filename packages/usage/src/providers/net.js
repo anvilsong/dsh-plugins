@@ -48,16 +48,22 @@ export function errorMessage(body, status) {
  * `Authorization: Bearer <key>`; 'raw' sends the key bare (GLM coding plan).
  * Extra provider headers go in `headers`.
  */
-export async function fetchUsageJson(ctx, { credentialRef, url, auth = 'bearer', headers = {}, timeoutMs, hint401 }) {
+export async function fetchUsageJson(ctx, { credentialRef, recordKey, url, auth = 'bearer', headers = {}, timeoutMs, hint401 }) {
   let key
   try {
-    const record = await ctx.credentials.resolve(credentialRef)
-    key = record && typeof record.value === 'string' ? record.value.trim() : ''
+    if (recordKey) {
+      const record = await ctx.credentials.readRecord(recordKey)
+      const payload = record?.payload
+      key = typeof payload?.access === 'string' ? payload.access.trim() : typeof payload?.apiKey === 'string' ? payload.apiKey.trim() : ''
+    } else {
+      const record = await ctx.credentials.resolve(credentialRef)
+      key = record && typeof record.value === 'string' ? record.value.trim() : ''
+    }
   } catch (error) {
-    return { failure: 'credential-read-failed', detail: `Could not read ${credentialRef}: ${String(error?.message ?? error)}` }
+    return { failure: 'credential-read-failed', detail: `Could not read ${recordKey ?? credentialRef}: ${String(error?.message ?? error)}` }
   }
   if (!key) {
-    return { failure: 'missing-credential', detail: `No value for ${credentialRef}. Add the API key in Settings → Models.` }
+    return { failure: 'missing-credential', detail: `No value for ${recordKey ?? credentialRef}. Add the API key in Settings → Models.` }
   }
 
   const controller = new AbortController()

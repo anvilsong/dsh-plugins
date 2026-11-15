@@ -6,7 +6,7 @@
 Provider balances and subscription quota inside
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 One plugin supports OpenRouter, Kimi Code, DeepSeek, GLM Coding Plan,
-MiniMax Coding Plan, and NewAPI.
+MiniMax Coding Plan, NewAPI, and OpenAI Codex.
 
 Usage appears inside configured provider cards. A composer chip follows the
 active provider. `/usage-*` commands print the same data in a session.
@@ -87,6 +87,7 @@ Provider verification is reported separately and honestly:
 | GLM Coding Plan | Tested against the real reply shape; not yet run with a live key |
 | MiniMax Coding Plan | Tested against the real reply shape; not yet run with a live key |
 | NewAPI | Tested against the real reply shape; needs a self-hosted site |
+| OpenAI Codex | Verified live against `/wham/usage` with an OAuth account |
 
 If a live reply differs from the parser,
 [open an issue](https://github.com/anvilsong/dsh-plugin-provider-usage/issues).
@@ -103,6 +104,7 @@ account data first.
 | GLM Coding Plan | `GET {base}/api/monitor/usage/quota/limit` | 5-hour and 7-day windows, tool-call counts, plan level | `/usage-zhipu` | `zai-coding-cn`, `zai` |
 | MiniMax Coding Plan | `GET {base}/v1/api/openplatform/coding_plan/remains` | 5-hour and 7-day windows | `/usage-minimax` | `minimax-cn`, `minimax` |
 | NewAPI | `GET {baseUrl}/api/usage/token` | token quota as USD (granted / used / remaining) | `/usage-newapi` | none by default — set `gate` in config |
+| OpenAI Codex | `GET {baseUrl}/wham/usage` | plan, quota windows, credits, reset credits | `/usage-codex` | `openai-codex` |
 
 Provider notes:
 
@@ -113,6 +115,8 @@ Provider notes:
 4. Kimi uses an honest User-Agent. The plugin does not imitate another CLI.
 5. OpenRouter account-wide credits require a management key. Ordinary keys
    still provide per-key usage and limits.
+6. Codex reads the OAuth credential stored by DSH. Sign in through the
+   provider card or run `/provider-login openai-codex` first.
 
 ## Credentials and security
 
@@ -124,6 +128,7 @@ Provider notes:
 | GLM Coding Plan | `ZHIPU_API_KEY` |
 | MiniMax Coding Plan | `MINIMAX_API_KEY` |
 | NewAPI | `NEWAPI_API_KEY` |
+| OpenAI Codex | `llm-pi-ai/openai-codex` (OAuth record) |
 
 Configure model-provider keys in **Settings → Models**. The plugin also reads
 credentials that the DSH credentials service resolves from its credential

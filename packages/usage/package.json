@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-provider-usage",
   "description": "Provider usage for DSH — OpenRouter credits, Kimi Code quota, DeepSeek balance, GLM and MiniMax coding-plan windows, NewAPI quota; composer chips gated on the active provider; /usage-* report commands",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "main": "src/index.host.js",
   "meta": {

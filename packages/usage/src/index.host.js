@@ -23,6 +23,7 @@ import { mountDeepSeek } from './providers/deepseek.js'
 import { mountZhipu } from './providers/zhipu.js'
 import { mountMiniMax } from './providers/minimax.js'
 import { mountNewApi } from './providers/newapi.js'
+import { mountCodex } from './providers/codex.js'
 
 export const name = 'usage'
 
@@ -42,6 +43,7 @@ export function apply(ctx, config = {}) {
     ['zhipu', mountZhipu, providers.zhipu ?? {}],
     ['minimax', mountMiniMax, providers.minimax ?? {}],
     ['newapi', mountNewApi, providers.newapi ?? {}],
+    ['codex', mountCodex, providers.codex ?? {}],
   ]
 
   for (const [id, mount, cfg] of mounts) {

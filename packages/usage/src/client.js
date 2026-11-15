@@ -151,18 +151,19 @@ window.__ModuleLoader__.load({
       'min-width:360px;max-width:70vw;box-shadow:0 8px 28px rgba(0,0,0,.35)}',
       '.kmup-pop .kmup-root{margin-top:0}',
       // ---- Generic provider (pup-): DeepSeek, GLM, MiniMax, NewAPI ----
-      '.pup-root{border:1px solid var(--dsw-alias-border-l1);border-radius:8px;',
-      'background:var(--dsw-alias-bg-layer-1);padding:12px 14px;margin-top:12px;',
+      '.pup-root{border:.5px solid var(--dsw-alias-settings-card-stroke);border-radius:var(--dsw-radius-xl);',
+      'background:var(--dsw-alias-settings-card-fill);padding:12px 14px;margin-top:12px;',
       'font-size:13px;color:var(--dsw-alias-label-primary)}',
       '.pup-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}',
       '.pup-title{font-weight:600}',
       '.pup-scope{font-size:11px;color:var(--dsw-alias-label-secondary);',
       'border:1px solid var(--dsw-alias-border-l1);border-radius:999px;padding:1px 7px}',
       '.pup-spacer{flex:1}',
-      '.pup-btn{font:inherit;font-size:12px;color:var(--dsw-alias-label-secondary);',
-      'background:transparent;border:1px solid var(--dsw-alias-border-l1);',
-      'border-radius:6px;padding:2px 9px;cursor:pointer}',
-      '.pup-btn:hover{border-color:var(--dsw-alias-border-l2)}',
+      '.pup-btn{font:inherit;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);',
+      'background:transparent;border:.5px solid var(--dsw-alias-border-l3);',
+      'border-radius:var(--dsw-radius-sm);height:28px;padding:0 10px;cursor:pointer;',
+      'display:inline-flex;align-items:center;justify-content:center;gap:4px}',
+      '.pup-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-solid)}',
       '.pup-btn:disabled{opacity:.5;cursor:default}',
       '.pup-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));',
       'gap:10px 14px}',
@@ -1153,7 +1154,7 @@ window.__ModuleLoader__.load({
 
       return React.createElement(
         'div',
-        { className: `${p.px}-root`, style: { marginTop: '8px', padding: '8px 12px' } },
+        { className: `${p.px}-root`, style: { marginTop: '12px', padding: '12px 14px' } },
         React.createElement(
           'button',
           {
@@ -1366,6 +1367,20 @@ window.__ModuleLoader__.load({
         // No default gate: a NewAPI relay maps to no catalog provider. Set
         // `gate` in the provider config to unhide the chip.
         gate: [],
+      },
+      {
+        id: 'codex',
+        px: 'pup',
+        title: 'OpenAI Codex',
+        namespace: 'codexUsage',
+        store: makeStore(),
+        panel: QuotaPanel,
+        chip: QuotaChip,
+        settingsId: 'codex-usage',
+        chipId: 'codex-usage-chip',
+        label: 'OpenAI Codex usage',
+        chipLabel: 'OpenAI Codex usage chip',
+        gate: ['openai-codex'],
       },
     ]
 
