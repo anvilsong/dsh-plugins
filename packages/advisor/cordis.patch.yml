@@ -1,4 +1,11 @@
 # Bundle patch for dsh-plugin-advisor.
+# dataDir holds the plugin-owned ledger (sessions.jsonl) and reply files
+# (replies/<id>.md). The default lives under the DSH home and is shared by all
+# profiles; set an absolute path in a profile's own patch to isolate it. A
+# profile override replaces this whole config block, and a home-level
+# <DSH home>/cordis.patch.yml applies after the profile patch.
 - insert:
     - id: advisor
       name: dsh-plugin-advisor
+      config:
+        dataDir: !!js dshHomePath('advisor')

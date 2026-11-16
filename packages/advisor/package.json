@@ -1,22 +1,28 @@
 {
   "name": "dsh-plugin-advisor",
-  "version": "0.1.0",
-  "description": "Opt-in advisor consultations at major planning and review steps.",
+  "version": "0.5.0",
+  "description": "Opt-in in-process advisor (plans and design/review advice) with read-only evidence verification.",
   "type": "module",
   "main": "src/index.host.js",
   "meta": {
     "title": "Advisor",
-    "description": "Toggle advisor consultations for this session."
+    "description": "Toggle the in-process advisor and read-only verification, and choose their models, for this session."
   },
   "exports": {
-    ".": { "default": "./src/index.host.js" },
-    "./client": { "default": "./src/client.js" },
+    ".": {
+      "default": "./src/index.host.js"
+    },
+    "./client": {
+      "default": "./src/client.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
@@ -28,6 +34,8 @@
       ]
     }
   },
-  "dependencies": { "zod": "4.4.3" },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
   "license": "MIT"
 }
