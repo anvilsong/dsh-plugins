@@ -30,7 +30,7 @@ function harness(cwd, git = false) {
     },
   }
   const agent = {
-    session: { cwd },
+    session: { header: { cwd } },
     steer(message) { steered = message },
   }
   return { ctx, agent, command: () => command, steered: () => steered }

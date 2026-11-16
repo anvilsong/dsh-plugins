@@ -200,7 +200,7 @@ export async function apply(ctx) {
       if (input.length > 4096 || /[\0\r\n]/.test(input) || input.startsWith('-')) {
         return { kind: 'error', text: 'Usage: /code-review [path]' }
       }
-      const workspace = path.resolve(agent.session.cwd ?? process.cwd())
+      const workspace = path.resolve(agent.session.header.cwd ?? process.cwd())
       const candidate = input ? path.resolve(workspace, input) : workspace
       let target
       try {
