@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Model router",
+    "description": "Toggle lead-controlled model routing. Configure up to four authorized models for each complexity level, or inherit."
+  }
+}

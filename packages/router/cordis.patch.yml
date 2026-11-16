@@ -1,0 +1,4 @@
+# Bundle patch for dsh-plugin-router.
+- insert:
+    - id: router
+      name: dsh-plugin-router

@@ -1,0 +1,43 @@
+{
+  "name": "dsh-plugin-router",
+  "version": "0.3.0",
+  "description": "Opt-in lead-controlled model routing with three complexity-level shortlists.",
+  "type": "module",
+  "main": "src/index.host.js",
+  "meta": {
+    "title": "Model router",
+    "description": "Toggle lead-controlled model routing and configure three complexity-level shortlists."
+  },
+  "exports": {
+    ".": { "default": "./src/index.host.js" },
+    "./client": { "default": "./src/client.js" },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-commands",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-api-gateway"
+      ]
+    }
+  },
+  "dependencies": { "zod": "4.4.3" },
+  "peerDependencies": { "@deepseek-ai/cordis": "^4.0.0" },
+  "license": "MIT"
+}
