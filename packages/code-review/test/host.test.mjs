@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { execFileSync, spawn } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
@@ -98,7 +98,42 @@ test('patch mode keeps diff paths and filters sensitive patches', async () => {
     assert.match(text, /"mode":"patch"/)
     assert.match(text, /src\/a\.js/)
     assert.match(text, /sensitive/)
+    assert.match(text, /\+const a = 1/)
     assert.doesNotMatch(text, /SECRET=value/)
+  } finally {
+    await cleanup(cwd)
+  }
+})
+
+test('symlinks and unsafe filenames are excluded', async () => {
+  const cwd = await temp()
+  try {
+    await writeFile(path.join(cwd, 'a.js'), 'const a = 1\n')
+    await writeFile(path.join(cwd, 'bad\nname.js'), 'const bad = 1\n')
+    await symlink('/etc/passwd', path.join(cwd, 'link.js'))
+    const h = harness(cwd)
+    await apply(h.ctx)
+    const result = await h.command().handler({ agent: h.agent, rawInput: '' })
+    assert.equal(result.kind, 'success')
+    const text = h.steered().content[0].text
+    assert.match(text, /a\.js/)
+    assert.match(text, /unsafe_name/)
+    assert.doesNotMatch(text, /link\.js/)
+  } finally {
+    await cleanup(cwd)
+  }
+})
+
+test('a repository without a HEAD still lists untracked files', async () => {
+  const cwd = await temp()
+  try {
+    execFileSync('git', ['init', '-q'], { cwd })
+    await writeFile(path.join(cwd, 'new.js'), 'const fresh = 1\n')
+    const h = harness(cwd, true)
+    await apply(h.ctx)
+    const result = await h.command().handler({ agent: h.agent, rawInput: '' })
+    assert.equal(result.kind, 'success')
+    assert.match(h.steered().content[0].text, /new\.js/)
   } finally {
     await cleanup(cwd)
   }

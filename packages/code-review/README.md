@@ -16,7 +16,10 @@ workflow with two independent finders and one refuter. Findings include severity
 file/line, evidence, and a recommendation. Refuted findings are not shown.
 
 Sensitive files, generated files, binaries, and over-budget scopes are skipped.
-The host does not read sensitive file contents to build the manifest.
+The host does not read sensitive file contents to build the manifest. Patch mode
+sends only filtered patch hunks. These are path-based controls: hardcoded secrets
+inside ordinary files are not detected, and the workflow's read tools are not a
+security sandbox.
 
 ## Limits
 
