@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { execFileSync, spawn } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
-import { apply } from '../src/index.host.js'
+import { apply, findingFingerprint, dedupeCandidates } from '../src/index.host.js'
 
 async function collect(stream) {
   let text = ''
@@ -134,6 +134,49 @@ test('a repository without a HEAD still lists untracked files', async () => {
     const result = await h.command().handler({ agent: h.agent, rawInput: '' })
     assert.equal(result.kind, 'success')
     assert.match(h.steered().content[0].text, /new\.js/)
+  } finally {
+    await cleanup(cwd)
+  }
+})
+
+test('fingerprints normalize paths and line ranges', () => {
+  assert.equal(
+    findingFingerprint({ file: './src/../src/a.js', line: '4-2', category: 'Logic Error' }),
+    findingFingerprint({ file: 'src/a.js', line: [2, 4], category: 'logic-error' }),
+  )
+  assert.notEqual(
+    findingFingerprint({ file: 'src/a.js', line: 2, category: 'logic' }),
+    findingFingerprint({ file: 'src/a.js', line: 3, category: 'logic' }),
+  )
+})
+
+test('dedupe drops seen and same-round duplicate candidates', () => {
+  const a = { file: 'a.js', line: 1, category: 'logic' }
+  const b = { file: './a.js', line: [1, 1], category: 'Logic' }
+  const seen = new Set([findingFingerprint(a)])
+  const result = dedupeCandidates([a, b, { file: 'b.js', line: 2, category: 'security' }], seen)
+  assert.equal(result.candidates.length, 1)
+  assert.equal(result.candidates[0].file, 'b.js')
+  assert.equal(result.duplicates, 2)
+})
+
+test('steer spec embeds the bounded three-round loop and stop contract', async () => {
+  const cwd = await temp()
+  try {
+    await writeFile(path.join(cwd, 'a.js'), 'const a = 1\n')
+    const h = harness(cwd)
+    await apply(h.ctx)
+    await h.command().handler({ agent: h.agent, rawInput: '' })
+    const text = h.steered().content[0].text
+    const spec = JSON.parse(text.match(/<workflow_spec>([\s\S]*)<\/workflow_spec>/)[1])
+    assert.equal(spec.args.finderPrompts.length, 2)
+    assert.match(spec.script, /round <= 3/)
+    assert.match(spec.script, /return finish\('dry'\)/)
+    assert.match(spec.script, /return finish\('cap_reached'\)/)
+    assert.match(spec.script, /validRefuterOutput/)
+    assert.match(text, /Rounds: <rounds>\/3/)
+    assert.match(text, /Stop reason: <dry\|cap_reached>/)
+    assert.match(text, /More findings may remain/)
   } finally {
     await cleanup(cwd)
   }

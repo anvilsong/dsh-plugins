@@ -23,7 +23,10 @@ security sandbox.
 
 ## Limits
 
-- Two independent finders and one refuter.
+- Two independent finders and one refuter per non-empty round.
+- Up to three rounds; a clean round stops as `dry`, while a third round with
+  confirmed findings stops as `cap_reached` and reports that more may remain.
+- Duplicate findings are not re-argued, and refuter output is limited to supplied IDs.
 - At most 50 files and 4,000 changed lines.
 - Read-only: no code changes, tests that write, staging, or formatting.
 - Uses the existing DSH workflow tool; no new orchestration framework.
