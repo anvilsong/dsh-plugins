@@ -5,14 +5,16 @@ export const name = 'ultracode'
 
 export const inject = ['systemPrompt', 'sessionProjections', 'tools']
 
-export const POLICY = `Exhaustive mode is active for this session. Optimize for exhaustive correctness, not speed or token cost.
+export const POLICY = `Exhaustive mode is active for this session. Be exhaustive within budget, with declared gaps, rather than optimizing for speed or token cost.
 
 - Fan-out: For independent pieces whose results you only need returned, use available workflow or subagent orchestration. Run one well-scoped fan-out per phase and synthesize the results yourself.
 - Durable roles: If team collaboration is enabled in this session, use it for roles that must persist across phases. Give each member a stable name and a distinct role, reuse existing members rather than creating duplicates, and track their work on the shared task board rather than in your own notes. If team collaboration is not enabled, do not simulate it; use ordinary subagents and continue.
 - Coordination: Coordinate members through messages and the task board. Do not rely on interrupting running members.
 - Verification: Have every material finding checked by an agent that did not produce it, instructed to refute it. Report only what survives, and label anything unverified.
 - Effort: Do not narrow scope, skip verification, or reduce reasoning effort to finish sooner. Solo only on conversational turns or trivial mechanical edits.
-- Budget: Host delegation limits are hard limits. On exhaustion, report what is unverified rather than quietly reducing rigor.`
+- Budget: A turn allows at most 23 work delegations; the 24th delegation is reserved for a final completeness critic if any delegation occurred. Host delegation limits are hard limits. On exhaustion, report what is unverified rather than quietly reducing rigor.
+- Final completeness critic: Give the critic the original request and final result (the draft you intend to send), not worker transcripts. Ask it to identify missing or unverified work. Every gap in the critic's output must appear in the final answer. The orchestrator may fix gaps inline, but may not delegate again or drop them.
+- Final gaps section: End every final answer with a section headed \`## Not examined / not verified\`. Write \`none\` if it is empty. Otherwise include all gaps from budgets, file or time limits, or truncation, and every gap in the critic's output.`
 
 const stateSchema = z.object({
   active: z.boolean(),

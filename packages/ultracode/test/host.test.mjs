@@ -67,6 +67,27 @@ test('the prompt section is empty when inactive and full when active', async () 
   assert.doesNotMatch(POLICY, /spawn_teammate/)
 })
 
+test('policy is exhaustive within budget and declares gaps', () => {
+  assert.match(POLICY, /exhaustive within budget, with declared gaps/)
+  assert.doesNotMatch(POLICY, /exhaustive correctness/)
+})
+
+test('policy reserves delegation 24 for the final completeness critic', () => {
+  assert.match(POLICY, /at most 23 work delegations/)
+  assert.match(POLICY, /24th delegation is reserved for a final completeness critic if any delegation occurred/)
+  assert.match(POLICY, /original request and final result/)
+  assert.match(POLICY, /not worker transcripts/)
+  assert.match(POLICY, /critic's output must appear in the final answer/)
+  assert.match(POLICY, /may fix gaps inline, but may not delegate again or drop them/)
+})
+
+test('policy requires a final section for all examination gaps', () => {
+  assert.match(POLICY, /## Not examined \/ not verified/)
+  assert.match(POLICY, /Write `none` if it is empty/)
+  assert.match(POLICY, /budgets, file or time limits, or truncation/)
+  assert.match(POLICY, /every gap in the critic's output/)
+})
+
 test('the command validates input and reports state without changing Team', async () => {
   const { ctx, get, agent } = harness()
   await apply(ctx)
