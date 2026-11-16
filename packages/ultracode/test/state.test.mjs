@@ -103,3 +103,27 @@ test('a cold fold reconstructs the latest state from command history', () => {
   assert.equal(state.pending.arg, true)
   assert.equal(foldUltracode(state, done('success', 'c')).active, true)
 })
+
+test('a done with a missing commandId while nothing is pending returns the same state and does not throw', () => {
+  const orphan = { type: 'command/done', data: { kind: 'success' } }
+  assert.equal(foldUltracode(INITIAL_ULTRACODE_STATE, orphan), INITIAL_ULTRACODE_STATE)
+  const settled = foldUltracode(foldUltracode(INITIAL_ULTRACODE_STATE, run('on')), done('success'))
+  assert.equal(foldUltracode(settled, orphan), settled)
+})
+
+test('a commandId-less done on a state whose pending field is absent leaves it unchanged and does not throw', () => {
+  // Absent (undefined), not null: matched with != null, as the router fold does.
+  const absent = { active: true, run: null }
+  for (const kind of ['success', 'error']) {
+    const orphan = { type: 'command/done', data: { kind } }
+    assert.doesNotThrow(() => foldUltracode(absent, orphan))
+    assert.equal(foldUltracode(absent, orphan), absent)
+  }
+})
+
+test('fold replay of a log containing a commandId-less done leaves the state valid', () => {
+  const log = [run('on', 'c1'), done('success', 'c1'), { type: 'command/done', data: { kind: 'success' } }, run('off', 'c2', 200), done('success', 'c2')]
+  const state = log.reduce(foldUltracode, INITIAL_ULTRACODE_STATE)
+  assert.equal(state.active, false)
+  assert.equal(state.pending, null)
+})

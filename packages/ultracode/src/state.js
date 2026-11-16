@@ -75,7 +75,7 @@ export function foldUltracode(state, event) {
     }
   }
 
-  if (event.type === 'command/done' && state.pending?.commandId === event.data.commandId) {
+  if (event.type === 'command/done' && state.pending != null && state.pending.commandId === event.data.commandId) {
     return {
       ...state,
       active: event.data.kind === 'success' ? state.pending.arg : state.active,
