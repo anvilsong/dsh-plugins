@@ -91,7 +91,7 @@ export async function apply(ctx) {
         if (arg === 'status') {
           const run = state.run
           const runText = run
-            ? ` ${run.endedAt === null ? 'Current' : 'Last'} run: ${run.spawnAttempts}/${MAX_SPAWN_ATTEMPTS} spawns · stop: ${run.stop ?? 'none'}.`
+            ? ` ${run.endedAt === null ? 'Current' : 'Last'} run: ${run.spawnAttempts}/${MAX_SPAWN_ATTEMPTS} attempts · stop: ${run.stop ?? 'none'}.`
             : ''
           return {
             kind: 'success',

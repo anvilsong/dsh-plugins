@@ -149,5 +149,5 @@ test('status reports the current run from projection only', async () => {
   const { command } = get()
   const result = await command.handler({ agent, rawInput: 'status' })
   assert.equal(result.kind, 'success')
-  assert.match(result.text, /Current run: 7\/24 spawns · stop: none/)
+  assert.match(result.text, /Current run: 7\/24 attempts · stop: none/)
 })

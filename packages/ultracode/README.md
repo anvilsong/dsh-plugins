@@ -41,7 +41,9 @@ the same state without a separate settings file.
 ## Delegation budget
 
 While Ultracode is on, each turn allows **24 direct delegation attempts**.
-Denied attempts count toward the budget. The 25th attempt is denied with
+The bound applies to the named delegation tools, not nested fan-out; nested
+work is governed by DSH. Denied attempts count toward the budget. The 25th
+attempt is denied with
 `ultracode_budget_exhausted:spawns`. The current run remains open until turn end,
 even if Ultracode is turned off mid-run.
 
@@ -51,8 +53,8 @@ reason, without querying Team or starting another orchestration.
 ## Install
 
 Install the package directory as a DSH bundle. The package declares a Host
-entry and a Web client. It needs the `systemPrompt`, `sessionProjections`, and
-`commands` Host services, plus the conversation and API gateway Client services.
+entry and a Web client. It needs the `systemPrompt`, `sessionProjections`, `tools`,
+and `commands` Host services, plus the conversation and API gateway Client services.
 
 ## Privacy and cost
 
