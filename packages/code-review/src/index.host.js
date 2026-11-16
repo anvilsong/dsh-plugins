@@ -247,7 +247,7 @@ const finderSchema = {
               { type: 'array', items: { type: 'integer' } }
             ]
           },
-          severity: { enum: ['critical', 'high', 'medium', 'low'] },
+          severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
           category: { type: 'string' },
           evidence: { type: 'string' },
           recommendation: { type: 'string' }
@@ -269,7 +269,7 @@ const refuterSchema = {
         type: 'object',
         properties: {
           id: { type: 'string' },
-          verdict: { enum: ['confirmed', 'refuted', 'unverified'] },
+          verdict: { type: 'string', enum: ['confirmed', 'refuted', 'unverified'] },
           reason: { type: 'string' }
         },
         required: ['id', 'verdict', 'reason'],
