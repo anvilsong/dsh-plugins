@@ -28,14 +28,15 @@ function ledgerPath() {
 async function recentLedger() {
   try {
     const text = await fs.readFile(ledgerPath(), 'utf8')
-    const entries = text.split('\n').filter(Boolean).slice(-3).map((line) => {
+    const entries = text.split('\n').filter(Boolean).map((line) => {
       try {
         const entry = JSON.parse(line)
+        if (entry.status === 'started') return null
         return `${entry.consult_id ?? 'unknown'} ${entry.advisor ?? 'unknown'} ${entry.status ?? 'unknown'} ${entry.topic ?? 'unset'}`
       } catch {
         return null
       }
-    }).filter(Boolean)
+    }).filter(Boolean).slice(-3)
     return entries.length ? entries.join('\n') : 'No consults recorded.'
   } catch {
     return 'No consults recorded.'

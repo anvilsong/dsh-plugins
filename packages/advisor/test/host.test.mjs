@@ -43,13 +43,16 @@ test('status reports recent ledger entries', async () => {
   const file = path.join(dir, 'sessions.jsonl')
   process.env.ADVISOR_LEDGER = file
   try {
-    await writeFile(file, JSON.stringify({ consult_id: 'abc123', advisor: 'fable', status: 'ok', topic: 'review' }) + '\n')
+    await writeFile(file,
+      JSON.stringify({ consult_id: 'started1', advisor: 'unknown', status: 'started', topic: 'review' }) + '\n' +
+      JSON.stringify({ consult_id: 'abc123', advisor: 'fable', status: 'ok', topic: 'review' }) + '\n')
     const { ctx, get, agent } = harness()
     await apply(ctx)
     const result = await get().command.handler({ agent, rawInput: 'status' })
     assert.equal(result.kind, 'success')
     assert.match(result.text, /Advisor is off/)
     assert.match(result.text, /abc123 fable ok review/)
+    assert.doesNotMatch(result.text, /started1/)
   } finally {
     delete process.env.ADVISOR_LEDGER
     await rm(dir, { recursive: true, force: true })
