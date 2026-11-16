@@ -30,12 +30,21 @@ default)**, then the authorized models grouped by provider with a trailing
 check on each selected model. Edits are a draft while the flyout is open and are
 committed as one `/router level` command when it closes (or when the menu
 closes), so each edit session adds one command entry to the chat. The cell shows
-a spinner until the session confirms the change. Up to four models per level;
-further rows are disabled. Saved routes that are no longer authorized appear
-under **Unavailable** and are dropped by the next change. Escape, Tab, or
-ArrowLeft closes the flyout and returns focus to its cell. Rejections recorded
-in the session log (for example "Router is already updating") appear in the
-composer's toast.
+a spinner until the session confirms the change, for at most 30 seconds after
+its command starts: a change the session neither confirms nor rejects by then
+reverts to the session's value and is reported once in the composer's toast (a
+newer choice made meanwhile is kept and committed next). Router commands from
+this menu run one at a time per session: the switch, the three cells, and a
+draft committed as the menu closes share one queue, so a change made while
+another command is queued or running waits its turn, and further presses of the
+switch are ignored until its command lands or fails. Time spent waiting does not
+count toward the 30 seconds; a command that has not returned 30 seconds after it
+started no longer holds up the queue. Up to four models per level; further rows
+are disabled. Saved routes that are no longer authorized appear under
+**Unavailable** and are dropped by the next change. Escape, Tab, or ArrowLeft
+closes the flyout and returns focus to its cell. Rejections recorded in the
+session log (for example "Router is already updating") appear in the composer's
+toast.
 
 Selections are session-scoped and retained across off/on. Every level defaults to Inherit. Invalid or unauthorized
 routes reject the whole command without changing the selection. Null route

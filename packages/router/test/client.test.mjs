@@ -80,12 +80,16 @@ function load() {
   const registrations = []
   const runtime = createRuntime()
   const harness = { commandUi: undefined }
+  // The client reads time only through Date.now(); tests move this clock.
+  const clock = { offset: 0 }
+  class TestDate extends Date { static now() { return Date.now() + clock.offset } }
   const primitives = new Proxy({}, { get: (_target, key) => key })
   const slots = {
     inject(_name, callback) { callback() },
     register(definition, component) { registrations.push({ definition, component }) },
   }
   vm.runInNewContext(readFileSync(new URL('../src/client.js', import.meta.url), 'utf8'), {
+    Date: TestDate,
     window: {
       __ModuleLoader__: {
         load({ id, factory }) {
@@ -97,7 +101,7 @@ function load() {
       },
     },
   })
-  return { registrations, runtime, harness }
+  return { registrations, runtime, harness, clock }
 }
 
 const selected = [
@@ -126,6 +130,55 @@ function levels(env, view, routeList, extra = {}) {
 function mountCell(env, element) {
   const cell = env.runtime.mount(element.type)
   return { ...cell, output: cell.render(element.props) }
+}
+
+const pick = (output, title) => findAll(output, (node) => node.props?.title === title && node.props?.onSelect)[0].props.onSelect()
+const cellButton = (output) => find(output, (node) => node.props?.role === 'menuitem')
+
+// An execute() that records each line and resolves only when the test settles
+// it: settle[i]() with success, or resolveWith[i](outcome) with any outcome.
+function deferredExecute(env) {
+  const calls = []
+  const settle = []
+  const resolveWith = []
+  env.harness.commandUi = {
+    execute: (_target, line) => {
+      calls.push(line)
+      return new Promise((resolve) => {
+        settle.push(() => resolve({ kind: 'success' }))
+        resolveWith.push(resolve)
+      })
+    },
+  }
+  return { calls, settle, resolveWith }
+}
+
+// Press the switch through its own instance, as the menu does.
+function pressSwitch(env, enabled) {
+  const option = env.registrations[0].component({ useProjection: () => manualView({}) })
+  find(env.runtime.mount(option.type).render(option.props), (node) => node.props?.className === 'router-toggle').props.onChange(enabled)
+}
+
+// A projection update re-renders RouterLevels and, with fresh props, the cell.
+function rerender(menu, cell, level, extra = { open: false }) {
+  const fresh = findAll(menu.parent.render(), (node) => typeof node.type === 'function' && node.props?.level === level)[0]
+  return cell.render({ ...fresh.props, ...extra })
+}
+
+// As React does: re-render RouterLevels only when its own state changed.
+function flush(menu, cell, level, extra) {
+  if (!menu.parent.instance.dirty) return false
+  rerender(menu, cell, level, extra)
+  return true
+}
+
+// The host menu closes while a level flyout still holds a draft.
+function closeMenuWithDraft(env, menu, index, title) {
+  const closing = env.runtime.mount(menu.cells[index].type)
+  pick(closing.render({ ...menu.cells[index].props, open: true }), title)
+  closing.render()
+  closing.unmount()
+  menu.parent.unmount()
 }
 
 test('client registers the switch and one level-cell entry with distinct orders', async () => {
@@ -419,4 +472,434 @@ test('a switch press made while a level commit is in flight is queued, not dropp
   release()
   await ticks()
   assert.deepEqual(calls, ['/router level mechanical anthropic/claude-haiku-5-5', '/router off'])
+})
+
+const HAIKU = 'anthropic/claude-haiku-5-5'
+const FLASH = 'openrouter/~deepseek/deepseek-flash-latest'
+const levelLine = (level, text) => `/router level ${level} ${text}`
+
+// 1. The lock, not a component callback, announces every release.
+test('a level draft waiting behind the switch commits when the switch command settles', async () => {
+  const env = load()
+  const { calls, settle } = deferredExecute(env)
+  const menu = levels(env, manualView({}), routes)
+  pressSwitch(env, false)
+  await ticks()
+  const cell = env.runtime.mount(menu.cells[0].type)
+  pick(cell.render({ ...menu.cells[0].props, open: true }), HAIKU)
+  cell.render({ ...menu.cells[0].props, open: false })
+  await ticks()
+  assert.deepEqual(calls, ['/router off'], 'the draft waits while the switch holds the lock')
+  settle[0]()
+  await ticks()
+  assert.equal(flush(menu, cell, 'mechanical'), true, 'the lock wakes the level cells')
+  await ticks()
+  assert.deepEqual(calls, ['/router off', levelLine('mechanical', HAIKU)])
+})
+
+test('a reopened menu wakes when the commit of the closed menu settles', async () => {
+  const env = load()
+  const { calls, settle } = deferredExecute(env)
+  closeMenuWithDraft(env, levels(env, manualView({}), routes), 0, HAIKU)
+  await ticks()
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU)])
+  const menu = levels(env, manualView({}), routes)
+  const cell = env.runtime.mount(menu.cells[1].type)
+  pick(cell.render({ ...menu.cells[1].props, open: true }), HAIKU)
+  cell.render({ ...menu.cells[1].props, open: false })
+  await ticks()
+  assert.equal(calls.length, 1, 'the reopened menu waits for the earlier commit')
+  settle[0]()
+  await ticks()
+  assert.equal(flush(menu, cell, 'ordinary'), true, 'the live menu is woken, not the closed one')
+  await ticks()
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU), levelLine('ordinary', HAIKU)])
+})
+
+// 2. The unmount commit never re-sends a draft that was already sent.
+test('closing the flyout and then the menu before a re-render sends the draft once', async () => {
+  const env = load()
+  const calls = []
+  env.harness.commandUi = { execute: async (_target, line) => { calls.push(line); return { kind: 'success' } } }
+  const { cells } = levels(env, manualView({}), routes)
+  const cell = env.runtime.mount(cells[0].type)
+  pick(cell.render({ ...cells[0].props, open: true }), HAIKU)
+  cell.render({ ...cells[0].props, open: false })
+  cell.unmount()
+  await ticks()
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU)])
+})
+
+test('a new draft equal to an earlier confirmed one is still committed on unmount', async () => {
+  const env = load()
+  const calls = []
+  env.harness.commandUi = { execute: async (_target, line) => { calls.push(line); return { kind: 'success' } } }
+  const { cells } = levels(env, manualView({}), routes)
+  const base = cells[0].props
+  const cell = env.runtime.mount(cells[0].type)
+  pick(cell.render({ ...base, open: true }), HAIKU)
+  cell.render({ ...base, open: false })
+  await ticks()
+  cell.render({ ...base, open: false, view: manualView({ mechanical: [haiku] }) })
+  // Another tab changes the level; the user picks the earlier value again.
+  pick(cell.render({ ...base, open: true, view: manualView({ mechanical: [selected[0]] }) }), FLASH)
+  pick(cell.render(), HAIKU)
+  cell.render()
+  cell.unmount()
+  await ticks()
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU), levelLine('mechanical', HAIKU)])
+})
+
+// 3. Expiry counts from when a command starts, and commands still run one at a time.
+test('lock expiry counts from when a command starts, not from when it was queued', async () => {
+  const env = load()
+  const { calls, settle } = deferredExecute(env)
+  const menu = levels(env, manualView({}), routes)
+  pressSwitch(env, false)
+  closeMenuWithDraft(env, menu, 0, HAIKU)
+  await ticks()
+  assert.deepEqual(calls, ['/router off'], 'the unmount commit queues behind the switch')
+  env.clock.offset += 29_000
+  settle[0]()
+  await ticks()
+  assert.deepEqual(calls, ['/router off', levelLine('mechanical', HAIKU)])
+  // Queued 31 s ago, but started only 2 s ago: still in flight.
+  env.clock.offset += 2_000
+  pressSwitch(env, true)
+  await ticks()
+  assert.deepEqual(calls, ['/router off', levelLine('mechanical', HAIKU)], 'one command at a time')
+  settle[1]()
+  await ticks()
+  assert.deepEqual(calls, ['/router off', levelLine('mechanical', HAIKU), '/router manual'])
+})
+
+test('a hung command lets the queue advance in order once it has run for 30 s', async () => {
+  const env = load()
+  const { calls, settle } = deferredExecute(env)
+  const menu = levels(env, manualView({}), routes)
+  pressSwitch(env, false)
+  env.clock.offset += 1_000
+  closeMenuWithDraft(env, menu, 0, HAIKU)
+  await ticks()
+  env.clock.offset += 32_000
+  pressSwitch(env, true)
+  await ticks()
+  assert.deepEqual(calls, ['/router off', levelLine('mechanical', HAIKU)], 'the queued command runs next; the new press waits')
+  settle[1]()
+  await ticks()
+  assert.deepEqual(calls, ['/router off', levelLine('mechanical', HAIKU), '/router manual'])
+  settle[0]()
+  await ticks()
+  assert.equal(calls.length, 3, 'the hung call returning late starts nothing')
+})
+
+test('cells waiting on a hung command commit once it has run for 30 s', async () => {
+  const env = load()
+  const { calls } = deferredExecute(env)
+  const menu = levels(env, manualView({}), routes)
+  pressSwitch(env, false)
+  await ticks()
+  const cell = env.runtime.mount(menu.cells[0].type)
+  pick(cell.render({ ...menu.cells[0].props, open: true }), HAIKU)
+  cell.render({ ...menu.cells[0].props, open: false })
+  await ticks()
+  assert.deepEqual(calls, ['/router off'])
+  env.clock.offset += 31_000
+  rerender(menu, cell, 'mechanical')
+  await ticks()
+  assert.equal(flush(menu, cell, 'mechanical'), true, 'the expiry wakes the waiting cells')
+  await ticks()
+  assert.deepEqual(calls, ['/router off', levelLine('mechanical', HAIKU)])
+})
+
+// 4. A sent draft has a deadline, so the spinner cannot stay forever.
+test('a sent draft the session never confirms snaps back after the deadline with one report', async () => {
+  const env = load()
+  const calls = []
+  const reports = []
+  env.harness.commandUi = { execute: async (_target, line) => { calls.push(line); return { kind: 'success' } } }
+  const { cells } = levels(env, manualView({}), routes, { reportFailure: (message) => reports.push(message) })
+  const cell = env.runtime.mount(cells[0].type)
+  pick(cell.render({ ...cells[0].props, open: true }), HAIKU)
+  cell.render({ ...cells[0].props, open: false })
+  await ticks()
+  env.clock.offset += 29_000
+  assert.equal(cellButton(cell.render()).props['aria-busy'], true, 'saving until confirmed, within the deadline')
+  env.clock.offset += 2_000
+  cell.render()
+  const button = cellButton(cell.render())
+  assert.equal(button.props['aria-busy'], false)
+  assert.match(text(button), /"Inherit"/)
+  assert.deepEqual(reports, ['Could not update this level.'])
+  cell.render()
+  assert.equal(reports.length, 1)
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU)], 'the draft is not sent again')
+})
+
+test('the save deadline counts from when the command starts and covers a call that never returns', async () => {
+  const env = load()
+  const { calls, settle } = deferredExecute(env)
+  const reports = []
+  const extra = { reportFailure: (message) => reports.push(message) }
+  closeMenuWithDraft(env, levels(env, manualView({}), routes, extra), 0, HAIKU)
+  const menu = levels(env, manualView({}), routes, extra)
+  const cell = env.runtime.mount(menu.cells[0].type)
+  pick(cell.render({ ...menu.cells[0].props, open: true }), FLASH)
+  cell.render({ ...menu.cells[0].props, open: false })
+  await ticks()
+  assert.equal(calls.length, 1, 'the new commit queues behind the slow one')
+  env.clock.offset += 20_000
+  settle[0]()
+  await ticks()
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU), levelLine('mechanical', FLASH)])
+  env.clock.offset += 25_000
+  cell.render()
+  assert.equal(cellButton(cell.render()).props['aria-busy'], true)
+  assert.deepEqual(reports, [], 'time spent queued does not count')
+  env.clock.offset += 6_000
+  cell.render()
+  assert.equal(cellButton(cell.render()).props['aria-busy'], false)
+  assert.deepEqual(reports, ['Could not update this level.'])
+})
+
+const FAILED = 'Could not update this level.'
+const rowFor = (output, title) => findAll(output, (node) => node.props?.title === title && node.props?.onSelect)[0]
+const cellIn = (output, level) => findAll(output, (node) => typeof node.type === 'function' && node.props?.level === level)[0]
+
+// 5. A call that never returns stops holding back its own cell once the lock
+// has ended its turn.
+test('after a hung commit passes the deadline, a new draft from the same open menu is sent', async () => {
+  const env = load()
+  const { calls } = deferredExecute(env)
+  const reports = []
+  const { cells } = levels(env, manualView({}), routes, { reportFailure: (message) => reports.push(message) })
+  const base = cells[0].props
+  const cell = env.runtime.mount(cells[0].type)
+  pick(cell.render({ ...base, open: true }), HAIKU)
+  cell.render({ ...base, open: false })
+  await ticks()
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU)])
+  env.clock.offset += 31_000
+  cell.render()
+  assert.deepEqual(reports, [FAILED])
+  assert.match(text(cellButton(cell.render())), /"Inherit"/, 'the unconfirmed draft snapped back')
+  pick(cell.render({ ...base, open: true }), FLASH)
+  cell.render({ ...base, open: false })
+  await ticks()
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU), levelLine('mechanical', FLASH)],
+    'the hung call no longer holds back the cell')
+  assert.equal(cellButton(cell.render()).props['aria-busy'], true, 'the new commit shows its own spinner')
+  assert.deepEqual(reports, [FAILED])
+})
+
+test('a draft waiting behind its own hung commit is sent once, after the deadline reports the hung one', async () => {
+  const env = load()
+  const { calls, settle } = deferredExecute(env)
+  const reports = []
+  const { cells } = levels(env, manualView({}), routes, { reportFailure: (message) => reports.push(message) })
+  const base = cells[0].props
+  const cell = env.runtime.mount(cells[0].type)
+  pick(cell.render({ ...base, open: true }), HAIKU)
+  cell.render({ ...base, open: false })
+  await ticks()
+  // The user changes their mind while the first commit is still in flight.
+  env.clock.offset += 5_000
+  pick(cell.render({ ...base, open: true }), HAIKU)
+  pick(cell.render(), FLASH)
+  cell.render({ ...base, open: false })
+  await ticks()
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU)], 'the new draft waits while its own call is in flight')
+  env.clock.offset += 26_000
+  // The deadline render, then the render its state change causes.
+  cell.render()
+  cell.render()
+  await ticks()
+  assert.deepEqual(reports, [FAILED], 'the hung commit is reported once')
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU), levelLine('mechanical', FLASH)],
+    'the waiting draft survives the deadline and is sent')
+  settle[1]()
+  await ticks()
+  cell.render()
+  await ticks()
+  assert.equal(calls.length, 2, 'the waiting draft is sent exactly once')
+  assert.equal(cellButton(cell.render()).props['aria-busy'], true, 'saving until the session confirms it')
+  cell.render({ ...base, open: false, view: manualView({ mechanical: [selected[0]] }) })
+  assert.equal(cellButton(cell.render()).props['aria-busy'], false)
+  assert.deepEqual(reports, [FAILED])
+})
+
+test('a hung call the host already rejected stops holding back a newer draft once it has run for 30 s', async () => {
+  const env = load()
+  const { calls } = deferredExecute(env)
+  const reports = []
+  const { cells } = levels(env, manualView({}), routes, { reportFailure: (message) => reports.push(message) })
+  const base = cells[0].props
+  const cell = env.runtime.mount(cells[0].type)
+  pick(cell.render({ ...base, open: true }), HAIKU)
+  cell.render({ ...base, open: false })
+  await ticks()
+  // The session records a rejection, but the call itself never returns.
+  const failure = { count: 1, text: `Route ${HAIKU} is not authorized for this session.`, target: 'level', level: 'mechanical' }
+  const rejected = { ...base, open: false, view: manualView({}, { failure }) }
+  cell.render(rejected)
+  assert.deepEqual(reports, [failure.text])
+  pick(cell.render({ ...rejected, open: true }), FLASH)
+  cell.render({ ...rejected, open: false })
+  await ticks()
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU)], 'the new draft waits while its own call runs')
+  env.clock.offset += 31_000
+  cell.render()
+  await ticks()
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU), levelLine('mechanical', FLASH)], 'the first render after 30 s sends it')
+  assert.deepEqual(reports, [failure.text], 'the rejected call is not reported again')
+})
+
+// 6. One toast per failed commit.
+test('a hung commit that fails after the deadline is not reported a second time', async () => {
+  const env = load()
+  const { resolveWith } = deferredExecute(env)
+  const reports = []
+  const { cells } = levels(env, manualView({}), routes, { reportFailure: (message) => reports.push(message) })
+  const base = cells[0].props
+  const cell = env.runtime.mount(cells[0].type)
+  pick(cell.render({ ...base, open: true }), HAIKU)
+  cell.render({ ...base, open: false })
+  await ticks()
+  env.clock.offset += 31_000
+  cell.render()
+  assert.deepEqual(reports, [FAILED])
+  resolveWith[0]({ kind: 'error', text: `unknown or malformed command: ${levelLine('mechanical', HAIKU)}` })
+  await ticks()
+  cell.render()
+  assert.deepEqual(reports, [FAILED], 'one toast per failed commit')
+  assert.match(text(cellButton(cell.render())), /"Inherit"/)
+})
+
+test('a level command the host does not admit is reported once, also when it is sent on unmount', async () => {
+  const env = load()
+  const reports = []
+  env.harness.commandUi = { execute: async (_target, line) => ({ kind: 'error', text: `unknown or malformed command: ${line}` }) }
+  const { cells } = levels(env, manualView({}), routes, { reportFailure: (message) => reports.push(message) })
+  const cell = env.runtime.mount(cells[0].type)
+  pick(cell.render({ ...cells[0].props, open: true }), HAIKU)
+  cell.render({ ...cells[0].props, open: false })
+  await ticks()
+  assert.match(text(cellButton(cell.render())), /"Inherit"/)
+  assert.deepEqual(reports, [`unknown or malformed command: ${levelLine('mechanical', HAIKU)}`])
+  const closing = env.runtime.mount(cells[1].type)
+  pick(closing.render({ ...cells[1].props, open: true }), HAIKU)
+  closing.render()
+  closing.unmount()
+  await ticks()
+  assert.deepEqual(reports, [
+    `unknown or malformed command: ${levelLine('mechanical', HAIKU)}`,
+    `unknown or malformed command: ${levelLine('ordinary', HAIKU)}`,
+  ])
+})
+
+// 7. Only the draft that was sent snaps back; a newer one survives.
+test('a pick made just as the deadline passes survives it and is committed', async () => {
+  const env = load()
+  const calls = []
+  const reports = []
+  env.harness.commandUi = { execute: async (_target, line) => { calls.push(line); return { kind: 'success' } } }
+  const { cells } = levels(env, manualView({}), routes, { reportFailure: (message) => reports.push(message) })
+  const base = cells[0].props
+  const cell = env.runtime.mount(cells[0].type)
+  pick(cell.render({ ...base, open: true }), HAIKU)
+  cell.render({ ...base, open: false })
+  await ticks()
+  env.clock.offset += 29_000
+  const reopened = cell.render({ ...base, open: true })
+  assert.deepEqual(reports, [])
+  env.clock.offset += 2_000
+  // The click comes after the deadline; the render it causes runs the deadline.
+  pick(reopened, FLASH)
+  cell.render()
+  assert.deepEqual(reports, [FAILED], 'the unconfirmed commit is still reported')
+  assert.equal(rowFor(cell.render(), FLASH).props.checked, true, 'the click survives the deadline')
+  cell.render({ ...base, open: false })
+  await ticks()
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU), levelLine('mechanical', `${HAIKU},${FLASH}`)])
+})
+
+test('a commit the host does not admit snaps back without discarding a newer pick', async () => {
+  const env = load()
+  const { calls, resolveWith } = deferredExecute(env)
+  const reports = []
+  const { cells } = levels(env, manualView({}), routes, { reportFailure: (message) => reports.push(message) })
+  const base = cells[0].props
+  const cell = env.runtime.mount(cells[0].type)
+  pick(cell.render({ ...base, open: true }), HAIKU)
+  cell.render({ ...base, open: false })
+  await ticks()
+  pick(cell.render({ ...base, open: true }), HAIKU)
+  pick(cell.render(), FLASH)
+  cell.render()
+  resolveWith[0]({ kind: 'error', text: 'unknown or malformed command: x' })
+  await ticks()
+  assert.deepEqual(reports, ['unknown or malformed command: x'])
+  assert.equal(rowFor(cell.render(), FLASH).props.checked, true, 'the newer pick survives the failed commit')
+  cell.render({ ...base, open: false })
+  await ticks()
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU), levelLine('mechanical', FLASH)])
+})
+
+// 8. A cell belongs to one session.
+test('a session switch remounts the level cells, so an open draft commits to its own session', async () => {
+  const env = load()
+  const calls = []
+  env.harness.commandUi = { execute: async (target, line) => { calls.push([target.sessionId, line]); return { kind: 'success' } } }
+  const menu = levels(env, manualView({}), routes, { sessionId: 'one' })
+  menu.cells[0].props.onOpen()
+  const before = cellIn(menu.parent.render(), 'mechanical')
+  assert.equal(before.props.open, true)
+  let cell = env.runtime.mount(before.type)
+  pick(cell.render(before.props), HAIKU)
+  cell.render()
+  // The host switches the session while the model menu stays open.
+  const after = cellIn(menu.parent.render({ ...menu.parent.instance.props, sessionId: 'two' }), 'mechanical')
+  // As React reconciles keyed children: a kept key re-renders the same cell,
+  // a new key unmounts it and mounts a fresh one.
+  if (after.props.key === before.props.key) cell.render(after.props)
+  else {
+    cell.unmount()
+    cell = env.runtime.mount(after.type)
+    cell.render(after.props)
+  }
+  const shown = text(cellButton(cell.render()))
+  cell.unmount()
+  menu.parent.unmount()
+  await ticks()
+  assert.deepEqual(calls, [['one', levelLine('mechanical', HAIKU)]], 'the draft goes to the session it was made in')
+  assert.match(shown, /"Inherit"/, "the switched session's cell does not show the old draft")
+})
+
+// 9. The switch sends one command per press, not per click while queued.
+test('a second switch press while the first is still queued sends no second command', async () => {
+  const env = load()
+  const { calls, settle } = deferredExecute(env)
+  const { cells } = levels(env, manualView({}), routes)
+  const cell = env.runtime.mount(cells[0].type)
+  pick(cell.render({ ...cells[0].props, open: true }), HAIKU)
+  cell.render({ ...cells[0].props, open: false })
+  await ticks()
+  let view = manualView({})
+  const option = env.registrations[0].component({ useProjection: () => view })
+  const instance = env.runtime.mount(option.type)
+  const toggle = () => find(instance.render(option.props), (node) => node.props?.className === 'router-toggle')
+  toggle().props.onChange(false)
+  await ticks()
+  toggle().props.onChange(false)
+  await ticks()
+  settle[0]()
+  await ticks()
+  settle[1]()
+  await ticks()
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU), '/router off'])
+  // Once the session shows the result, the switch works again.
+  view = { ...manualView({}), mode: 'off' }
+  toggle().props.onChange(true)
+  await ticks()
+  assert.deepEqual(calls, [levelLine('mechanical', HAIKU), '/router off', '/router manual'])
 })

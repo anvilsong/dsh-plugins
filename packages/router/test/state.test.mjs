@@ -105,3 +105,23 @@ test('failures from admitted and rejected-overlap commands are recorded with the
   const unchanged = foldRouter(state, done('error', 'unknown'))
   assert.equal(unchanged, state)
 })
+
+test('a done event without a commandId leaves the state unchanged when nothing is pending', () => {
+  // The fold sees every command's done event, not only router ones.
+  const idle = foldRouter(foldRouter(INITIAL_ROUTER_STATE, run('manual')), done('success'))
+  assert.equal(idle.pending, null)
+  for (const state of [INITIAL_ROUTER_STATE, idle]) {
+    for (const kind of ['success', 'error']) {
+      const event = { type: 'command/done', data: { kind } }
+      assert.doesNotThrow(() => foldRouter(state, event))
+      assert.equal(foldRouter(state, event), state)
+    }
+  }
+})
+
+test('a done event without a commandId does not match a missing lastRun', () => {
+  const restored = { ...INITIAL_ROUTER_STATE, pending: { target: 'mode', arg: 'off', commandId: 'p', startedAt: 1 } }
+  const event = { type: 'command/done', data: { kind: 'error', text: 'unrelated' } }
+  assert.doesNotThrow(() => foldRouter(restored, event))
+  assert.equal(foldRouter(restored, event), restored)
+})

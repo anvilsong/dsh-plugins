@@ -71,13 +71,15 @@ export function foldRouter(state, event) {
       pending: { ...request, commandId: event.data.commandId, startedAt: event.time ?? Date.now() },
     }
   }
+  // Every command's done event arrives here. Match only a record that exists:
+  // a done event without a commandId must not match a missing one.
   if (event.type === 'command/done' && state.pending?.commandId !== event.data.commandId
-    && state.lastRun?.commandId === event.data.commandId) {
+    && state.lastRun != null && state.lastRun.commandId === event.data.commandId) {
     // A router command the fold did not admit (another update was pending)
     // still reports its failure so the Client can explain the rejection.
     return event.data.kind === 'success' ? state : withFailure(state, state.lastRun, event)
   }
-  if (event.type === 'command/done' && state.pending?.commandId === event.data.commandId) {
+  if (event.type === 'command/done' && state.pending != null && state.pending.commandId === event.data.commandId) {
     const pending = state.pending
     const next = { ...state, pending: null }
     if (event.data.kind !== 'success') return withFailure(next, { target: pending.target, level: pending.level ?? null }, event)

@@ -136,28 +136,60 @@ window.__ModuleLoader__.load({
     const supportsPopover = () => typeof HTMLElement !== 'undefined' && 'popover' in HTMLElement.prototype
     const activeElement = () => typeof document === 'undefined' ? null : document.activeElement
     let anchorCounter = 0
-    // One in-flight router command per session from this page: the switch and
-    // the three level cells share it, so they never collide with each other.
+    // One router command at a time per session from this page: the switch,
+    // the three level cells, and a closed menu's commit share one queue, so
+    // they never collide with each other. lock.current is the entry queued
+    // last; lock.running is the entry whose turn it is.
     const sessionLocks = new Map()
     const LOCK_EXPIRY_MS = 30_000
+    const endTurn = (lock, entry) => {
+      if (entry.ended) return
+      entry.ended = true
+      if (lock.running === entry) lock.running = null
+      if (lock.current === entry) lock.current = null
+      entry.release()
+    }
+    // A call that never settles must not block the queue forever: its turn
+    // ends LOCK_EXPIRY_MS after it started; time spent queued does not count.
+    // There is no timer: the lock is checked whenever it is used or rendered.
+    const expireLock = (lock) => {
+      const entry = lock.running
+      if (entry !== null && Date.now() - entry.startedAt > LOCK_EXPIRY_MS) endTurn(lock, entry)
+    }
     const lockFor = (sessionId) => {
       const key = sessionId ?? ''
-      if (!sessionLocks.has(key)) sessionLocks.set(key, { current: null })
+      if (!sessionLocks.has(key)) sessionLocks.set(key, { current: null, running: null, listeners: new Set() })
       const lock = sessionLocks.get(key)
-      // A command call that never settles must not block the controls forever.
-      if (lock.current !== null && Date.now() - (lock.current.startedAt ?? 0) > LOCK_EXPIRY_MS) lock.current = null
+      expireLock(lock)
       return lock
     }
-    // Run one command under the session lock, after any command already in flight.
+    // Whether the switch or another level has a command queued or running.
+    const heldByOther = (lock, level) => {
+      expireLock(lock)
+      return lock.current !== null && lock.current.level !== level
+    }
+    // Run one command under the session lock, after every command queued before it.
     const withLock = (lock, level, start) => {
-      const entry = { level, startedAt: Date.now(), promise: null }
-      const before = lock.current?.promise
-      entry.promise = (before ? before.then(() => undefined, () => undefined) : Promise.resolve()).then(start).then((ok) => {
-        if (lock.current === entry) lock.current = null
-        return ok
-      })
+      expireLock(lock)
+      const entry = { level, startedAt: null, ended: false, release: null, promise: null }
+      // Settles when this entry's turn ends: its call settled, or it expired.
+      entry.promise = new Promise((resolve) => { entry.release = resolve })
+      // The lock announces every turn that ends to whoever waits on it, so no
+      // caller needs to know who is waiting.
+      void entry.promise.then(() => { for (const listener of [...lock.listeners]) listener() })
+      const before = lock.current?.promise ?? Promise.resolve()
       lock.current = entry
-      return entry.promise
+      return before.then(() => undefined, () => undefined).then(() => {
+        entry.startedAt = Date.now()
+        lock.running = entry
+        return start()
+      }).then((ok) => {
+        endTurn(lock, entry)
+        return ok
+      }, (error) => {
+        endTurn(lock, entry)
+        throw error
+      })
     }
 
     // The view is pure; age the pending marker against this clock so a
@@ -192,7 +224,9 @@ window.__ModuleLoader__.load({
         if (typeof props.reportFailure === 'function') props.reportFailure(message)
         else if (mounted.current) setError(message)
       }
-      const run = async (line, failureKey) => {
+      // shouldReport, when given, is asked when the call fails: a caller whose
+      // failure was already reported another way returns false.
+      const run = async (line, failureKey, shouldReport) => {
         if (mounted.current) {
           setBusy(true)
           setError(null)
@@ -204,7 +238,7 @@ window.__ModuleLoader__.load({
           if (outcome?.kind === 'error') throw new Error(outcome.text || t(failureKey))
           return true
         } catch (cause) {
-          report(cause instanceof Error ? cause.message : t(failureKey))
+          if (shouldReport === undefined || shouldReport()) report(cause instanceof Error ? cause.message : t(failureKey))
           return false
         } finally {
           if (mounted.current) setBusy(false)
@@ -269,7 +303,9 @@ window.__ModuleLoader__.load({
             disabled: props.locked,
             label: t('chip.on'),
             onChange: (enabled) => {
-              if (busy || pending) return
+              // sentMode also covers a press still queued behind another
+              // command, when neither busy nor pending is set yet.
+              if (busy || pending || sentMode.current !== null) return
               sentMode.current = enabled ? 'manual' : 'off'
               // Queued behind a level commit that a flyout close just started.
               void withLock(lockFor(props.sessionId), 'mode', () => run(enabled ? '/router manual' : '/router off', 'chip.failed')).then((ok) => {
@@ -395,76 +431,132 @@ window.__ModuleLoader__.load({
       const pending = freshPending(view)
       const open = props.open === true
 
-      useFailureWatch(view, (failure) => failure.target === 'level' && failure.level === level && awaiting !== null, (failure) => {
-        setDesired(null)
-        setAwaiting(null)
-        report(failure.text || t('level.failed'))
-      })
-
       // Edits are a draft while the flyout is open and are committed as one
       // command when it closes; levels share one lock so only one router
       // command is in flight from this menu at a time.
-      const sentFrom = React.useRef({ from: null, settled: false })
-      const send = (text) => withLock(lock, level, () => run(`/router level ${level} ${text === '' ? 'inherit' : text}`, 'level.failed'))
-        .then((ok) => {
-          props.onUnlock()
-          return ok
+      // The command this cell sent, until it resolves: the value it replaced,
+      // whether its call succeeded, and when it started.
+      const sentFrom = React.useRef(null)
+      // The draft already sent, written at send time so an unmount before the
+      // next render never sends it again; a new edit makes a new draft.
+      const sentDraft = React.useRef(null)
+      // The latest call this cell started. The deadline leaves it set: a call
+      // still running LOCK_EXPIRY_MS after it started has lost its turn in the
+      // lock, so it no longer holds back this cell's next draft.
+      const started = React.useRef(null)
+      const stalled = busy && started.current !== null && Date.now() - started.current.startedAt > LOCK_EXPIRY_MS
+      // A sent draft that the session neither confirms nor rejects within
+      // LOCK_EXPIRY_MS of the command's start (a call that never returns, or
+      // a command the session never recorded) is overdue: the deadline effect
+      // below snaps it back and reports it like a rejection.
+      const inFlight = sentFrom.current
+      const overdue = awaiting !== null && awaiting !== confirmedText && inFlight !== null
+        && inFlight.startedAt !== null && Date.now() - inFlight.startedAt > LOCK_EXPIRY_MS
+      const clearAwaiting = () => {
+        sentFrom.current = null
+        setAwaiting(null)
+      }
+      // Only the draft that was sent snaps back: a newer draft the user made
+      // since (even on the render that runs this) survives and is committed.
+      const snapBack = (sentText) => {
+        setDesired((draft) => draft !== null && draft.join(',') === sentText ? null : draft)
+        clearAwaiting()
+      }
+      const fail = (text) => {
+        snapBack(awaiting)
+        report(text)
+      }
+
+      useFailureWatch(view, (failure) => failure.target === 'level' && failure.level === level && awaiting !== null,
+        (failure) => fail(failure.text || t('level.failed')))
+
+      // One toast per failed commit: a call that the deadline, a recorded
+      // rejection or a confirmation has superseded stays silent. A commit
+      // sent on unmount (detached) has no later render to supersede it.
+      const send = (text, detached = false) => {
+        const record = { from: confirmedText, settled: false, startedAt: null, result: null }
+        const shouldReport = () => detached || sentFrom.current === record
+        record.result = withLock(lock, level, () => {
+          record.startedAt = Date.now()
+          started.current = record
+          return run(`/router level ${level} ${text === '' ? 'inherit' : text}`, 'level.failed', shouldReport).then((ok) => {
+            // Set before the lock announces its release, so woken cells see it.
+            if (ok) record.settled = true
+            return ok
+          })
         })
+        return record
+      }
       React.useEffect(() => {
         if (desired === null) return
         if (desiredText === confirmedText && (awaiting === null || awaiting === desiredText)) {
           setDesired(null)
-          setAwaiting(null)
+          clearAwaiting()
           return
         }
         if (awaiting !== null && awaiting === desiredText) {
           // Sent and resolved, but the session moved to a third value (another
           // tab wrote this level): show the session's value without a toast.
-          if (sentFrom.current.settled && confirmedText !== sentFrom.current.from) {
+          const record = sentFrom.current
+          if (record !== null && record.settled && confirmedText !== record.from) {
             setDesired(null)
-            setAwaiting(null)
+            clearAwaiting()
           }
           return
         }
-        if (open || busy || pending) return
-        if (lock.current !== null && lock.current.level !== level) return
-        sentFrom.current = { from: confirmedText, settled: false }
+        // An overdue call is settled by the deadline first; the render that
+        // follows sends, so the deadline never clears a send it did not see.
+        if (open || (busy && !stalled) || pending || overdue) return
+        if (heldByOther(lock, level)) return
+        sentDraft.current = desiredText
+        const record = send(desiredText)
+        sentFrom.current = record
         setAwaiting(desiredText)
-        void send(desiredText).then((ok) => {
-          if (ok) sentFrom.current.settled = true
-          if (!mounted.current) return
-          if (!ok) {
-            setDesired(null)
-            setAwaiting(null)
-          }
+        void record.result.then((ok) => {
+          // Ignore a call that a later send, a confirmation or the deadline
+          // has already superseded.
+          if (ok || sentFrom.current !== record || !mounted.current) return
+          snapBack(desiredText)
         })
-      }, [desiredText, confirmedText, busy, pending, awaiting, open, props.lockTick])
+      }, [desiredText, confirmedText, busy, stalled, pending, awaiting, open, overdue, props.lockTick])
       React.useEffect(() => {
-        if (desired === null && awaiting !== null && awaiting === confirmedText) setAwaiting(null)
+        if (desired === null && awaiting !== null && awaiting === confirmedText) clearAwaiting()
       }, [confirmedText, desired, awaiting])
 
+      // The deadline. There is no timer: overdue is checked whenever the cell
+      // renders, which includes every lock release.
+      React.useEffect(() => {
+        if (overdue) fail(t('level.failed'))
+      }, [overdue])
+
       // A draft still open when the host menu closes is committed on unmount,
-      // after any command this menu already has in flight.
+      // after any command this menu already has in flight, with this cell's
+      // own session and lock: cells are keyed by session, so a session switch
+      // unmounts the old cell rather than handing it the new session.
       const latest = React.useRef(null)
-      latest.current = { desiredText, confirmedText, awaiting }
+      latest.current = { desiredText, confirmedText, awaiting, send }
       React.useEffect(() => () => {
         const state = latest.current
         if (state === null || state.desiredText === null || state.desiredText === state.confirmedText) return
-        if (state.awaiting === state.desiredText) return
-        void send(state.desiredText)
+        if (state.desiredText === sentDraft.current || state.desiredText === state.awaiting) return
+        void state.send(state.desiredText, true)
       }, [])
 
       const locked = props.locked === true
       const live = current.filter((key) => authorizedSet.has(key))
       const stale = confirmed.filter((key) => !authorizedSet.has(key))
       const atCap = live.length >= MAX_MODELS
+      const edit = (next) => {
+        sentDraft.current = null
+        setDesired(next)
+      }
       const toggle = (key) => {
         if (locked) return
-        if (live.includes(key)) setDesired(live.filter((item) => item !== key))
-        else if (!authorizedSet.has(key)) setDesired(live)
-        else if (!atCap) setDesired([...live, key])
+        if (live.includes(key)) edit(live.filter((item) => item !== key))
+        else if (!authorizedSet.has(key)) edit(live)
+        else if (!atCap) edit([...live, key])
       }
-      const inherit = () => { if (!locked) setDesired([]) }
+      const inherit = () => { if (!locked) edit([]) }
       const saving = awaiting !== null || (desired !== null && !open && desiredText !== confirmedText)
 
       const shownStale = current.filter((key) => !authorizedSet.has(key))
@@ -582,6 +674,13 @@ window.__ModuleLoader__.load({
       const [openLevel, setOpenLevel] = React.useState(null)
       const lock = lockFor(props.sessionId)
       const [lockTick, setLockTick] = React.useState(0)
+      // Cells that deferred to another command re-check the lock whenever a
+      // turn ends, whoever queued it: the switch, a cell, or a closed menu.
+      React.useEffect(() => {
+        const wake = () => setLockTick((count) => count + 1)
+        lock.listeners.add(wake)
+        return () => { lock.listeners.delete(wake) }
+      }, [lock])
       const t = props.t ?? ((key) => en[key] ?? key)
       const missing = view === undefined || view === null
       // A connection reset briefly clears the view; do not reopen a flyout
@@ -592,14 +691,14 @@ window.__ModuleLoader__.load({
         h('style', null, styles),
         LEVELS.map((level) => h(LevelCell, {
           ...props,
-          key: level,
+          // A cell, with its draft, belongs to one session.
+          key: `${props.sessionId ?? ''}:${level}`,
           t,
           level,
           view,
           routes,
           lock,
           lockTick,
-          onUnlock: () => setLockTick((count) => count + 1),
           open: openLevel === level,
           onOpen: () => setOpenLevel(level),
           onClose: () => setOpenLevel((currentLevel) => currentLevel === level ? null : currentLevel),
