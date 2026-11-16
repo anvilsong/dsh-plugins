@@ -58,8 +58,8 @@ export async function apply(ctx) {
   ctx.tools.guard((execution) => {
     if (!execution.agent || !isDelegationTool(execution.name)) return undefined
     const state = projection.stateOf(execution.agent.session)
-    if (!state.active || !state.run || state.run.endedAt !== null) return undefined
-    if (state.run.spawnAttempts < MAX_SPAWN_ATTEMPTS) return undefined
+    if (!state.run || state.run.endedAt != null) return undefined
+    if (state.run.spawnAttempts <= MAX_SPAWN_ATTEMPTS) return undefined
     return {
       reason: 'ultracode_budget_exhausted:spawns',
       info: {

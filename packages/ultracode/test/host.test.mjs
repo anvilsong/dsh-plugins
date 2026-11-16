@@ -97,7 +97,7 @@ test('the current pending command is allowed to complete', async () => {
   assert.equal(result.kind, 'success')
 })
 
-test('guard denies the 25th delegation attempt only while a run is open', async () => {
+test('guard allows attempt 24 and denies attempt 25 while a run is open', async () => {
   const { ctx, get, agent, setState } = harness()
   await apply(ctx)
   setState({
@@ -105,11 +105,25 @@ test('guard denies the 25th delegation attempt only while a run is open', async 
     pending: null,
     run: { turn: 1, startedAt: 0, endedAt: null, spawnAttempts: 24, stop: null },
   })
+  assert.equal(get().guard({ agent, name: 'subagent' }), undefined)
+  get().state.run.spawnAttempts = 25
   const denial = get().guard({ agent, name: 'subagent' })
   assert.equal(denial.reason, 'ultracode_budget_exhausted:spawns')
   get().state.run.spawnAttempts = 23
   assert.equal(get().guard({ agent, name: 'subagent' }), undefined)
   assert.equal(get().guard({ agent, name: 'read' }), undefined)
+})
+
+test('off mid-run still enforces the open run budget', async () => {
+  const { ctx, get, agent, setState } = harness()
+  await apply(ctx)
+  setState({
+    active: false,
+    pending: null,
+    run: { turn: 1, startedAt: 0, endedAt: null, spawnAttempts: 25, stop: null },
+  })
+  const denial = get().guard({ agent, name: 'subagent' })
+  assert.equal(denial.reason, 'ultracode_budget_exhausted:spawns')
 })
 
 test('guard ignores closed runs and non-delegation calls', async () => {

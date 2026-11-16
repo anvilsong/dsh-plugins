@@ -21,11 +21,6 @@ function commandArg(event) {
   return arg === 'on' ? true : arg === 'off' ? false : null
 }
 
-function contentText(event) {
-  const content = event.data.message?.content
-  return Array.isArray(content) ? content.map((block) => block.text ?? '').join('\n') : ''
-}
-
 export function isDelegationTool(name) {
   return DELEGATION_TOOLS.has(name)
 }
@@ -33,7 +28,7 @@ export function isDelegationTool(name) {
 /** Fold command, turn, and delegation events into durable per-session state. */
 export function foldUltracode(state, event) {
   if (event.type === 'turn/start') {
-    if (!state.active || state.run?.endedAt === null) return state
+    if (!state.active || (state.run && state.run.endedAt == null)) return state
     return {
       ...state,
       run: {
@@ -50,16 +45,16 @@ export function foldUltracode(state, event) {
     return { ...state, run: { ...state.run, endedAt: event.time ?? Date.now() } }
   }
 
-  if (event.type === 'tool/call' && state.run?.endedAt === null && isDelegationTool(event.data.name)) {
+  if (event.type === 'tool/call' && state.run && state.run.endedAt == null && isDelegationTool(event.data.name)) {
     return {
       ...state,
       run: { ...state.run, spawnAttempts: state.run.spawnAttempts + 1 },
     }
   }
 
-  if (event.type === 'tool/result' && state.run?.endedAt === null && isDelegationTool(event.data.name)) {
-    const text = contentText(event)
-    if (!text.includes('ultracode_budget_exhausted:spawns')) return state
+  if (event.type === 'tool/result' && state.run && state.run.endedAt == null) {
+    const error = event.data.error
+    if (state.run.stop || error?.code !== 'ultracode_budget_exhausted' || error.reason !== 'spawns') return state
     return { ...state, run: { ...state.run, stop: 'ultracode_budget_exhausted:spawns' } }
   }
 
