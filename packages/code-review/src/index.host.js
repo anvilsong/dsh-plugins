@@ -214,7 +214,7 @@ export async function apply(ctx) {
         if (scope.files.length === 0 && scope.mode !== 'patch') {
           return { kind: 'error', text: 'No reviewable files were found. Sensitive, generated, and over-budget files are skipped.' }
         }
-        agent.steer({
+        agent.followup({
           source: { kind: 'user' },
           role: 'user',
           content: [{ type: 'text', text: steerMessage(scope) }],
