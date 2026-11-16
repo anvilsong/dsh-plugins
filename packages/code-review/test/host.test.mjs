@@ -175,6 +175,7 @@ test('steer spec embeds the bounded three-round loop and stop contract', async (
     assert.match(spec.script, /return finish\('dry'\)/)
     assert.match(spec.script, /return finish\('cap_reached'\)/)
     assert.match(spec.script, /validRefuterOutput/)
+    assert.match(text, /passing spec\.meta as meta, spec\.args as args, and spec\.script as the script verbatim/)
     assert.match(text, /Rounds: <rounds>\/3/)
     assert.match(text, /Stop reason: <dry\|cap_reached>/)
     assert.match(text, /More findings may remain/)
