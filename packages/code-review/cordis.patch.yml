@@ -1,0 +1,4 @@
+# Bundle patch for dsh-plugin-code-review.
+- insert:
+    - id: code-review
+      name: dsh-plugin-code-review

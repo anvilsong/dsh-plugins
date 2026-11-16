@@ -1,0 +1,25 @@
+{
+  "name": "dsh-plugin-code-review",
+  "version": "0.1.0",
+  "description": "Bounded code review with two independent finders and one refuter.",
+  "type": "module",
+  "main": "src/index.host.js",
+  "meta": {
+    "title": "Code review",
+    "description": "Run a bounded review of a workspace, file, or patch."
+  },
+  "exports": {
+    ".": {
+      "default": "./src/index.host.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}
