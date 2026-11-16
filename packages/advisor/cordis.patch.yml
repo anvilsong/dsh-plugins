@@ -1,0 +1,4 @@
+# Bundle patch for dsh-plugin-advisor.
+- insert:
+    - id: advisor
+      name: dsh-plugin-advisor

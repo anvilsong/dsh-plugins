@@ -1,0 +1,33 @@
+{
+  "name": "dsh-plugin-advisor",
+  "version": "0.1.0",
+  "description": "Opt-in advisor consultations at major planning and review steps.",
+  "type": "module",
+  "main": "src/index.host.js",
+  "meta": {
+    "title": "Advisor",
+    "description": "Toggle advisor consultations for this session."
+  },
+  "exports": {
+    ".": { "default": "./src/index.host.js" },
+    "./client": { "default": "./src/client.js" },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-commands",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-api-gateway"
+      ]
+    }
+  },
+  "dependencies": { "zod": "4.4.3" },
+  "license": "MIT"
+}
