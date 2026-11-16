@@ -6,9 +6,11 @@ function harness() {
   let definition
   let section
   let command
+  let guard
   const calls = []
-  let state = { active: false, pending: null }
+  let state = { active: false, pending: null, run: null }
   const ctx = {
+    tools: { guard(fn) { guard = fn } },
     get(name) {
       if (name === 'agentTeams') return { isEnabled: () => false }
       return undefined
@@ -34,7 +36,7 @@ function harness() {
   return {
     ctx,
     agent,
-    get: () => ({ definition, section, command, calls, state }),
+    get: () => ({ definition, section, command, calls, state, guard }),
     setState: (next) => { state = next },
   }
 }
@@ -44,7 +46,7 @@ test('apply registers the projection, section, and command', async () => {
   await apply(ctx)
   const { definition, section, command, calls } = get()
   assert.equal(definition.key, 'ultracode')
-  assert.equal(definition.stateVersion, 3)
+  assert.equal(definition.stateVersion, 4)
   assert.equal(typeof definition.apply, 'function')
   assert.equal(section.name, 'ultracode:policy')
   assert.equal(section.order, 500)
@@ -70,7 +72,7 @@ test('the command validates input and reports state without changing Team', asyn
   await apply(ctx)
   const { command } = get()
   assert.equal((await command.handler({ agent, rawInput: 'status' })).kind, 'success')
-  assert.equal((await command.handler({ agent, rawInput: 'status' })).text, 'Ultracode is off for this session. AgentTeam is off.')
+  assert.equal((await command.handler({ agent, rawInput: 'status' })).text, 'Ultracode is off for this session.')
   assert.equal((await command.handler({ agent, rawInput: 'on' })).kind, 'success')
   assert.equal((await command.handler({ agent, rawInput: 'off' })).kind, 'success')
   assert.equal((await command.handler({ agent, rawInput: 'bogus' })).kind, 'error')
@@ -93,4 +95,45 @@ test('the current pending command is allowed to complete', async () => {
   const { command } = get()
   const result = await command.handler({ agent, rawInput: 'on', commandId: 'current' })
   assert.equal(result.kind, 'success')
+})
+
+test('guard denies the 25th delegation attempt only while a run is open', async () => {
+  const { ctx, get, agent, setState } = harness()
+  await apply(ctx)
+  setState({
+    active: true,
+    pending: null,
+    run: { turn: 1, startedAt: 0, endedAt: null, spawnAttempts: 24, stop: null },
+  })
+  const denial = get().guard({ agent, name: 'subagent' })
+  assert.equal(denial.reason, 'ultracode_budget_exhausted:spawns')
+  get().state.run.spawnAttempts = 23
+  assert.equal(get().guard({ agent, name: 'subagent' }), undefined)
+  assert.equal(get().guard({ agent, name: 'read' }), undefined)
+})
+
+test('guard ignores closed runs and non-delegation calls', async () => {
+  const { ctx, get, agent } = harness()
+  await apply(ctx)
+  get().state = {
+    active: true,
+    pending: null,
+    run: { turn: 1, startedAt: 0, endedAt: 100, spawnAttempts: 24, stop: null },
+  }
+  assert.equal(get().guard({ agent, name: 'subagent' }), undefined)
+  assert.equal(get().guard({ agent, name: 'workflow' }), undefined)
+})
+
+test('status reports the current run from projection only', async () => {
+  const { ctx, get, agent, setState } = harness()
+  await apply(ctx)
+  setState({
+    active: true,
+    pending: null,
+    run: { turn: 1, startedAt: 0, endedAt: null, spawnAttempts: 7, stop: null },
+  })
+  const { command } = get()
+  const result = await command.handler({ agent, rawInput: 'status' })
+  assert.equal(result.kind, 'success')
+  assert.match(result.text, /Current run: 7\/24 spawns · stop: none/)
 })

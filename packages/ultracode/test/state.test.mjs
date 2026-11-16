@@ -10,16 +10,16 @@ const run = (args, commandId = 'cmd-1', time = 100) => ({
 const done = (kind, commandId = 'cmd-1') => ({ type: 'command/done', data: { kind, commandId } })
 
 test('off by default', () => {
-  assert.deepEqual(INITIAL_ULTRACODE_STATE, { active: false, pending: null })
-  assert.deepEqual(viewUltracode(INITIAL_ULTRACODE_STATE), { active: false, pending: false })
+  assert.deepEqual(INITIAL_ULTRACODE_STATE, { active: false, pending: null, run: null })
+  assert.deepEqual(viewUltracode(INITIAL_ULTRACODE_STATE), { active: false, pending: false, run: null })
 })
 
 test('successful on commits active', () => {
   const pending = foldUltracode(INITIAL_ULTRACODE_STATE, run('on'))
   assert.equal(pending.pending.arg, true)
   const active = foldUltracode(pending, done('success'))
-  assert.deepEqual(active, { active: true, pending: null })
-  assert.deepEqual(viewUltracode(active), { active: true, pending: false })
+  assert.deepEqual(active, { active: true, pending: null, run: null })
+  assert.deepEqual(viewUltracode(active), { active: true, pending: false, run: null })
 })
 
 test('successful off clears active', () => {
@@ -27,7 +27,7 @@ test('successful off clears active', () => {
   state = foldUltracode(state, done('success'))
   state = foldUltracode(state, run('off', 'cmd-2'))
   state = foldUltracode(state, done('success', 'cmd-2'))
-  assert.deepEqual(state, { active: false, pending: null })
+  assert.deepEqual(state, { active: false, pending: null, run: null })
 })
 
 test('failed commands preserve the previous active value', () => {
@@ -53,6 +53,33 @@ test('an expired pending command can be replaced', () => {
 test('mismatched done is ignored', () => {
   const pending = foldUltracode(INITIAL_ULTRACODE_STATE, run('on'))
   assert.equal(foldUltracode(pending, done('success', 'other')), pending)
+})
+
+test('a run opens on turn start, counts delegation attempts, and closes on turn end', () => {
+  let state = foldUltracode(INITIAL_ULTRACODE_STATE, run('on'))
+  state = foldUltracode(state, done('success'))
+  state = foldUltracode(state, { type: 'turn/start', time: 500, data: { turn: 1 } })
+  assert.equal(state.run.turn, 1)
+  assert.equal(state.run.spawnAttempts, 0)
+  state = foldUltracode(state, { type: 'tool/call', data: { name: 'subagent' } })
+  state = foldUltracode(state, { type: 'tool/call', data: { name: 'read' } })
+  assert.equal(state.run.spawnAttempts, 1)
+  state = foldUltracode(state, { type: 'tool/result', data: { name: 'subagent', message: { content: [{ type: 'text', text: 'ultracode_budget_exhausted:spawns' }] } } })
+  assert.equal(state.run.stop, 'ultracode_budget_exhausted:spawns')
+  state = foldUltracode(state, { type: 'turn/end', time: 600, data: { turn: 1 } })
+  assert.equal(state.run.endedAt, 600)
+})
+
+test('off mid-run leaves the run open until turn end', () => {
+  let state = foldUltracode(INITIAL_ULTRACODE_STATE, run('on'))
+  state = foldUltracode(state, done('success'))
+  state = foldUltracode(state, { type: 'turn/start', time: 500, data: { turn: 1 } })
+  state = foldUltracode(state, run('off', 'cmd-2'))
+  state = foldUltracode(state, done('success', 'cmd-2'))
+  assert.equal(state.active, false)
+  assert.equal(state.run.endedAt, null)
+  state = foldUltracode(state, { type: 'turn/end', time: 600, data: { turn: 1 } })
+  assert.equal(state.run.endedAt, 600)
 })
 
 test('a cold fold reconstructs the latest state from command history', () => {

@@ -38,6 +38,16 @@ entries. A successful `on` or `off` command changes the mode. An error leaves
 the previous value unchanged. Resume, fork, and compaction therefore recover
 the same state without a separate settings file.
 
+## Delegation budget
+
+While Ultracode is on, each turn allows **24 direct delegation attempts**.
+Denied attempts count toward the budget. The 25th attempt is denied with
+`ultracode_budget_exhausted:spawns`. The current run remains open until turn end,
+even if Ultracode is turned off mid-run.
+
+`/ultracode status` reports the current or last run's attempt count and stop
+reason, without querying Team or starting another orchestration.
+
 ## Install
 
 Install the package directory as a DSH bundle. The package declares a Host
