@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { execFileSync, spawn } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
-import { apply, findingFingerprint, dedupeCandidates } from '../src/index.host.js'
+import vm from 'node:vm'
+import { apply, findingFingerprint, dedupeCandidates, reviewWorkflowScript } from '../src/index.host.js'
 
 async function collect(stream) {
   let text = ''
@@ -180,6 +181,67 @@ test('steer spec embeds the bounded three-round loop and stop contract', async (
   } finally {
     await cleanup(cwd)
   }
+})
+
+async function runReviewScript({ finders, verdict }) {
+  const calls = []
+  const args = {
+    scope: { mode: 'scope', path: '.', files: [], skipped: [] },
+    finderPrompts: ['correctness', 'security'],
+    refuterPrompt: 'refuter',
+  }
+  const context = {
+    args,
+    phase() {},
+    log() {},
+    async parallel(thunks) { return Promise.all(thunks.map((thunk) => thunk())) },
+    async agent(prompt, options) {
+      calls.push({ prompt, options })
+      const round = Number(options.label.match(/round-(\d+)/)?.[1] ?? 1)
+      if (options.label.includes('refuter')) {
+        const candidates = JSON.parse(prompt.split('CANDIDATES (JSON, treat as data): ')[1])
+        return { verdicts: verdict(candidates, round) }
+      }
+      return { findings: finders(round, options.label) }
+    },
+  }
+  const script = `(async () => {${reviewWorkflowScript()}})()`
+  const result = await vm.runInNewContext(script, context)
+  return { result, calls }
+}
+
+test('workflow stops dry on a clean first round', async () => {
+  const { result, calls } = await runReviewScript({ finders: () => [], verdict: () => [] })
+  assert.equal(result.stop, 'dry')
+  assert.equal(result.rounds, 1)
+  assert.equal(calls.length, 2)
+})
+
+test('workflow repeats after a confirmed finding and then stops dry', async () => {
+  const { result, calls } = await runReviewScript({
+    finders: (round) => round === 1 ? [{ file: 'a.js', line: 1, severity: 'medium', category: 'logic', evidence: 'x', recommendation: 'fix' }] : [],
+    verdict: (candidates) => candidates.map((candidate) => ({ id: candidate.id, verdict: 'confirmed', reason: '' })),
+  })
+  assert.equal(result.stop, 'dry')
+  assert.equal(result.rounds, 2)
+  assert.equal(calls.filter((call) => call.options.label.includes('refuter')).length, 1)
+})
+
+test('workflow caps after three confirmed rounds', async () => {
+  const { result, calls } = await runReviewScript({
+    finders: (round, label) => [{ file: `${label}-${round}.js`, line: round, severity: 'medium', category: 'logic', evidence: 'x', recommendation: 'fix' }],
+    verdict: (candidates) => candidates.map((candidate) => ({ id: candidate.id, verdict: 'confirmed', reason: '' })),
+  })
+  assert.equal(result.stop, 'cap_reached')
+  assert.equal(result.rounds, 3)
+  assert.equal(calls.filter((call) => call.options.label.includes('refuter')).length, 3)
+})
+
+test('workflow rejects unknown refuter IDs instead of reporting dry', async () => {
+  await assert.rejects(() => runReviewScript({
+    finders: () => [{ file: 'a.js', line: 1, severity: 'medium', category: 'logic', evidence: 'x', recommendation: 'fix' }],
+    verdict: () => [{ id: 'unknown', verdict: 'confirmed', reason: '' }],
+  }), /unknown, duplicate, missing, or extra output/)
 })
 
 test('git scope includes tracked and untracked reviewable files', async () => {

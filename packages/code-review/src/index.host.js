@@ -226,7 +226,7 @@ function refuterPrompt(scope) {
   return `You are the independent refuter for a code review. SCOPE: ${JSON.stringify(scope)}\n${patchRule}A candidate array with stable IDs will be appended. Verify every candidate by reading its cited lines and the minimum surrounding context. Refute anything false, duplicated, or not caused by the reviewed code; use unverified when the available evidence is insufficient. Return JSON only: {verdicts:[{id,verdict,reason}]}. verdict is confirmed|refuted|unverified. Return exactly one verdict for every supplied candidate ID, with no unknown IDs, duplicate IDs, omissions, extra findings, or additional properties. Use an empty reason for confirmed verdicts. Never invent findings. Do not modify code.`
 }
 
-function reviewWorkflowScript() {
+export function reviewWorkflowScript() {
   return String.raw`
 ${findingFingerprint.toString()}
 ${dedupeCandidates.toString()}
