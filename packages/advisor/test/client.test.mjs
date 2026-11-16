@@ -140,7 +140,21 @@ test('client registers one Advisor switch and an authorized-model selector', asy
   await find(chinese, (node) => node.type === 'Switch').props.onChange(true)
   await Promise.resolve()
   await Promise.resolve()
-  assert.deepEqual(reports, ['无法更新顾问。'])
+  assert.deepEqual(reports, ['English Host rejection'], 'the Host text is reported verbatim')
+  for (const text of ['', undefined]) {
+    const fallback = []
+    const empty = advisorOption.type({
+      ...advisorOption.props,
+      useProjection: () => ({ active: false, pending: false, pendingTarget: null }),
+      ctx: { get: (key) => key === 'commandUi' ? { execute: async () => ({ kind: 'error', text }) } : undefined },
+      reportFailure: (message) => fallback.push(message),
+      t: (key) => ({ 'chip.failed': '无法更新顾问。' })[key] ?? key,
+    })
+    await find(empty, (node) => node.type === 'Switch').props.onChange(true)
+    await Promise.resolve()
+    await Promise.resolve()
+    assert.deepEqual(fallback, ['无法更新顾问。'], `empty Host text (${String(text)}) falls back to the localized generic`)
+  }
 })
 
 const ticks = async (count = 6) => { for (let index = 0; index < count; index++) await Promise.resolve() }
@@ -241,7 +255,7 @@ test('verifier flyout commits one choice, shows saving, and snaps back on a reco
   view = { ...view, failure: { count: 1, text: 'Advisor is already updating. Try again after it finishes.', target: 'verifierModel' } }
   output = cell.render()
   output = cell.render()
-  assert.deepEqual(reports, ['Could not update Verifier model.'])
+  assert.deepEqual(reports, ['Advisor is already updating. Try again after it finishes.'])
   assert.equal(find(output, (node) => node.props.role === 'menuitem').props['aria-busy'], false)
   assert.match(JSON.stringify(find(output, (node) => node.props.role === 'menuitem')), /"Inherit"/)
 })
@@ -381,7 +395,57 @@ test('advisor model reports only advisorModel-target failures after its own sele
   harness.state.view = { ...harness.state.view, failure: { count: 2, text: 'nope', target: 'advisorModel' } }
   harness.rerender()
   harness.rerender()
-  assert.deepEqual(harness.reports, ['Could not update Advisor model.'])
+  assert.deepEqual(harness.reports, ['nope'])
   assert.equal(harness.cellNode().props['aria-busy'], false)
   assert.equal(harness.cellValue().children[0], 'Inherit')
+})
+
+test('advisor model failure with empty or missing Host text falls back to the localized generic', async () => {
+  for (const text of ['', undefined]) {
+    const harness = advisorModelHarness({})
+    harness.selectRow('anthropic/claude-fable-5-2')
+    await ticks()
+    harness.state.view = { ...harness.state.view, failure: { count: 1, text, target: 'advisorModel' } }
+    harness.rerender()
+    harness.rerender()
+    assert.deepEqual(harness.reports, ['Could not update Advisor model.'])
+  }
+})
+
+test('verifier flyout failure with empty Host text falls back to the localized generic', async () => {
+  const runtime = createRuntime()
+  const reports = []
+  const registrations = loadWithRuntime(runtime, { execute: async () => ({ kind: 'success' }) })
+  let view = { active: true, verifierModel: null, pending: false, pendingTarget: null, pendingSince: null, failure: null }
+  const wrapper = registrations[2]({ useProjection: (key) => key === 'advisorModelRoutes' ? [{ provider: 'anthropic', model: 'claude-haiku-5-5' }] : view, reportFailure: (message) => reports.push(message) })
+  const cell = runtime.mount(wrapper.type)
+  let output = cell.render(wrapper.props)
+  find(output, (node) => node.props.role === 'menuitem').props.onClick()
+  output = cell.render()
+  const flyout = find(output, (node) => typeof node.type === 'function' && node.props.cellRef)
+  findAll(flyout.children[0]({ current: () => {} }), (node) => typeof node.props.onSelect === 'function')
+    .find((row) => row.props.title === 'anthropic/claude-haiku-5-5').props.onSelect()
+  await ticks()
+  view = { ...view, failure: { count: 1, text: '', target: 'verifierModel' } }
+  cell.render()
+  cell.render()
+  assert.deepEqual(reports, ['Could not update Verifier model.'])
+})
+
+test('advisor switch reports the Host failure text, falling back to the generic when empty', async () => {
+  for (const [text, expected] of [['Host says no', 'Host says no'], ['', 'Could not update Advisor.'], [undefined, 'Could not update Advisor.']]) {
+    const runtime = createRuntime()
+    const reports = []
+    const registrations = loadWithRuntime(runtime, { execute: async () => ({ kind: 'success' }) })
+    let view = { active: false, verifierModel: null, advisorModel: null, pending: false, pendingTarget: null, pendingSince: null, failure: null }
+    const wrapper = registrations[0]({ useProjection: () => view, reportFailure: (message) => reports.push(message) })
+    const cell = runtime.mount(wrapper.type)
+    let output = cell.render(wrapper.props)
+    await find(output, (node) => node.type === 'Switch').props.onChange(true)
+    await ticks()
+    view = { ...view, failure: { count: 1, text, target: 'advisor' } }
+    cell.render()
+    cell.render()
+    assert.deepEqual(reports, [expected])
+  }
 })

@@ -157,7 +157,7 @@ window.__ModuleLoader__.load({
           const commandUi = props.ctx.get('commandUi')
           if (!commandUi?.execute) throw new Error(t('chip.unavailable'))
           const outcome = await commandUi.execute({ sessionId: props.sessionId }, line)
-          if (outcome?.kind === 'error') throw new Error(t(failureKey))
+          if (outcome?.kind === 'error') throw new Error(outcome.text || t(failureKey))
           return true
         } catch (cause) {
           report(cause instanceof Error ? cause.message : String(cause))
@@ -190,9 +190,9 @@ window.__ModuleLoader__.load({
       const sent = React.useRef(null)
       const t = props.t ?? ((key) => en[key] ?? key)
       if (sent.current !== null && view?.active === sent.current && !pending) sent.current = null
-      useFailureWatch(view, (failure) => failure.target === 'advisor' && sent.current !== null, () => {
+      useFailureWatch(view, (failure) => failure.target === 'advisor' && sent.current !== null, (failure) => {
         sent.current = null
-        report(t('chip.failed'))
+        report(failure.text || t('chip.failed'))
       })
       const info = primitives?.Tooltip && primitives?.Button
         ? h(primitives.Tooltip, {
@@ -361,9 +361,9 @@ window.__ModuleLoader__.load({
       const pending = freshPending(view)
       const saved = config.saved(view)
       React.useEffect(() => { if (desired !== null && desired === saved) setDesired(null) }, [saved, desired])
-      useFailureWatch(view, (failure) => failure.target === config.failureTarget && desired !== null, () => {
+      useFailureWatch(view, (failure) => failure.target === config.failureTarget && desired !== null, (failure) => {
         setDesired(null)
-        report(t(config.failedKey))
+        report(failure.text || t(config.failedKey))
       })
       const missing = view === undefined || view === null
       // A connection reset briefly clears the view; do not reopen the flyout.

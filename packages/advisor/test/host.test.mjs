@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { chmod, mkdtemp, mkdir, readdir, writeFile, rm } from 'node:fs/promises'
-import { realpathSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { apply, POLICY, UNCONFIGURED_POLICY, unavailablePolicy } from '../src/index.host.js'
+import { createLedger } from '../src/ledger.js'
 import { ADVISOR_WORKFLOW, DATA_DIR_NOT_CONFIGURED, dataDirUnusable } from '../src/planner.js'
 import {
+  EVIDENCE_TOOL,
   installVerifierBoundary,
   VERIFIER_TOOLS,
   VERIFIER_WORKFLOW,
@@ -61,30 +63,51 @@ async function tempDir(t, prefix) {
   return dir
 }
 
+// The verifier's workspace root for boundary harnesses: read, glob and grep
+// stay inside it. The ledger is never written by these tests.
+const BOUNDARY_TMP = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'advisor-host-boundary-')))
+after(() => rmSync(BOUNDARY_TMP, { recursive: true, force: true }))
+const BOUNDARY_WS = path.join(BOUNDARY_TMP, 'ws')
+mkdirSync(path.join(BOUNDARY_WS, 'src'), { recursive: true })
+// Arguments each allowed verifier tool accepts in that workspace.
+const VERIFIER_ARGS = {
+  glob: { pattern: '**/*.js' },
+  grep: { pattern: 'x' },
+  read: { file_path: 'src/a.js' },
+  team_task_get: { id: 'task-1' },
+  [EVIDENCE_TOOL]: {},
+}
+
 function boundaryHarness({ dataDirProblem } = {}) {
   const listeners = {}
   const globalGuards = []
   const agents = new Map()
+  // The evidence tool is registered on each verifier by the boundary itself.
   const definitions = Object.fromEntries(
-    [...VERIFIER_TOOLS, 'bash', 'write', 'run_code', 'team_task_update'].map((name) => [name, { name }]),
+    [...VERIFIER_TOOLS.filter((name) => name !== EVIDENCE_TOOL), 'bash', 'write', 'run_code', 'team_task_update'].map((name) => [name, { name }]),
   )
   const globalNames = new Set(['team_task_get', 'bash', 'write', 'run_code', 'team_task_update'])
   const tools = {
     get(name, agent) {
       if (agent?.shadows?.has(name)) return agent.shadows.get(name)
+      if (agent?.registered?.has(name)) return agent.registered.get(name)
       if (agent === undefined && !globalNames.has(name)) return undefined
       return definitions[name]
     },
     guard(guard) { globalGuards.push(guard); return () => {} },
   }
+  const lead = { id: 'lead', names: { self: 'lead', parent: undefined } }
   const ctx = {
     agents: { get: (id) => agents.get(id) },
-    subagents: { namesOf: (agent) => agent.names },
+    subagents: { namesOf: (agent) => agent.names, rootOf: () => lead },
     tools,
     on(name, listener) { listeners[name] = listener; return () => {} },
     logger: { warn() {} },
   }
-  const dispose = installVerifierBoundary(ctx, undefined, undefined, dataDirProblem)
+  const dispose = installVerifierBoundary(ctx, undefined, undefined, dataDirProblem, {
+    workspaceOf: () => BOUNDARY_WS,
+    ledger: createLedger(path.join(BOUNDARY_TMP, 'data')),
+  })
   const sequence = []
   function agent(id, self, parent = 'lead') {
     const guards = []
@@ -94,12 +117,18 @@ function boundaryHarness({ dataDirProblem } = {}) {
       id,
       names: { self, parent },
       shadows: new Map(),
+      registered: new Map(),
       cancelled: false,
       cancel() { this.cancelled = true },
       ctx: {
         tools: {
           get: tools.get,
           guard(guard) { guards.push(guard); sequence.push('guard'); return () => {} },
+          register(definition) {
+            value.registered.set(definition.name, definition)
+            sequence.push(`register:${definition.name}`)
+            return () => { value.registered.delete(definition.name) }
+          },
           restrict(filter) { restrictions.push(filter); sequence.push('restrict') },
         },
         systemPrompt: {
@@ -152,16 +181,18 @@ test('policy and host boundary keep verification read-only and route-exact', () 
   const child = boundary.agent('child', 'advisor-verifier-abcdef012345')
   boundary.listeners['subagent/start']({ id: 'child', local: true, provider: 'spawn' })
   boundary.sequence.push('initial-prompt')
-  assert.deepEqual(boundary.sequence, ['guard', 'section', 'initial-prompt'])
+  assert.deepEqual(boundary.sequence, ['guard', `register:${EVIDENCE_TOOL}`, 'register:grep', 'section', 'initial-prompt'])
   assert.deepEqual(child.restrictions, [])
   assert.equal(child.guards.length, 1)
   assert.equal(child.value.cancelled, false)
 
+  assert.deepEqual(VERIFIER_TOOLS, ['glob', 'grep', 'read', 'team_task_get', EVIDENCE_TOOL])
   for (const name of VERIFIER_TOOLS) {
-    const exec = { name, agent: child.value, arguments: {} }
+    const exec = { name, agent: child.value, arguments: VERIFIER_ARGS[name] }
     assert.equal(boundary.globalGuards[0](exec), undefined)
     assert.equal(child.guards[0](exec), undefined)
   }
+  assert.match(child.guards[0]({ name: 'read', agent: child.value, arguments: { file_path: '/etc/hosts' } }), /inside the workspace/)
   boundary.definitions['late-scoped'] = { name: 'late-scoped' }
   for (const name of ['bash', 'write', 'run_code', 'team_task_update', 'late-scoped']) {
     const exec = { name, agent: child.value, arguments: {} }
@@ -419,7 +450,7 @@ test('verifier: a verifier that starts while the data directory is unusable is c
   const child = ready.agent('child', 'advisor-verifier-abcdef012345')
   ready.listeners['subagent/start']({ id: 'child', local: true, provider: 'spawn' })
   assert.equal(child.value.cancelled, false, 'a usable folder leaves the verifier running')
-  assert.equal(child.guards[0]({ name: 'read', agent: child.value, arguments: {} }), undefined)
+  assert.equal(child.guards[0]({ name: 'read', agent: child.value, arguments: VERIFIER_ARGS.read }), undefined)
 })
 
 test('verifier: reserved advisor-verifier delegations are refused while the ledger is not ready and allowed once it is', () => {
@@ -490,4 +521,20 @@ test('advisor model command validates routes and replaces the planner command', 
   setRoutes(null)
   assert.equal((await command.handler({ agent, rawInput: 'model anthropic/claude-haiku-5-5' })).kind, 'error')
   assert.match((await command.handler({ agent, rawInput: 'status' })).text, /Advisor model: Inherit\. Verifier model: Inherit/)
+})
+
+test('a stale pending marker neither reports updating nor blocks a new command', async () => {
+  const { ctx, get, agent } = harness()
+  await apply(ctx)
+  const command = get().command
+  get().state.pending = { target: 'advisor', active: true, commandId: 'old', startedAt: Date.now() - 6 * 60_000 }
+  const status = await command.handler({ agent, rawInput: 'status' })
+  assert.doesNotMatch(status.text, /updating/)
+  assert.match(status.text, /Advisor model: Inherit/)
+  const result = await command.handler({ agent, rawInput: 'off', commandId: 'new' })
+  assert.equal(result.kind, 'success')
+  assert.doesNotMatch(result.text, /already updating/)
+  get().state.pending = { target: 'advisor', active: true, commandId: 'old', startedAt: Date.now() - 60_000 }
+  assert.match((await command.handler({ agent, rawInput: 'status' })).text, /updating/)
+  assert.match((await command.handler({ agent, rawInput: 'off', commandId: 'new' })).text, /already updating/)
 })

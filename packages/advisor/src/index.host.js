@@ -8,7 +8,7 @@ import {
   dataDirUnusable,
   installPlannerBoundary,
 } from './planner.js'
-import { foldAdvisor, INITIAL_ADVISOR_STATE, parseModelSetting, routeLabel, viewAdvisor } from './state.js'
+import { foldAdvisor, INITIAL_ADVISOR_STATE, parseModelSetting, pendingAdvisor, routeLabel, viewAdvisor } from './state.js'
 import { installVerifierBoundary, VERIFIER_WORKFLOW, verifierModelPolicy } from './verifier.js'
 
 export const name = 'advisor'
@@ -140,6 +140,17 @@ export async function apply(ctx, config = {}) {
     },
   })
 
+  // Optional and bound late, as the task board is: without the
+  // working-directory service the verifier boundary stays installed and
+  // denies every verifier, because its workspace root is unknown.
+  let workingDirectory
+  ctx.inject(['workingDirectory'], (directoryCtx) => {
+    directoryCtx.effect(() => {
+      workingDirectory = directoryCtx.workingDirectory
+      return () => { workingDirectory = undefined }
+    }, 'advisor: verifier working directory')
+  })
+
   ctx.inject(['agents', 'subagents', 'tools'], (verifierCtx) => {
     const stateFor = (agent) => {
       if (agent === undefined) return undefined
@@ -154,6 +165,16 @@ export async function apply(ctx, config = {}) {
       (agent) => stateFor(agent)?.active === true,
       (agent) => stateFor(agent)?.verifierModel ?? null,
       dataDirProblem,
+      {
+        workspaceOf: (agent) => {
+          try {
+            return workingDirectory?.get(agent.session)
+          } catch {
+            return undefined
+          }
+        },
+        ledger,
+      },
     ), 'advisor: verifier boundary')
   })
 
@@ -233,9 +254,10 @@ export async function apply(ctx, config = {}) {
         const raw = rawInput.trim()
         const arg = raw.toLowerCase()
         const state = projection.stateOf(agent.session)
+        const pending = pendingAdvisor(state)
         if (arg === 'status') {
           const runs = ledger === undefined ? undefined : await ledger.recentLedger()
-          if (state.pending) return { kind: 'success', text: `Advisor is updating (${state.pending.target}) for this session.` }
+          if (pending !== null) return { kind: 'success', text: `Advisor is updating (${pending.target}) for this session.` }
           const unusable = ledger?.writableProblem()
           const data = ledger === undefined
             ? `${DATA_DIR_NOT_CONFIGURED}\nReason: ${problem}. Advisor runs are refused until it is set.`
@@ -262,7 +284,7 @@ export async function apply(ctx, config = {}) {
             text: 'The separate verifier switch was removed. Advisor on enables verification automatically. Use /advisor verifier-model to choose a model.',
           }
         }
-        if (state.pending && state.pending.commandId !== commandId) {
+        if (pending !== null && pending.commandId !== commandId) {
           return { kind: 'error', text: 'Advisor is already updating. Try again after it finishes.' }
         }
         if (arg.startsWith('verifier-model ')) return setRoute(agent, raw, 'verifier-model ', 'Verifier model')

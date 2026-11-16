@@ -31,7 +31,7 @@ const SRC = fileURLToPath(new URL('../src/', import.meta.url))
 const PLAN_ID = 'abcdef012345'
 const PLAN_ID_B = '0123456789ab'
 const hash = (text) => createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex')
-const LEDGER_KEYS = ['appendLedger', 'dir', 'idInUse', 'ledgerEntriesFor', 'ledgerPath', 'recentLedger', 'replyPath', 'repliesDir', 'writableProblem', 'writeReply'].sort()
+const LEDGER_KEYS = ['appendLedger', 'dir', 'idInUse', 'ledgerEntriesFor', 'ledgerLinesFor', 'ledgerPath', 'recentLedger', 'replyPath', 'repliesDir', 'writableProblem', 'writeReply'].sort()
 const UNSAFE_MESSAGE = /must not contain control, line or paragraph separator, bidirectional control, or backtick characters/
 // Every Unicode Bidi_Control character.
 const BIDI_CONTROLS = ['\u061c', '\u200e', '\u200f', '\u202a', '\u202b', '\u202c', '\u202d', '\u202e', '\u2066', '\u2067', '\u2068', '\u2069']
@@ -741,6 +741,82 @@ test('ledger: readers recover a whole line behind any fragment, nested objects i
   assert.equal(ledger.idInUse(PLAN_ID), true)
   assert.deepEqual(ledger.ledgerEntriesFor(PLAN_ID_B), [JSON.parse(nested)])
   assert.equal(await ledger.recentLedger(), [`${PLAN_ID} dsh plan ok glued`, `${PLAN_ID_B} cli ok nested`, 'other unknown unknown mentions abcdef012345'].join('\n'))
+})
+
+test('ledger: only an object whose top-level consult_id is the id matches; a torn line shows only its own entry', async () => {
+  const ledger = createLedger(path.join(TMP, 'top-level-ids'))
+  mkdirSync(ledger.dir, { recursive: true })
+  const own = JSON.stringify({ consult_id: PLAN_ID, kind: 'plan', advisor: 'dsh', status: 'ok', topic: 'own' })
+  const ownNested = JSON.stringify({ consult_id: PLAN_ID, status: 'started', usage: { input: 1, detail: { cached: 2 } } })
+  const foreign = JSON.stringify({ consult_id: PLAN_ID_B, status: 'ok', topic: 'foreign' })
+  const lines = [
+    JSON.stringify({ consult_id: 'other', nested: { consult_id: PLAN_ID, status: 'ok' } }), // 1 whole line; the id is nested
+    JSON.stringify({ nested: { consult_id: PLAN_ID, status: 'ok' } }), // 2 whole line without a top-level id
+    JSON.stringify([{ consult_id: PLAN_ID, status: 'ok' }]), // 3 a whole array holding an entry
+    `{"consult_id":"torn-x","meta":${JSON.stringify({ wrapper: { consult_id: PLAN_ID } })}`, // 4 torn; the recovered object has no top-level id
+    `{"consult_id":"${PLAN_ID_B}","topic":"FOREIGN_FRAGMENT","pad":"zz${own}`, // 5 a foreign fragment, then the own whole line
+    `{"consult_id":"${PLAN_ID}","status":"ok","topic":"OWN_FRAGMENT${foreign}`, // 6 the own fragment, then a foreign whole line
+    `FOREIGN_GARBAGE ${ownNested}`, // 7 garbage, then the own whole line with nested objects
+    `{"consult_id":"${PLAN_ID}"}x`, // 8 the own object with trailing garbage
+    own, // 9 the own whole line
+    '',
+  ]
+  writeFileSync(ledger.ledgerPath, lines.join('\n'))
+  const found = ledger.ledgerLinesFor(PLAN_ID)
+  assert.deepEqual(found.map(({ line, text, torn }) => ({ line, text, torn })), [
+    { line: 5, text: own, torn: true },
+    { line: 7, text: ownNested, torn: true },
+    { line: 9, text: own, torn: false },
+  ])
+  for (const entry of found) assert.doesNotMatch(entry.text, /FOREIGN_|torn-x|OWN_FRAGMENT/, `line ${entry.line} shows no fragment`)
+  assert.deepEqual(found.map((entry) => entry.entry), [JSON.parse(own), JSON.parse(ownNested), JSON.parse(own)])
+  assert.deepEqual(ledger.ledgerEntriesFor(PLAN_ID), found.map((entry) => entry.entry))
+  assert.deepEqual(ledger.ledgerLinesFor(PLAN_ID_B).map(({ line, text, torn }) => ({ line, text, torn })), [{ line: 6, text: foreign, torn: true }])
+  assert.equal(ledger.idInUse(PLAN_ID), true)
+  writeFileSync(ledger.ledgerPath, lines.slice(0, 4).join('\n'))
+  assert.deepEqual(ledger.ledgerLinesFor(PLAN_ID), [], 'a nested id never matches')
+  assert.equal(ledger.idInUse(PLAN_ID), false)
+})
+
+test('ledger: a 1 MB adversarial torn line parses in under 500 ms; a longer line skips the fragment search', async () => {
+  const ledger = createLedger(path.join(TMP, 'adversarial'))
+  mkdirSync(ledger.dir, { recursive: true })
+  const MB = 1024 * 1024
+  const fill = (unit) => unit.repeat(Math.ceil(MB / unit.length)).slice(0, MB)
+  const own = JSON.stringify({ consult_id: PLAN_ID, status: 'ok', topic: 'own' })
+  const variants = {
+    'repeated {" and the id': fill(`{"${PLAN_ID}`),
+    'nested objects': fill(`{"${PLAN_ID}":`),
+    'nested arrays': fill(`{"${PLAN_ID}":[`),
+    'unterminated strings': fill(`{"${PLAN_ID}":"x`),
+    '64 offsets before a long array': `${`{"${PLAN_ID}":[`.repeat(64)}${'0,'.repeat(MB)}`.slice(0, MB),
+  }
+  const timed = (label, run) => {
+    const started = performance.now()
+    const result = run()
+    const elapsed = performance.now() - started
+    assert.ok(elapsed < 500, `${label} took ${elapsed.toFixed(0)} ms`)
+    return result
+  }
+  for (const [label, adversarial] of Object.entries(variants)) {
+    assert.equal(adversarial.length, MB, label)
+    writeFileSync(ledger.ledgerPath, `${adversarial}\n${own}\n`)
+    assert.deepEqual(timed(`${label}: ledgerEntriesFor`, () => ledger.ledgerEntriesFor(PLAN_ID)), [JSON.parse(own)])
+    assert.deepEqual(timed(`${label}: ledgerLinesFor`, () => ledger.ledgerLinesFor(PLAN_ID)).map(({ line, torn }) => ({ line, torn })), [{ line: 2, torn: false }])
+    assert.equal(timed(`${label}: idInUse`, () => ledger.idInUse(PLAN_ID)), true)
+    const started = performance.now()
+    assert.equal(await ledger.recentLedger(), `${PLAN_ID} unknown ok own`)
+    assert.ok(performance.now() - started < 500, `${label}: recentLedger took ${(performance.now() - started).toFixed(0)} ms`)
+  }
+  // A whole line glued behind a fragment is still recovered from a line of exactly 1 MB, not from a longer one.
+  const head = '{"consult_id":"torn","pad":"'
+  const glued = (size) => `${head}${'x'.repeat(size - head.length - own.length)}${own}`
+  writeFileSync(ledger.ledgerPath, `${glued(MB)}\n`)
+  assert.equal(glued(MB).length, MB)
+  assert.deepEqual(ledger.ledgerLinesFor(PLAN_ID).map(({ line, text, torn }) => ({ line, text, torn })), [{ line: 1, text: own, torn: true }])
+  writeFileSync(ledger.ledgerPath, `${glued(MB + 1)}\n`)
+  assert.deepEqual(ledger.ledgerLinesFor(PLAN_ID), [], 'beyond 1 MB the line is not searched')
+  assert.equal(await ledger.recentLedger(), 'No consults recorded.')
 })
 
 // ---------------------------------------------------------------------------

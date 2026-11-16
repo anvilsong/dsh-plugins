@@ -239,6 +239,10 @@ reads no environment variables for any of this.
 
 After a short write, the Host ends the partial line with a newline, and the
 ledger readers skip an unparseable fragment and recover a whole line behind it.
+A line that parses as a whole is taken as it is; only an object whose
+top-level `consult_id` is the ID counts as an entry of that ID. The recovery
+tries at most 64 offsets per line, from the end of the line backward, and only
+on lines of at most 1 MB, so one hostile line cannot stall the guards.
 
 Why files and not the DSH storage service: the verifier cites ledger lines and
 reply lines, and the lead checks reply hashes with a shell. Both need the exact
@@ -368,31 +372,114 @@ After an advisor run whose terminal ledger line has status `ok`:
    completes this task; it contains no findings or second verdict.
 3. The lead starts one fresh in-process `subagent` named
    `advisor-verifier-<full-id>` on the Verifier model.
-4. The verifier reads the exact ledger entry, reply file, and relevant
-   repository lines. Its final response is the sole report:
+4. The verifier gets the ledger entry and the reply from its
+   `advisor_evidence_get` tool, reads every part of the reply, and reads the
+   relevant repository lines. Its final response is the sole report:
    - Each material claim is `confirmed`, `refuted`, or `unverifiable`, with
-     `file:line` evidence.
+     `file:line` evidence, checked against the whole reply. The ledger entry
+     is cited as `sessions.jsonl:<line>` and reply lines as
+     `<reply_path>:<line>`, with the physical line numbers the tool reports.
+   - It compares the tool's `reply_path` with the task's reply path and its
+     `reply_sha256` with the task's hash, and says that it cannot hash the
+     file itself. Every part must report the same hash and part count.
    - For plans it checks facts per task: paths, named files and symbols, verify
      entry points, and contradictions of a mechanical level.
    - For advice it checks each entry under `claims`.
-   - Opinions without repository evidence stay unverifiable.
+   - Opinions without repository evidence stay unverifiable, and so do claims
+     about sources outside the workspace, such as the DSH installation and its
+     harness sources or other repositories, which the verifier cannot read.
    - There is no aggregate score or overall verdict.
 5. After the report, the lead re-reads the task pointers and checks the reply
    hash again; any change invalidates the report. While the Host process runs,
    it also refuses a verifier whose reply file no longer matches the hash it
    recorded.
 
+`advisor_evidence_get` is registered on each verifier only. Its consult ID is
+the 12 hex characters of the verifier's own name, so a verifier sees only its
+own run. It takes one optional argument, `part`: an integer from 1, the
+default. Every other argument, such as an ID, a path, an offset or a limit, is
+refused, and so is a `part` that is not an integer of at least 1. Every call
+returns:
+
+- `ledger_path` and `entries`: the 1-based line number and text of every
+  ledger line holding an entry whose top-level `consult_id` is that ID. Lines
+  of other IDs are not shown. On a torn line, where a failed short write left
+  a fragment of another line in front of a whole line of this ID, only this
+  ID's entry is shown, from its first character, and it is marked
+  `torn: true`; the fragment itself is never shown.
+- `reply_path`: `<dataDir>/replies/<id>.md`, computed by the plugin.
+- `reply_sha256`, the hash of the whole file as read by this call (not only
+  of the part), `reply_total_lines`, `reply_parts` and `reply_part`. The hash
+  is informational; the lead keeps both of its hash checks.
+- `reply_text`: one part of the file with `<n>: ` line prefixes, numbered the
+  way a file reader numbers lines. The numbered text is split on whole lines
+  into parts of at most 32 KB. Larger tool results would be cut by the Host to
+  their head and tail, with the middle in a file the verifier cannot read. A
+  line longer than 32 KB is cut at character boundaries and continues on lines
+  labelled `<n>+: `, which belong to physical line `<n>`. The verifier calls
+  the tool again with parts 2 to `reply_parts` and reads all of them before it
+  reports. A part beyond the last is refused with the valid range.
+
+The tool never opens the `reply_file` named in a ledger line. It withholds the
+reply (`reply_text` is `null`, and `reply_reason` gives the reason for every
+part) in these cases:
+
+- **No terminal entry:** the ledger has no terminal line for the ID, or the
+  last terminal line does not name `reply_path` as its `reply_file`. A
+  `started` line after the terminal line does not change the result.
+- **Unsafe folder:** the data directory fails the checks under
+  [Data directory](#data-directory), which run again at every call, or the
+  real path of the reply is not exactly
+  `<real path of dataDir>/replies/<id>.md`. This catches, for example,
+  `replies/` replaced by a symlink after the verifier started.
+- **Missing:** the reply file does not exist.
+- **Unreadable:** the reply file itself is a symbolic link (its last path
+  component is never followed, not even to a file inside the data directory),
+  it is not a regular file (a directory, or a FIFO, which is refused without
+  blocking), or it cannot be opened or read.
+- **Too large:** the file is larger than 256 KB, by its size or by the bytes
+  actually read. The reason ends with "reply too large to verify; cite as
+  unverifiable".
+
 The verifier boundary is default-deny:
 
-- Only `read`, `grep`, `glob`, and `team_task_get` are allowed. Shell commands,
-  writes, task mutations, messaging, further delegation, and `run_code` are
-  denied, including scoped or late-registered tools.
+- Only `read`, `grep`, `glob`, `team_task_get`, and `advisor_evidence_get` are
+  allowed. Shell commands, writes, task mutations, messaging, further
+  delegation, and `run_code` are denied, including scoped or late-registered
+  tools.
+- `read`, `grep`, and `glob` are confined exactly like advisor children: paths
+  stay inside the lead's workspace after symlinks are resolved and may not
+  contain `..`, protected files are refused, and `grep` drops matches in
+  protected or outside files.
+- The data directory is denied to `read`, `grep`, and `glob`, also when the
+  workspace contains it, such as a home-directory workspace with the default
+  `<DSH home>/advisor`. A path is denied when its real path is the folder or
+  lies below it, or when one of its folders is the data directory under
+  another name (same device and inode), so symlinks into it and a second path
+  to the same folder do not get in. `grep` drops matches in it. The verifier
+  takes the ledger and the reply only from `advisor_evidence_get`.
+- The workspace root is the lead's working directory, and the verifier's own
+  working directory must lie inside it and outside the data directory. A
+  filesystem root such as `/` is never a workspace. Without the
+  working-directory service, with an unknown or relative root or working
+  directory, a root of `/`, or a verifier working outside the root or in the
+  data directory, the verifier is stopped and every tool is denied.
 - Reserved delegations with malformed names, a non-spawn backend, Advisor off,
   or a route different from the stored selection are rejected.
 - Guards belong to the child's lifetime, so switching Advisor off mid-run does
   not lift them.
-- Unlike advisor children, the verifier has no workspace path confinement in
-  this iteration.
+
+Limits of the verifier:
+
+- Claims about files outside the workspace, including the DSH harness sources,
+  end as unverifiable, and so do the claims of a reply over 256 KB.
+- `glob` can still list the names, but not the contents, of protected files
+  and of files in a data directory inside the workspace.
+- The data-directory and filesystem-root rules apply to the verifier only.
+  Advisor children (`advisor-planner-*`, `advisor-consult-*`) are confined to
+  the workspace as described above: a workspace that contains the data
+  directory still exposes the ledger and the replies to them, and a workspace
+  of `/` is accepted for them.
 
 The plugin keeps one ledger in its `dataDir` and creates no plan store, retry
 engine, or orchestration framework. Restart DSH manually after Host code changes; the

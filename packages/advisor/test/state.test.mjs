@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { foldAdvisor, INITIAL_ADVISOR_STATE, viewAdvisor } from '../src/state.js'
+import { foldAdvisor, INITIAL_ADVISOR_STATE, pendingAdvisor, STALE_PENDING_MS, viewAdvisor } from '../src/state.js'
 
 const run = (args, commandId = 'a', time = 100) => ({ type: 'command/run', time, data: { name: 'advisor', args, commandId } })
 const done = (kind, commandId = 'a', text) => ({ type: 'command/done', data: { kind, commandId, ...(text === undefined ? {} : { text }) } })
@@ -80,4 +80,49 @@ test('advisor model is Inherit or a route and commits only on success', () => {
   assert.equal(foldAdvisor(state, run('model nonsense')), state)
   assert.equal(foldAdvisor(state, run('model /x')), state)
   assert.equal(foldAdvisor(state, run('planner inherit')), state, 'the 0.5 planner command is not folded')
+})
+
+test('a done with a missing commandId while nothing is pending returns the same state and does not throw', () => {
+  const orphan = { type: 'command/done', data: { kind: 'success' } }
+  assert.equal(foldAdvisor(INITIAL_ADVISOR_STATE, orphan), INITIAL_ADVISOR_STATE)
+  const explicit = { type: 'command/done', data: { kind: 'error', commandId: undefined, text: 'x' } }
+  assert.equal(foldAdvisor(INITIAL_ADVISOR_STATE, explicit), INITIAL_ADVISOR_STATE)
+  const settled = foldAdvisor(foldAdvisor(INITIAL_ADVISOR_STATE, run('on', 'a', 100)), done('success', 'a'))
+  assert.equal(foldAdvisor(settled, orphan), settled)
+})
+
+test('fold replay of a log containing a commandId-less done leaves the state valid', () => {
+  const log = [run('on', 'a', 100), done('success', 'a'), { type: 'command/done', data: { kind: 'success' } }, run('off', 'b', 200), done('success', 'b')]
+  const state = log.reduce(foldAdvisor, INITIAL_ADVISOR_STATE)
+  assert.equal(state.active, false)
+  assert.equal(state.pending, null)
+  assert.equal(state.failure, null)
+})
+
+test('a state whose pending marker is undefined or missing folds and views like no pending marker', () => {
+  const orphan = { type: 'command/done', data: { kind: 'success' } }
+  const orphanError = { type: 'command/done', data: { kind: 'error', text: 'x' } }
+  const legacy = [
+    { ...INITIAL_ADVISOR_STATE, pending: undefined },
+    { active: true, verifierModel: null, advisorModel: null, lastRun: null, failure: null },
+  ]
+  for (const state of legacy) {
+    assert.doesNotThrow(() => foldAdvisor(state, orphan))
+    assert.equal(foldAdvisor(state, orphan), state)
+    assert.equal(foldAdvisor(state, orphanError), state)
+    assert.equal(foldAdvisor(state, done('success', 'a')), state)
+    assert.equal(viewAdvisor(state).pending, false, 'no marker is not an update in progress')
+    assert.equal(viewAdvisor(state).pendingTarget, null)
+    assert.equal(pendingAdvisor(state), null)
+    const next = foldAdvisor(state, run('off', 'b', 100))
+    assert.equal(next.pending.commandId, 'b')
+    assert.equal(foldAdvisor(next, done('success', 'b')).active, false)
+  }
+})
+
+test('pendingAdvisor hides a pending marker older than STALE_PENDING_MS', () => {
+  const state = foldAdvisor(INITIAL_ADVISOR_STATE, run('on', 'a', 1000))
+  assert.equal(pendingAdvisor(INITIAL_ADVISOR_STATE, 5000), null)
+  assert.equal(pendingAdvisor(state, 1000 + STALE_PENDING_MS - 1), state.pending)
+  assert.equal(pendingAdvisor(state, 1000 + STALE_PENDING_MS), null)
 })

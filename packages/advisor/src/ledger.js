@@ -123,23 +123,52 @@ export function fileSha256Sync(file) {
   }
 }
 
+// The torn-line fallback is bounded so that one hostile line cannot stall the
+// synchronous guards: only lines of at most MAX_TORN_LINE characters are
+// searched, at most MAX_TORN_OFFSETS offsets per line are tried, and at most
+// MAX_TORN_PARSE characters per line are handed to JSON.parse.
+const MAX_TORN_LINE = 1024 * 1024
+const MAX_TORN_OFFSETS = 64
+const MAX_TORN_PARSE = 4 * MAX_TORN_LINE
+
+/** Whether a parsed value is an entry of this consult_id: an object whose own top-level consult_id is the id. */
+function isEntryOf(value, id) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && value.consult_id === id
+}
+
 /**
  * Parse one physical ledger line. A failed short append can leave a fragment
- * without its newline, so the next whole line is glued behind it; when the
- * line does not parse, try again from each later '{"'.
+ * without its newline, so the next whole line is glued behind it. A line
+ * that parses as a whole is that value and nothing else. Otherwise an entry
+ * is recovered from a later '{"' to the end of the line: the offsets are
+ * tried from the end backward (the glued whole line comes last), within the
+ * caps above.
  * @param {string} line
- * @param {string} [needle] stop once a suffix can no longer contain this text
- * @returns {unknown} the parsed value, or undefined
+ * @param {string} [id] recover only an object whose top-level consult_id is
+ *   this id; its suffix must contain the id
+ * @returns {{ value: unknown, at: number } | undefined} the parsed value and
+ *   the offset it starts at: 0 for the whole line, else a recovered entry
  */
-function parseLedgerLine(line, needle) {
+function parseLedgerLine(line, id) {
   try {
-    return JSON.parse(line)
+    return { value: JSON.parse(line), at: 0 }
   } catch { /* torn, foreign, or a whole line behind a fragment */ }
-  for (let at = line.indexOf('{"', 1); at !== -1; at = line.indexOf('{"', at + 1)) {
-    if (needle !== undefined && !line.includes(needle, at)) return undefined
+  if (line.length > MAX_TORN_LINE) return undefined
+  const from = id === undefined ? line.length : line.lastIndexOf(id)
+  if (from === -1) return undefined
+  let offsets = 0
+  let parsed = 0
+  for (let at = line.lastIndexOf('{"', from); at > 0; at = line.lastIndexOf('{"', at - 1)) {
+    offsets++
+    parsed += line.length - at
+    if (offsets > MAX_TORN_OFFSETS || parsed > MAX_TORN_PARSE) return undefined
+    let value
     try {
-      return JSON.parse(line.slice(at))
-    } catch { /* keep looking */ }
+      value = JSON.parse(line.slice(at))
+    } catch {
+      continue
+    }
+    if (id === undefined || isEntryOf(value, id)) return { value, at }
   }
   return undefined
 }
@@ -215,8 +244,16 @@ export function createLedger(dir) {
     return { file, sha256: sha256(bytes) }
   }
 
-  /** Parsed ledger entries carrying this consult_id, in file order (sync; used by guards). */
-  function ledgerEntriesFor(id) {
+  /**
+   * The physical ledger lines holding an entry of this consult_id, in file
+   * order (sync; for the guards and the verifier's evidence tool): the 1-based
+   * line number, the entry's text, the parsed entry, and whether the line is
+   * torn. Only an object whose top-level consult_id is the id counts. On a
+   * torn line (a whole line glued behind a fragment of another write) the
+   * text starts at the recovered entry, so no part of the fragment is shown.
+   */
+  function ledgerLinesFor(id) {
+    if (typeof id !== 'string' || id === '') return []
     let text
     try {
       text = readFileSync(ledgerPath, 'utf8')
@@ -224,13 +261,20 @@ export function createLedger(dir) {
       return []
     }
     if (!text.includes(id)) return []
-    const entries = []
-    for (const line of text.split('\n')) {
-      if (!line.includes(id)) continue
-      const entry = parseLedgerLine(line, id)
-      if (entry?.consult_id === id) entries.push(entry)
-    }
-    return entries
+    const lines = []
+    text.split('\n').forEach((line, index) => {
+      if (!line.includes(id)) return
+      const parsed = parseLedgerLine(line, id)
+      if (parsed === undefined || !isEntryOf(parsed.value, id)) return
+      const torn = parsed.at > 0
+      lines.push({ line: index + 1, text: torn ? line.slice(parsed.at) : line, entry: parsed.value, torn })
+    })
+    return lines
+  }
+
+  /** Parsed ledger entries carrying this consult_id, in file order (sync; used by guards). */
+  function ledgerEntriesFor(id) {
+    return ledgerLinesFor(id).map(({ entry }) => entry)
   }
 
   /** Whether a reply file or any ledger line already uses this id (throws for a malformed id). */
@@ -243,7 +287,7 @@ export function createLedger(dir) {
     try {
       const text = await fs.readFile(ledgerPath, 'utf8')
       const entries = text.split('\n').filter(Boolean).map((line) => {
-        const entry = parseLedgerLine(line)
+        const entry = parseLedgerLine(line)?.value
         if (entry === null || typeof entry !== 'object' || Array.isArray(entry) || entry.status === 'started') return null
         const kind = entry.kind === 'plan' || entry.kind === 'advice' ? ` ${entry.kind}` : ''
         return `${entry.consult_id ?? 'unknown'} ${entry.advisor ?? 'unknown'}${kind} ${entry.status ?? 'unknown'} ${entry.topic ?? 'unset'}`
@@ -389,6 +433,7 @@ export function createLedger(dir) {
     appendLedger,
     writeReply,
     ledgerEntriesFor,
+    ledgerLinesFor,
     idInUse,
     recentLedger,
     writableProblem,

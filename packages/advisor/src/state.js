@@ -72,7 +72,8 @@ export function foldAdvisor(state, event) {
     && state.lastRun?.commandId === event.data.commandId) {
     return event.data.kind === 'success' ? state : withFailure(state, state.lastRun.target, event)
   }
-  if (event.type === 'command/done' && state.pending?.commandId === event.data.commandId) {
+  // `!= null`: a state from an older projection may have no pending marker at all.
+  if (event.type === 'command/done' && state.pending != null && state.pending.commandId === event.data.commandId) {
     const pending = state.pending
     const next = { ...state, pending: null }
     if (event.data.kind !== 'success') return withFailure(next, pending.target, event)
@@ -83,12 +84,19 @@ export function foldAdvisor(state, event) {
   return state
 }
 
+// Pure: a marker older than STALE_PENDING_MS is stale, as the fold already
+// treats it (a new command takes it over).
+export function pendingAdvisor(state, now = Date.now()) {
+  if (state.pending === null || state.pending === undefined) return null
+  return now - state.pending.startedAt < STALE_PENDING_MS ? state.pending : null
+}
+
 export function viewAdvisor(state) {
   return {
     active: state.active,
     verifierModel: state.verifierModel ?? null,
     advisorModel: state.advisorModel ?? null,
-    pending: state.pending !== null,
+    pending: state.pending != null,
     pendingTarget: state.pending?.target ?? null,
     pendingSince: state.pending?.startedAt ?? null,
     failure: state.failure ?? null,
