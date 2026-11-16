@@ -7,11 +7,11 @@ function harness() {
   let section
   let command
   const calls = []
-  const teamCalls = []
-  let state = { active: false, pending: null, commandId: null, teamEnabled: false, teamBeforeOn: null, teamChangedByUs: false }
+  let state = { active: false, pending: null }
   const ctx = {
-    agentTeams: {
-      async setEnabled(_agent, enabled) { teamCalls.push(enabled) },
+    get(name) {
+      if (name === 'agentTeams') return { isEnabled: () => false }
+      return undefined
     },
     sessionProjections: {
       async register(value) {
@@ -30,7 +30,13 @@ function harness() {
       }
     },
   }
-  return { ctx, get: () => ({ definition, section, command, calls, teamCalls }), setState: (next) => { state = next } }
+  const agent = { session: {} }
+  return {
+    ctx,
+    agent,
+    get: () => ({ definition, section, command, calls, state }),
+    setState: (next) => { state = next },
+  }
 }
 
 test('apply registers the projection, section, and command', async () => {
@@ -38,7 +44,7 @@ test('apply registers the projection, section, and command', async () => {
   await apply(ctx)
   const { definition, section, command, calls } = get()
   assert.equal(definition.key, 'ultracode')
-  assert.equal(definition.stateVersion, 1)
+  assert.equal(definition.stateVersion, 3)
   assert.equal(typeof definition.apply, 'function')
   assert.equal(section.name, 'ultracode:policy')
   assert.equal(section.order, 500)
@@ -53,33 +59,38 @@ test('the prompt section is empty when inactive and full when active', async () 
   const { section } = get()
   assert.equal(section.text({}), '')
   assert.equal(section.text({ agent: { session: {} } }), '')
-  // The test harness returns an inactive state; the active case is covered by
-  // the pure fold tests, so assert the policy text itself here.
   assert.match(POLICY, /workflow|subagent orchestration/)
   assert.match(POLICY, /team collaboration/)
   assert.match(POLICY, /refute/)
   assert.doesNotMatch(POLICY, /spawn_teammate/)
 })
 
-test('the command validates input and reports state', async () => {
-  const { ctx, get } = harness()
+test('the command validates input and reports state without changing Team', async () => {
+  const { ctx, get, agent } = harness()
   await apply(ctx)
   const { command } = get()
-  const agent = { session: {} }
   assert.equal((await command.handler({ agent, rawInput: 'status' })).kind, 'success')
   assert.equal((await command.handler({ agent, rawInput: 'status' })).text, 'Ultracode is off for this session. AgentTeam is off.')
   assert.equal((await command.handler({ agent, rawInput: 'on' })).kind, 'success')
   assert.equal((await command.handler({ agent, rawInput: 'off' })).kind, 'success')
   assert.equal((await command.handler({ agent, rawInput: 'bogus' })).kind, 'error')
-  assert.deepEqual(get().teamCalls, [true])
 })
 
-test('off restores AgentTeam only when this plugin enabled it', async () => {
-  const { ctx, get, setState } = harness()
+test('a pending command rejects a different command id', async () => {
+  const { ctx, get, agent, setState } = harness()
+  setState({ active: false, pending: { arg: true, commandId: 'old', startedAt: Date.now() } })
   await apply(ctx)
   const { command } = get()
-  setState({ active: true, pending: null, commandId: null, teamEnabled: true, teamBeforeOn: false, teamChangedByUs: true })
-  const agent = { session: {} }
-  assert.equal((await command.handler({ agent, rawInput: 'off' })).kind, 'success')
-  assert.deepEqual(get().teamCalls, [false])
+  const result = await command.handler({ agent, rawInput: 'off', commandId: 'new' })
+  assert.equal(result.kind, 'error')
+  assert.match(result.text, /already updating/)
+})
+
+test('the current pending command is allowed to complete', async () => {
+  const { ctx, get, agent } = harness()
+  get().state.pending = { arg: true, commandId: 'current', startedAt: Date.now() }
+  await apply(ctx)
+  const { command } = get()
+  const result = await command.handler({ agent, rawInput: 'on', commandId: 'current' })
+  assert.equal(result.kind, 'success')
 })

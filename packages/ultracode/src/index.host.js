@@ -3,7 +3,7 @@ import { foldUltracode, INITIAL_ULTRACODE_STATE, viewUltracode } from './state.j
 
 export const name = 'ultracode'
 
-export const inject = ['systemPrompt', 'sessionProjections', 'agentTeams']
+export const inject = ['systemPrompt', 'sessionProjections']
 
 export const POLICY = `Exhaustive mode is active for this session. Optimize for exhaustive correctness, not speed or token cost.
 
@@ -15,23 +15,22 @@ export const POLICY = `Exhaustive mode is active for this session. Optimize for 
 
 const stateSchema = z.object({
   active: z.boolean(),
-  pending: z.boolean().nullable(),
-  commandId: z.string().nullable(),
-  teamEnabled: z.boolean(),
-  teamBeforeOn: z.boolean().nullable(),
-  teamChangedByUs: z.boolean(),
+  pending: z.object({
+    arg: z.boolean(),
+    commandId: z.string(),
+    startedAt: z.number(),
+  }).nullable(),
 })
 
 const viewSchema = z.object({
   active: z.boolean(),
   pending: z.boolean(),
-  teamEnabled: z.boolean(),
 })
 
 export async function apply(ctx) {
   const projection = await ctx.sessionProjections.register({
     key: 'ultracode',
-    stateVersion: 1,
+    stateVersion: 3,
     stateSchema,
     init: () => ({ ...INITIAL_ULTRACODE_STATE }),
     apply: foldUltracode,
@@ -56,25 +55,24 @@ export async function apply(ctx) {
       name: 'ultracode',
       description: 'Toggle exhaustive multi-agent mode',
       input: { hint: '[on|off|status]' },
-      handler: async ({ agent, rawInput }) => {
+      handler: async ({ agent, rawInput, commandId }) => {
         const arg = rawInput.trim().toLowerCase()
         const state = projection.stateOf(agent.session)
         if (arg === 'status') {
+          const team = ctx.get('agentTeams')
+          const teamStatus = team?.isEnabled(agent) ? 'on' : 'off'
           return {
             kind: 'success',
-            text: `${state.active ? 'Ultracode is on' : 'Ultracode is off'} for this session. AgentTeam is ${state.teamEnabled ? 'on' : 'off'}.`,
+            text: `${state.active ? 'Ultracode is on' : 'Ultracode is off'} for this session. AgentTeam is ${teamStatus}.`,
           }
         }
         if (arg !== '' && arg !== 'on' && arg !== 'off') {
           return { kind: 'error', text: 'Usage: /ultracode [on|off|status]' }
         }
+        if (state.pending && state.pending.commandId !== commandId) {
+          return { kind: 'error', text: 'Ultracode is already updating. Try again after it finishes.' }
+        }
         const active = arg === '' ? !state.active : arg === 'on'
-        if (active && !state.active && !state.teamEnabled) {
-          await ctx.agentTeams.setEnabled(agent, true)
-        }
-        if (!active && state.active && state.teamChangedByUs && state.teamEnabled) {
-          await ctx.agentTeams.setEnabled(agent, false)
-        }
         return {
           kind: 'success',
           text: active
