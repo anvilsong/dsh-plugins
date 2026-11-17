@@ -126,9 +126,11 @@ under `dsh.autoEffort.v1:advisor:<session id>:advisorModel`: one key per
 session, whatever the model. Every choice in the Advisor model cell that sends
 a command (a model, an effort, Default, Inherit) writes the same key first, so
 nothing is applied automatically after you have chosen there and a Default you
-pick stays. A choice that sends nothing (the row already checked, or any row
-while the cell is locked) writes nothing. The key belongs to the GUI's origin
-(scheme, host and port), so:
+pick stays. A click on the checked **Default** row records your choice the
+same way and still sends nothing, so a Default you confirm there stays too.
+Any other choice that sends nothing (the model's own row, a checked effort,
+Inherit when it is the setting, or any row while the cell is locked) writes
+nothing. The key belongs to the GUI's origin (scheme, host and port), so:
 
 - Another browser or profile, another GUI origin, or cleared site data applies
   it once more.

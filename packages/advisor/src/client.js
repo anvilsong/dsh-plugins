@@ -674,15 +674,17 @@ window.__ModuleLoader__.load({
       const current = desired ?? saved
       const currentText = settingText(current)
       const saving = desired !== null && desiredText !== savedText
+      // A choice ends the automatic effort: for this opening, and through the
+      // session's marker, written first, for later ones.
+      const noteChoice = () => {
+        if (config.autoEffort !== true) return
+        automatic.current.done = true
+        if (typeof props.sessionId === 'string' && props.sessionId !== '') markChoice(autoEffortKey(props.sessionId, config.field))
+      }
       const choose = (next, close) => {
         close.current(cellRef.current ?? undefined)
         if (locked || settingText(next) === currentText) return
-        // A choice that sends ends the automatic effort: for this opening,
-        // and through the session's marker, written first, for later ones.
-        if (config.autoEffort === true) {
-          automatic.current.done = true
-          if (typeof props.sessionId === 'string' && props.sessionId !== '') markChoice(autoEffortKey(props.sessionId, config.field))
-        }
+        noteChoice()
         send(next)
       }
       // The current model's row sends nothing, so an effort set by command
@@ -737,8 +739,15 @@ window.__ModuleLoader__.load({
       }
       const listed = routes !== null && routes !== undefined
       const chooseEffort = (effort, close) => {
-        if (effortsLive) choose({ key: efforts.key, effort }, close)
-        else close.current(cellRef.current ?? undefined)
+        if (!effortsLive) {
+          close.current(cellRef.current ?? undefined)
+          return
+        }
+        // A click on the checked Default row sends nothing, but it is an
+        // explicit Default: noted, so no automatic effort replaces it. Other
+        // picks that send nothing note nothing.
+        if (effort === undefined && !locked && settingText({ key: efforts.key, effort }) === currentText) noteChoice()
+        choose({ key: efforts.key, effort }, close)
       }
       const effortTitle = efforts === null ? null : effortLabel(t, efforts.key)
       const value = current.key === INHERIT

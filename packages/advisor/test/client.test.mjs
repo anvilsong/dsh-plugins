@@ -2614,3 +2614,61 @@ test('initial focus: the flyout focuses the checked model row, not its checked e
   assert.equal(rig.buttons.some((button) => matchesSelector(button.node, '[aria-disabled]')), false, 'nothing is disabled here')
   assert.throws(() => matchesSelector(rig.buttons[0].node, '.adv-group [role="menuitemradio"]'), /unsupported selector/)
 })
+
+test('automatic effort: a click on the checked Default row is an explicit Default: it records the choice, sends nothing, and no automatic effort replaces it', async () => {
+  // Saved without an effort, Advisor off: the user clicks Default (already
+  // checked), then turns Advisor on.
+  const storage = fakeStorage()
+  const harness = autoHarness({ storage, view: { advisorModel: OPUS, active: false } })
+  await harness.pickEffort('Default (High)')
+  assert.deepEqual(harness.calls, [], 'the click sends nothing: Default is already the setting')
+  assert.deepEqual(storage.log, [`set ${MARKER}=user`], 'but it records the choice, once')
+  assert.equal(harness.closes.length, 1, 'and closes the flyout like any pick')
+  turnOn(harness)
+  await churn(harness)
+  assert.deepEqual(harness.calls, [], 'no automatic effort replaces it')
+  harness.remount()
+  await churn(harness)
+  assert.deepEqual(harness.calls, [], 'nor at the next opening')
+  assert.equal(storage.items.get(MARKER), 'user')
+
+  // Default while an effort is saved (the checked row is that effort): as
+  // before, it sends the bare route, with one write before the line.
+  const saved = autoHarness({ view: { advisorModel: withEffort(OPUS, 'high') } })
+  await saved.pickEffort('Default (High)')
+  assert.deepEqual(saved.calls, [OPUS_DEFAULT])
+  assert.deepEqual(saved.storage.log, [`set ${MARKER}=user`])
+  assert.deepEqual(saved.atCall, [{ [MARKER]: 'user' }])
+
+  // The same click while the cell is locked writes nothing (it is no choice),
+  // so the automatic effort still comes once the cell is free.
+  const locked = autoHarness({ view: { advisorModel: OPUS, active: false, pending: true, pendingTarget: 'verifierModel', pendingSince: Date.now() } })
+  await locked.pickEffort('Default (High)')
+  assert.deepEqual(locked.calls, [])
+  assert.deepEqual(locked.storage.log, [], 'locked: nothing written')
+  locked.state.view = { ...locked.state.view, pending: false, pendingTarget: null, pendingSince: null, active: true }
+  locked.rerender()
+  assert.deepEqual(locked.calls, [AUTO_OPUS])
+
+  // Rows of a group whose model is no longer the cell's (not live) write nothing.
+  const stale = autoHarness({ view: { advisorModel: OPUS, active: false } })
+  stale.openFlyout()
+  stale.save(FLASH)
+  stale.effortRows().find((row) => row.props.label === 'Default (High)').props.onSelect()
+  await ticks()
+  assert.deepEqual(stale.calls, [])
+  assert.deepEqual(stale.storage.log, [], 'not live: nothing written')
+
+  // Other quiet picks still write nothing: the model's own row, Inherit when
+  // it is the setting; the Verifier model cell never touches the storage.
+  const own = autoHarness({ view: { advisorModel: OPUS, active: false } })
+  await own.pickModel(OPUS)
+  const inherit = autoHarness({ view: { advisorModel: null } })
+  await inherit.pickInherit()
+  const verifier = autoHarness({ cell: 'verifier', view: { verifierModel: OPUS } })
+  await verifier.pickEffort('Default (High)')
+  for (const [name, quiet] of [['own model row', own], ['Inherit', inherit], ['verifier Default', verifier]]) {
+    assert.deepEqual(quiet.calls, [], name)
+    assert.deepEqual(quiet.storage.log, [], `${name}: nothing written`)
+  }
+})
