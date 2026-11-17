@@ -24,6 +24,11 @@ window.__ModuleLoader__.load({
       'advisorModel.label': 'Advisor model',
       'advisorModel.failed': 'Could not update Advisor model.',
       'advisorModel.stale': 'The saved advisor route is unavailable. Select Inherit to reset it.',
+      'effort.label': 'Effort',
+      'effort.labelFor': 'Effort for {model}',
+      'effort.default': 'Default',
+      'effort.defaultNamed': 'Default ({effort})',
+      'effort.recommended': 'recommended',
       'chip.tooltip': 'A read-only advisor on the Advisor model plans and advises at major steps; a read-only verifier on the Verifier model checks its claims against the repository. Both are Advisor-owned and unaffected by Model router; Inherit uses normal subagent defaults. Session only.',
     }
     const zh = {
@@ -43,6 +48,12 @@ window.__ModuleLoader__.load({
       'advisorModel.label': '顾问模型',
       'advisorModel.failed': '无法更新顾问模型。',
       'advisorModel.stale': '保存的顾问路由不可用。请选择“继承”以重置。',
+      // The host model menu's own words: 推理等级, and Default kept as is.
+      'effort.label': '推理等级',
+      'effort.labelFor': '{model} 的推理等级',
+      'effort.default': 'Default',
+      'effort.defaultNamed': 'Default（{effort}）',
+      'effort.recommended': '推荐',
       'chip.tooltip': '只读顾问使用“顾问模型”在主要步骤进行规划和建议；只读验证器使用“验证器模型”对照代码库核实其声明。两者均由顾问独立管理，不受模型路由器影响；“继承”使用普通子代理默认值。仅此会话。',
     }
 
@@ -69,6 +80,9 @@ window.__ModuleLoader__.load({
       .adv-cell-value{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
         text-align:right;color:var(--dsw-alias-label-tertiary)}
       .adv-cell-value[data-warning]{color:var(--dsw-alias-state-warn-label)}
+      .adv-cell-value[data-effort]{display:flex;justify-content:flex-end}
+      .adv-cell-model{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .adv-cell-effort{flex:none;white-space:pre}
       .adv-chevron{display:grid;place-items:center;flex:0 0 12px;width:12px;height:12px;color:var(--dsw-alias-menu-icon)}
       .adv-chevron svg,.adv-check svg{display:block}
       .adv-spinner{color:var(--dsw-alias-label-tertiary)}
@@ -100,6 +114,8 @@ window.__ModuleLoader__.load({
       .adv-option:focus-visible,.adv-option:focus{background:var(--dsw-alias-interactive-bg-hover)}
       .adv-option[aria-disabled=true]{opacity:.4;cursor:not-allowed}
       .adv-option-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .adv-option[data-warning] .adv-option-label{color:var(--dsw-alias-state-warn-label)}
+      .adv-option-note{flex:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}
       .adv-check{display:grid;place-items:center;flex:0 0 14px;color:var(--dsw-alias-label-primary)}
       .adv-group+.adv-group{margin-top:3px}
       .adv-heading{padding:4px 7px 2px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;font-weight:500}
@@ -323,30 +339,186 @@ window.__ModuleLoader__.load({
         className: 'adv-option',
         'aria-checked': props.checked,
         'aria-disabled': props.disabled ? 'true' : undefined,
+        'data-warning': props.warning ? '' : undefined,
         title: props.title,
         onMouseMove: (event) => { if (activeElement() !== event.currentTarget) event.currentTarget.focus() },
         onClick: () => { if (!props.disabled) props.onSelect() },
       },
         h('span', { className: 'adv-option-label' }, props.label),
+        ...(props.note ? [h('span', { className: 'adv-option-note' }, props.note)] : []),
         h('span', { className: 'adv-check' }, props.checked ? checkIcon : null),
       )
     }
 
     const routeKey = (route) => `${route.provider}/${route.model}`
+    /** The route of an authorized `provider/model` key; provider ids hold no slash. */
+    const keyRoute = (key) => ({ provider: key.slice(0, key.indexOf('/')), model: key.slice(key.indexOf('/') + 1) })
+    const INHERIT = 'inherit'
+
+    /**
+     * A cell setting is `{ key, effort }`: key `inherit` or an authorized
+     * `provider/model`, effort an id or undefined (Default). Its text is the
+     * command argument and the cell title, in the Host's routeLabel format.
+     */
+    const settingText = (setting) => setting.effort === undefined ? setting.key : `${setting.key} effort=${setting.effort}`
+    function savedSetting(route) {
+      if (route === null || route === undefined) return { key: INHERIT, effort: undefined }
+      const effort = typeof route.effort === 'string' && route.effort !== '' ? route.effort : undefined
+      return { key: routeKey(route), effort }
+    }
+
+    /**
+     * The session's ModelDirectory store, or undefined when the service is
+     * absent, the session has no directory, or anything throws. A lazy
+     * `ctx.get`, never an inject entry: a missing inject would leave the whole
+     * client entry pending and break web boot (the usage plugin does the same).
+     */
+    function directoryStore(ctx, sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') return undefined
+      try {
+        const directories = ctx?.get?.('modelDirectories')
+        if (typeof directories?.directoryFor !== 'function') return undefined
+        const store = directories.directoryFor(sessionId)?.store
+        return typeof store?.getSnapshot === 'function' ? store : undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    /**
+     * What the directory advertises for one route, efforts least to greatest:
+     * `list` (at least one effort), `none` (listed without efforts, or with
+     * an empty list), or `unknown` (service absent or throwing, no groups yet,
+     * route not listed, malformed snapshot, or a list none of whose entries
+     * is usable). Ids a command token cannot carry (empty or with whitespace)
+     * and repeats are skipped; a missing name shows the id.
+     * `defaultEffort` is the model's own default, only when it is one of the
+     * listed efforts. Never throws.
+     * @returns {{ state: 'unknown' | 'none' | 'list', efforts: { id: string, name: string }[], defaultEffort?: { id: string, name: string } }}
+     */
+    function effortsFor(ctx, sessionId, route) {
+      const unknown = { state: 'unknown', efforts: [] }
+      try {
+        const groups = directoryStore(ctx, sessionId)?.getSnapshot()?.groups
+        if (!Array.isArray(groups)) return unknown
+        const models = groups.find((group) => group?.id === route.provider)?.models
+        if (!Array.isArray(models)) return unknown
+        const model = models.find((candidate) => candidate?.id === route.model)
+        if (model === null || typeof model !== 'object') return unknown
+        if (model.reasoning === undefined) return { state: 'none', efforts: [] }
+        const advertised = model.reasoning?.efforts
+        if (!Array.isArray(advertised)) return unknown
+        const efforts = []
+        for (const effort of advertised) {
+          const id = effort?.id
+          if (typeof id !== 'string' || id === '' || /\s/.test(id) || efforts.some((listed) => listed.id === id)) continue
+          const name = typeof effort.name === 'string' && effort.name.trim() !== '' ? effort.name : id
+          efforts.push({ id, name })
+        }
+        // Entries that are all unusable say nothing about the model: unknown,
+        // so no default is named and a saved effort shows without a warning.
+        if (efforts.length === 0 && advertised.length > 0) return unknown
+        const defaultId = model.reasoning.defaultEffort
+        const defaultEffort = typeof defaultId === 'string' ? efforts.find((listed) => listed.id === defaultId) : undefined
+        return { state: efforts.length === 0 ? 'none' : 'list', efforts, ...(defaultEffort === undefined ? {} : { defaultEffort }) }
+      } catch {
+        return unknown
+      }
+    }
+
+    /**
+     * The Advisor model's recommended effort: the highest advertised one
+     * whose id is not `max`, since the planner runs under a 30-minute and
+     * 150-tool-call cap; undefined (Default) when there is none.
+     */
+    function highestBelowMax(advertised) {
+      for (let index = advertised.efforts.length - 1; index >= 0; index--) {
+        if (advertised.efforts[index].id !== 'max') return advertised.efforts[index].id
+      }
+      return undefined
+    }
+
+    /**
+     * The Effort group rows for one model: Default, the advertised efforts in
+     * order, then a saved id the model does not advertise, with a warning
+     * unless the list is unknown. Null (no group) without a list and without
+     * a saved effort. `recommended` marks one row; undefined marks Default.
+     * The Default row carries `defaultName`, the model's real default effort,
+     * when the directory advertises it. When the recommended effort is that
+     * default, its own row carries the mark and Default only names it.
+     */
+    function effortRows(advertised, savedEffort, recommended) {
+      if (advertised.state !== 'list' && savedEffort === undefined) return null
+      const rows = [{ effort: undefined, name: undefined, defaultName: advertised.defaultEffort?.name, warning: false }]
+      for (const effort of advertised.efforts) rows.push({ effort: effort.id, name: effort.name, warning: false })
+      if (savedEffort !== undefined && !advertised.efforts.some((effort) => effort.id === savedEffort)) {
+        rows.push({ effort: savedEffort, name: savedEffort, warning: advertised.state !== 'unknown' })
+      }
+      return rows.map((row) => ({ ...row, recommended: row.effort === recommended }))
+    }
+
+    /** The Default row's text: `Default (<effort name>)` when the name is known. */
+    function defaultLabel(t, name) {
+      if (name === undefined) return t('effort.default')
+      const pattern = t('effort.defaultNamed')
+      return pattern.includes('{effort}') ? pattern.replace('{effort}', () => name) : `${t('effort.default')} (${name})`
+    }
+
+    /**
+     * The Effort group's heading and label, naming the model the group was
+     * built for (its id as its model row shows it): `Effort for <model>`.
+     */
+    function effortHeading(t, key) {
+      const model = key.slice(key.indexOf('/') + 1)
+      const pattern = t('effort.labelFor')
+      return pattern.includes('{model}') ? pattern.replace('{model}', () => model) : `${t('effort.label')} · ${model}`
+    }
+
+    /**
+     * Re-render when the session's model directory changes (the catalog loads
+     * or refreshes). RouteOption calls it on every render path, before its
+     * early return, so its hook order never changes.
+     */
+    function useDirectoryUpdates(ctx, sessionId) {
+      const [, setVersion] = React.useState(0)
+      const store = directoryStore(ctx, sessionId)
+      let seen
+      try { seen = store?.getSnapshot() } catch { seen = undefined }
+      React.useEffect(() => {
+        if (typeof store?.subscribe !== 'function') return undefined
+        const changed = () => setVersion((version) => version + 1)
+        let unsubscribe
+        try {
+          unsubscribe = store.subscribe(changed)
+          // A change between that render and this subscription is not lost.
+          if (store.getSnapshot() !== seen) changed()
+        } catch {
+          // A broken store leaves the efforts unknown.
+        }
+        return () => {
+          try {
+            if (typeof unsubscribe === 'function') unsubscribe()
+          } catch { /* already gone */ }
+        }
+      }, [store])
+    }
 
     // One cell plus single-choice flyout per Advisor-owned route setting:
-    // Inherit, then the authorized routes; the saved value is a {provider, model}
-    // field on the view, null meaning Inherit.
-    const routeCell = (field, prefix, command) => ({
+    // Inherit, the authorized routes, then the current model's efforts. The
+    // saved value is a {provider, model, effort?} field on the view, null
+    // meaning Inherit. `recommend` gives the effort that a pick of another
+    // model adds; undefined is Default (no token).
+    const routeCell = (field, prefix, command, recommend) => ({
       labelKey: `${prefix}.label`,
       failedKey: `${prefix}.failed`,
       staleKey: `${prefix}.stale`,
       failureTarget: field,
       command,
-      saved: (view) => view?.[field] ? routeKey(view[field]) : 'inherit',
+      recommend,
+      saved: (view) => savedSetting(view?.[field]),
     })
-    const ADVISOR_MODEL_CELL = routeCell('advisorModel', 'advisorModel', '/advisor model')
-    const VERIFIER_CELL = routeCell('verifierModel', 'model', '/advisor verifier-model')
+    const ADVISOR_MODEL_CELL = routeCell('advisorModel', 'advisorModel', '/advisor model', highestBelowMax)
+    const VERIFIER_CELL = routeCell('verifierModel', 'model', '/advisor verifier-model', () => undefined)
 
     function RouteOption(props) {
       const config = props.config
@@ -355,13 +527,29 @@ window.__ModuleLoader__.load({
       const anchor = useAnchorName()
       const cellRef = React.useRef(null)
       const [open, setOpen] = React.useState(false)
+      // The setting this cell sent that the session does not show yet.
       const [desired, setDesired] = React.useState(null)
       const { busy, run, report } = useCommand(props)
+      useDirectoryUpdates(props.ctx, props.sessionId)
+      // The Effort group as built when the flyout opened (null: no group),
+      // undefined while it is closed: a row that comes or goes while it is
+      // open can drop focus to the document, which closes the host menu.
+      const openEfforts = React.useRef(undefined)
+      // Models whose automatically added effort met a refusal (any failure of
+      // this setting while that pick was unconfirmed, whatever its cause):
+      // their next picks go without it. No retry, no matching of the Host's
+      // text. Only an effort for that model in the saved setting lifts it.
+      const refused = React.useRef(null)
+      if (refused.current === null) refused.current = new Set()
       const t = props.t ?? ((key) => en[key] ?? key)
       const pending = freshPending(view)
       const saved = config.saved(view)
-      React.useEffect(() => { if (desired !== null && desired === saved) setDesired(null) }, [saved, desired])
+      if (saved.effort !== undefined) refused.current.delete(saved.key)
+      const savedText = settingText(saved)
+      const desiredText = desired === null ? null : settingText(desired)
+      React.useEffect(() => { if (desiredText !== null && desiredText === savedText) setDesired(null) }, [savedText, desiredText])
       useFailureWatch(view, (failure) => failure.target === config.failureTarget && desired !== null, (failure) => {
+        if (desired?.auto === true) refused.current.add(desired.key)
         setDesired(null)
         report(failure.text || t(config.failedKey))
       })
@@ -370,15 +558,36 @@ window.__ModuleLoader__.load({
       React.useEffect(() => { if (missing && open) setOpen(false) }, [missing, open])
       if (missing) return null
       const authorized = Array.isArray(routes) ? routes.map(routeKey) : []
-      const stale = saved !== 'inherit' && !authorized.includes(saved)
+      const stale = saved.key !== INHERIT && !authorized.includes(saved.key)
       const current = desired ?? saved
-      const saving = desired !== null && desired !== saved
+      const currentText = settingText(current)
+      const saving = desired !== null && desiredText !== savedText
       const locked = props.locked === true || busy || pending
-      const choose = (value, close) => {
+      const choose = (next, close) => {
         close.current(cellRef.current ?? undefined)
-        if (locked || value === current) return
-        setDesired(value)
-        void run(`${config.command} ${value}`, config.failedKey).then((ok) => { if (!ok) setDesired(null) })
+        if (locked || settingText(next) === currentText) return
+        setDesired(next)
+        void run(`${config.command} ${settingText(next)}`, config.failedKey).then((ok) => {
+          if (ok) return
+          if (next.auto === true) refused.current.add(next.key)
+          setDesired(null)
+        })
+      }
+      // The current model's row sends nothing, so an effort set by command
+      // survives, and the saved model's row restores the saved setting as it
+      // is: a default is never applied to a saved route. Another model gets
+      // the cell's recommended effort, read from the directory at the pick.
+      const chooseModel = (key, close) => {
+        if (key === current.key) {
+          close.current(cellRef.current ?? undefined)
+          return
+        }
+        if (key === saved.key) {
+          choose(saved, close)
+          return
+        }
+        const effort = refused.current.has(key) ? undefined : config.recommend(effortsFor(props.ctx, props.sessionId, keyRoute(key)))
+        choose({ key, effort, auto: effort !== undefined }, close)
       }
       const groups = []
       for (const key of authorized) {
@@ -391,9 +600,34 @@ window.__ModuleLoader__.load({
         group.keys.push(key)
       }
       const showStale = stale && desired === null
-      const value = current === 'inherit'
+      if (!open) {
+        openEfforts.current = undefined
+      } else if (openEfforts.current === undefined) {
+        // Built once per opening, for the current model; none for Inherit or
+        // a stale route.
+        const advertised = current.key === INHERIT || !authorized.includes(current.key)
+          ? null
+          : effortsFor(props.ctx, props.sessionId, keyRoute(current.key))
+        const rows = advertised === null ? null : effortRows(advertised, current.effort, config.recommend(advertised))
+        openEfforts.current = rows === null ? null : { key: current.key, rows }
+      }
+      const efforts = open ? openEfforts.current : null
+      // The group keeps the model it was built for and is headed with it. If
+      // the cell's model changes while the flyout is open (a pending pick
+      // refused, another tab's save, the route no longer authorized), its
+      // rows stay mounted but disabled and send nothing: a pick there would
+      // switch the setting to the group's model. The next opening shows the
+      // new model's group.
+      const effortsLive = efforts !== null && current.key === efforts.key && authorized.includes(efforts.key)
+      const chooseEffort = (effort, close) => {
+        if (effortsLive) choose({ key: efforts.key, effort }, close)
+        else close.current(cellRef.current ?? undefined)
+      }
+      const effortTitle = efforts === null ? null : effortHeading(t, efforts.key)
+      const value = current.key === INHERIT
         ? t('model.inherit')
-        : showStale ? t('model.staleOption') : current.slice(current.indexOf('/') + 1).split('/').pop()
+        : showStale ? t('model.staleOption') : current.key.slice(current.key.indexOf('/') + 1).split('/').pop()
+      const valueEffort = current.key === INHERIT || showStale ? undefined : current.effort
       const flyoutId = `${anchor.slice(2)}-menu`
       return h(React.Fragment, null,
         h('style', null, styles),
@@ -408,7 +642,7 @@ window.__ModuleLoader__.load({
           'aria-busy': saving,
           'data-inactive': view.active === true ? undefined : '',
           style: { '--adv-anchor': anchor },
-          title: current === 'inherit' ? t('model.inherit') : current,
+          title: current.key === INHERIT ? t('model.inherit') : currentText,
           onClick: () => {
             if (open) {
               cellRef.current?.focus()
@@ -425,21 +659,47 @@ window.__ModuleLoader__.load({
           },
         },
           h('span', { className: 'adv-cell-label' }, t(config.labelKey)),
-          h('span', { className: 'adv-cell-value', 'data-warning': showStale ? '' : undefined }, value),
+          h('span', {
+            className: 'adv-cell-value',
+            'data-warning': showStale ? '' : undefined,
+            'data-effort': valueEffort === undefined ? undefined : '',
+          }, ...(valueEffort === undefined
+            ? [value]
+            // The effort keeps its own span, so the model name truncates first.
+            : [h('span', { className: 'adv-cell-model' }, value), h('span', { className: 'adv-cell-effort' }, ` · ${valueEffort}`)])),
           h('span', { className: 'adv-chevron' }, saving ? spinnerIcon : chevronIcon),
         ),
         open ? h(ModelFlyout, { id: flyoutId, anchor, label: t(config.labelKey), cellRef, onClose: () => setOpen(false) }, (close) => [
           showStale ? h('div', { key: 'stale', className: 'adv-note', role: 'status' }, t(config.staleKey)) : null,
-          h(ModelRow, { key: 'inherit', label: t('model.inherit'), checked: current === 'inherit', disabled: locked, onSelect: () => choose('inherit', close) }),
+          h(ModelRow, {
+            key: 'inherit', label: t('model.inherit'), checked: current.key === INHERIT, disabled: locked,
+            onSelect: () => choose({ key: INHERIT, effort: undefined }, close),
+          }),
           routes === null || routes === undefined ? null : h('div', { key: 'separator', className: 'adv-separator', role: 'separator' }),
           ...(routes === null || routes === undefined
             ? [h('div', { key: 'none', className: 'adv-note' }, t('model.unavailable'))]
             : groups.map((group) => h('div', { key: group.provider, className: 'adv-group', role: 'group', 'aria-label': group.provider },
               h('div', { className: 'adv-heading', 'aria-hidden': 'true' }, group.provider),
               group.keys.map((key) => h(ModelRow, {
-                key, label: key.slice(key.indexOf('/') + 1), title: key, checked: current === key, disabled: locked,
-                onSelect: () => choose(key, close),
+                key, label: key.slice(key.indexOf('/') + 1), title: key, checked: current.key === key, disabled: locked,
+                onSelect: () => chooseModel(key, close),
               }))))),
+          // Radio rows in their own group: the flyout's key handler covers them.
+          ...(efforts === null ? [] : [
+            h('div', { key: 'effort-separator', className: 'adv-separator', role: 'separator' }),
+            h('div', { key: 'effort', className: 'adv-group', role: 'group', 'aria-label': effortTitle },
+              h('div', { className: 'adv-heading', 'aria-hidden': 'true' }, effortTitle),
+              efforts.rows.map((row) => h(ModelRow, {
+                key: row.effort === undefined ? 'default' : `effort:${row.effort}`,
+                label: row.effort === undefined ? defaultLabel(t, row.defaultName) : row.name,
+                title: row.effort,
+                note: row.recommended ? t('effort.recommended') : undefined,
+                warning: row.warning,
+                checked: current.key === efforts.key && current.effort === row.effort,
+                disabled: locked || !effortsLive,
+                onSelect: () => chooseEffort(row.effort, close),
+              }))),
+          ]),
         ]) : null,
       )
     }

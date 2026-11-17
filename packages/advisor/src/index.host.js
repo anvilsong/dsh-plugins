@@ -31,7 +31,7 @@ export const POLICY = ADVISOR_WORKFLOW
  * @param {string} refusal DATA_DIR_NOT_CONFIGURED or dataDirUnusable(problem)
  */
 export function unavailablePolicy(refusal) {
-  return `Advisor mode is on for this session, but advisor runs are unavailable: ${refusal} Until then the host refuses every advisor-planner, advisor-consult, and advisor-verifier child, so no advisor run can be recorded or verified. Do not start them, and never run consult.py or load the advisor skill as a substitute; continue as yourself. If the user asks about the advisor, pass on that message.`
+  return `Advisor mode is on for this session, but advisor runs are unavailable: ${refusal} Until then the host refuses every advisor-planner, advisor-consult, and advisor-verifier child, so no advisor run can be recorded or verified. Do not start them; continue as yourself. If the user asks about the advisor, pass on that message.`
 }
 
 /** Lead policy while Advisor is on but no data directory is configured. */

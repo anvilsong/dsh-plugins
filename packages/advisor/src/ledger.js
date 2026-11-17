@@ -5,11 +5,9 @@ import path from 'node:path'
 // Plugin-owned Advisor data in one folder, dataDir:
 //   <dataDir>/sessions.jsonl     the ledger: one O_APPEND write per line, mode 0600
 //   <dataDir>/replies/<id>.md    one immutable reply per run: exclusive create, mode 0600
-// Folders are created with mode 0700. The line format and append discipline
-// match the advisor skill's consult.py, so one comparison script can read both
-// ledgers; the skill writes its own folder, never this one. Several hosts of
-// this plugin can share one folder: every write is one append or an exclusive
-// create.
+// Folders are created with mode 0700. The line format is documented in the
+// README. Several hosts of this plugin can share one folder: every write is one
+// append or an exclusive create.
 // dataDir comes only from the plugin config or the DSH home handed to
 // resolveDataDir; this module reads no environment variables.
 

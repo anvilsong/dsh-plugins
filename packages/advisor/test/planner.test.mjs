@@ -559,7 +559,7 @@ test('policy: Advisor model policy, workflow and child policies; the 0.5 aliases
   assert.match(advisorModelPolicy(null), /^Advisor model: Inherit\. .*omit provider, model, reasoning_effort, and agent_preset/)
   assert.equal(advisorModelPolicy(undefined), advisorModelPolicy(null))
   assert.match(advisorModelPolicy(ROUTE), new RegExp(`^Advisor model: ${escapeRegExp(`${ROUTE.provider}/${ROUTE.model}`)}\\. Pass exactly this provider and model`))
-  assert.match(ADVISOR_WORKFLOW, /Never run consult\.py or load the advisor skill/)
+  assert.match(ADVISOR_WORKFLOW, /in-process, read-only child agent on the Advisor model\.\n/)
   assert.match(ADVISOR_WORKFLOW, /advisor-planner-<id>/)
   assert.match(ADVISOR_WORKFLOW, /advisor-consult-<id>/)
   assert.match(ADVISOR_WORKFLOW, /one advisor child at a time/)
@@ -2420,13 +2420,13 @@ test('policy: advisorWorkflow names the absolute ledger and replies paths; ADVIS
   const text = advisorWorkflow({ ledgerPath: ledger.ledgerPath, repliesDir: ledger.repliesDir })
   assert.ok(text.includes(`the ledger \`${path.join(dataDir, 'sessions.jsonl')}\``), 'absolute ledger file')
   assert.ok(text.includes(`the reply file \`${path.join(dataDir, 'replies', '<id>.md')}\``), 'absolute replies/<id>.md')
-  const legacy = "Runs recorded before this folder existed stay in the advisor skill's legacy ledger and are not verified from here."
-  assert.equal(text.split(legacy).length - 1, 1, 'the legacy-ledger sentence appears once')
+  const earlier = 'Runs recorded before this folder existed are not verified from here.'
+  assert.equal(text.split(earlier).length - 1, 1, 'the earlier-runs sentence appears once')
   assert.doesNotMatch(text, /<state>|<dataDir>/)
   assert.equal(PLANNER_WORKFLOW, ADVISOR_WORKFLOW)
   assert.equal(ADVISOR_WORKFLOW, advisorWorkflow({ ledgerPath: '<dataDir>/sessions.jsonl', repliesDir: '<dataDir>/replies' }))
   assert.doesNotMatch(ADVISOR_WORKFLOW, /<state>/)
-  assert.ok(ADVISOR_WORKFLOW.includes(legacy))
+  assert.ok(ADVISOR_WORKFLOW.includes(earlier))
   const placeholders = text
     .replace(path.join(dataDir, 'replies', '<id>.md'), '<dataDir>/replies/<id>.md')
     .replace(ledger.ledgerPath, '<dataDir>/sessions.jsonl')

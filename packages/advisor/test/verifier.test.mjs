@@ -1064,7 +1064,7 @@ test('text: the README evidence section documents the evidence tool, its parts a
   ]) {
     assert.ok(section.includes(phrase), phrase)
   }
-  const data = text.slice(text.indexOf('### Data directory'), text.indexOf('### Comparing with the advisor skill')).replace(/\s+/g, ' ')
+  const data = text.slice(text.indexOf('### Data directory'), text.indexOf('### What the lead does next')).replace(/\s+/g, ' ')
   assert.ok(data.includes('at most 64 offsets per line') && data.includes('lines of at most 1 MB'), 'the torn-line caps are documented')
 })
 

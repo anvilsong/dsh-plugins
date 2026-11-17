@@ -1,12 +1,21 @@
 import assert from 'node:assert/strict'
 import test, { after } from 'node:test'
 import { chmod, mkdtemp, mkdir, readdir, writeFile, rm } from 'node:fs/promises'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { apply, POLICY, UNCONFIGURED_POLICY, unavailablePolicy } from '../src/index.host.js'
 import { createLedger } from '../src/ledger.js'
-import { ADVISOR_WORKFLOW, DATA_DIR_NOT_CONFIGURED, dataDirUnusable } from '../src/planner.js'
+import {
+  ADVISOR_WORKFLOW,
+  advisorModelPolicy,
+  advisorNamespaceDenial,
+  advisorWorkflow,
+  CONSULT_POLICY,
+  DATA_DIR_NOT_CONFIGURED,
+  dataDirUnusable,
+  PLANNER_POLICY,
+} from '../src/planner.js'
 import { parseModelSetting, routeLabel } from '../src/state.js'
 import {
   EVIDENCE_TOOL,
@@ -14,6 +23,7 @@ import {
   VERIFIER_TOOLS,
   VERIFIER_WORKFLOW,
   verifierDelegationDenial,
+  VERIFIER_POLICY,
   verifierModelPolicy,
 } from '../src/verifier.js'
 
@@ -172,7 +182,7 @@ test('registers advisor and authorized-route projections, prompt, and command', 
 
 test('policy and host boundary keep verification read-only and route-exact', () => {
   assert.match(POLICY, /in-process, read-only child agent on the Advisor model/)
-  assert.match(POLICY, /Never run consult\.py or load the advisor skill for Advisor mode/)
+  assert.match(POLICY, /in-process, read-only child agent on the Advisor model\.\n/)
   assert.match(POLICY, /ledger consult_id/)
   assert.match(POLICY, /Never use subagent_fork, subagent_claude_code, or subagent_codex/)
   assert.match(POLICY, /never include credentials, secrets/)
@@ -282,7 +292,7 @@ test('prompt: the lead policy names the absolute ledger and replies paths of the
   const text = section.text({ agent })
   assert.ok(text.includes(`the ledger \`${path.join(dataDir, 'sessions.jsonl')}\``), text)
   assert.ok(text.includes(`the reply file \`${path.join(dataDir, 'replies', '<id>.md')}\``), text)
-  assert.ok(text.includes("Runs recorded before this folder existed stay in the advisor skill's legacy ledger and are not verified from here."))
+  assert.ok(text.includes('Runs recorded before this folder existed are not verified from here.'))
   assert.doesNotMatch(text, /<state>|<dataDir>|unused-dsh-home/)
   assert.ok(text.includes(VERIFIER_WORKFLOW))
   assert.match(text, /Advisor model: Inherit/)
@@ -360,7 +370,7 @@ test('fail closed: without a usable dataDir, apply() warns, status reports it, a
   assert.equal(UNCONFIGURED_POLICY, unavailablePolicy(DATA_DIR_NOT_CONFIGURED))
   assert.match(UNCONFIGURED_POLICY, /data directory is not configured/)
   assert.match(UNCONFIGURED_POLICY, /refuses every advisor-planner, advisor-consult, and advisor-verifier child/)
-  assert.match(UNCONFIGURED_POLICY, /never run consult\.py or load the advisor skill/)
+  assert.match(UNCONFIGURED_POLICY, /Do not start them; continue as yourself\./)
   assert.deepEqual(await readdir(home), ['decoy'], 'nothing is written, and an invalid dataDir never falls back to <home>/advisor')
 })
 
@@ -1034,5 +1044,41 @@ test('status: with a stored effort and no usable llm the text is exactly the pla
         + `Data directory: ${dataDir}\nRecent advisor runs:\nNo consults recorded.`,
     }, label)
     assert.deepEqual(d.state().verifierModel, { ...HAIKU, effort: 'max' }, `${label}: nothing is cleared`)
+  }
+})
+
+// Built from fragments so that this file does not itself contain the names it bans.
+const BANNED_NAMES = [new RegExp(['advisor', 'cli'].join('-'), 'i'), new RegExp(['advisor', 'skill'].join(' '), 'i'), new RegExp(['consult', 'py'].join('\\.'), 'i'), new RegExp(['\\b', 'legacy', '\\b'].join(''), 'i')]
+
+test('no plugin prompt, guard text, README or source names an external CLI, its script or an older ledger', () => {
+  const routes = [null, { mode: 'route', provider: 'anthropic', model: 'claude-haiku-5-5' }, { mode: 'route', provider: 'anthropic', model: 'claude-haiku-5-5', effort: 'high' }]
+  const subagent = (args) => ({ name: 'subagent', arguments: args })
+  const texts = [
+    POLICY,
+    UNCONFIGURED_POLICY,
+    ADVISOR_WORKFLOW,
+    advisorWorkflow({ ledgerPath: '/data/sessions.jsonl', repliesDir: '/data/replies' }),
+    unavailablePolicy('Advisor data directory is not usable.'),
+    DATA_DIR_NOT_CONFIGURED,
+    dataDirUnusable('not writable'),
+    PLANNER_POLICY,
+    CONSULT_POLICY,
+    VERIFIER_WORKFLOW,
+    VERIFIER_POLICY,
+    ...routes.flatMap((route) => [advisorModelPolicy(route), verifierModelPolicy(route)]),
+    advisorNamespaceDenial(subagent({ name: 'advisor-other' })),
+    verifierDelegationDenial(subagent({ name: 'advisor-verifier-uppercase' })),
+    verifierDelegationDenial({ name: 'subagent_fork', arguments: { name: 'advisor-verifier-0123456789ab' } }),
+    verifierDelegationDenial(subagent({ name: 'advisor-verifier-0123456789ab', model: 'x' })),
+    verifierDelegationDenial(subagent({ name: 'advisor-verifier-0123456789ab' }), () => false),
+    verifierDelegationDenial(subagent({ name: 'advisor-verifier-0123456789ab' }), () => true, () => null, () => 'data directory problem'),
+  ]
+  const srcDir = new URL('../src/', import.meta.url)
+  const files = readdirSync(srcDir).filter((name) => name.endsWith('.js')).map((name) => [`src/${name}`, readFileSync(new URL(name, srcDir), 'utf8')])
+  assert.ok(files.length >= 5, 'the source files are found')
+  const sources = [...files, ['README.md', readFileSync(new URL('../README.md', import.meta.url), 'utf8')], ...texts.map((text) => [String(text).slice(0, 60), text])]
+  for (const [label, text] of sources) {
+    assert.equal(typeof text, 'string', label)
+    for (const banned of BANNED_NAMES) assert.doesNotMatch(text, banned, `${label}: ${banned}`)
   }
 })

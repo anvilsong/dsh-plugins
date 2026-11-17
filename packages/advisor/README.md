@@ -5,10 +5,6 @@ advisor child on the **Advisor model** plans work and advises on design
 decisions and reviews. A read-only verifier child on the **Verifier model**
 then checks its claims against the repository.
 
-The plugin does not call the `advisor` skill (the Claude CLI behind
-`consult.py`). That skill stays available for you to invoke directly, which
-also makes the two easy to compare.
-
 ## Use
 
 ```text
@@ -27,26 +23,83 @@ also makes the two easy to compare.
 
 The model-options menu has one **Advisor** switch and two menu cells: **Advisor
 model** and **Verifier model**. Both cells are dimmed while Advisor is off.
-Each cell opens a side flyout of single-choice rows: **Inherit**, then the
-authorized models grouped by provider. A choice commits immediately and closes
-the flyout; Tab also picks the focused row. The explanation lives in the
-Advisor info tooltip. Advisor off stops advisor runs and verification but keeps
-both model preferences. Every new session starts with Advisor off and both
-models on **Inherit**.
+Each cell opens one side flyout of single-choice rows: **Inherit**, the
+authorized models grouped by provider, then an **Effort** group for the model
+the cell shows: the saved model, or the one a pick is still saving. A choice
+sends one complete command and closes the flyout; Tab also picks the focused
+row. The explanation lives in the Advisor info tooltip.
+Advisor off stops advisor runs and verification but keeps both model
+preferences. Every new session starts with Advisor off and both models on
+**Inherit**.
+
+What each row sends (`/advisor model` for the Advisor model,
+`/advisor verifier-model` for the Verifier model):
+
+- **Inherit:** `inherit`, never with an effort.
+- **Another model:** `<provider>/<model>` plus its recommended effort, if any.
+  For the Advisor model that is the highest effort the model advertises whose
+  id is not `max` (for example `xhigh`); a model that advertises only `max` or
+  no efforts, or whose efforts the model directory cannot tell (not listed
+  yet, or no usable effort id), gets none. The Verifier model's recommendation
+  is always Default, so its picks send no effort.
+- **The model the cell shows:** nothing, so an effort set by command is kept.
+  To change the effort of a model that is not saved yet, pick it, then reopen
+  the flyout.
+- **The saved model, while a pick of another one is unconfirmed:** the saved
+  setting as it is, never with a recommended effort.
+- **An effort row:** `<provider>/<model> effort=<id>` for the group's model.
+- **Default:** `<provider>/<model>` without an effort: the model's own default
+  effort.
+
+The Effort group is headed with its model (**Effort for claude-opus-5-5**) and
+lists **Default**, then the efforts the model advertises, by name and in their
+order, as DSH's model directory for the session reports them. When the
+directory reports the model's own default effort and it is one of those
+efforts, the first row names it: **Default (High)**; otherwise it reads plain
+**Default**. Either way it sends no effort, and the cell shows nothing extra
+for it. The recommended row is marked "recommended": for the Advisor model the
+highest effort below `max`, for the Verifier model Default. If the Advisor
+model's recommended effort is the model's default, the mark sits on that
+effort's row and the Default row only names it. The Advisor model's Default
+row carries the mark itself when there is no effort below `max` (the model
+advertises only `max`, or no efforts and an effort is saved), or when the
+directory cannot tell the model's efforts and the group shows only for a saved
+effort. The group is hidden for Inherit and for an unavailable saved route. If
+the directory does not list the model, lists none of its efforts in a usable
+form, or the model advertises no efforts, the group appears only when an
+effort is saved: Default plus that id. A saved id that the model does not
+advertise is listed last in the warning colour (plainly when the directory
+cannot tell); the menu never clears or changes a saved effort by itself.
+
+The Effort rows do not change while the flyout is open; a directory update
+shows when it is next opened. If the cell's model changes while the flyout is
+open (a pending pick is refused, another tab saves another model, or the model
+leaves the authorized list), the group stays in place under its model's name,
+but its rows are disabled and send nothing; the next opening shows the new
+model's group. The model rows, unlike the Effort rows, still follow the
+authorized list while the flyout is open.
+
+The cell shows `<model> · <effort id>`, or only the model for Default; a long
+model name is cut before the effort. Any refusal while a pick whose effort the
+menu added is unconfirmed, whatever its reason (that effort, Advisor already
+updating, a command line that was not admitted, or another command's failure
+for the same setting), makes later picks of that model send no effort until
+the session shows a saved effort for that model, or until the model menu
+closes; nothing is retried automatically. A refused effort that you picked
+yourself only shows the Host's message: an effort row always sends its effort,
+and its refusal leaves the model's recommended effort in place.
 
 **Upgrade notes.**
 
 - 0.3.0 removed `/advisor verifier on|off`; Advisor on always verifies.
-- 0.5.0 replaces skill consultations with in-process advisor children and adds
+- 0.5.0 replaces earlier external consultations with in-process advisor children and adds
   `/advisor model`. Development builds used `/advisor planner`; that command now
   returns an error that points to `/advisor model`.
 - The projection moved to state version 7 (a saved model can carry an
   effort), so cached Advisor state is rebuilt once from the session log.
 - Advisor data moved into the DSH home (see [Data directory](#data-directory)).
-  Runs recorded earlier stay in the advisor skill's folder
-  (`~/.local/state/advisor`, or under `$XDG_STATE_HOME` or `$ADVISOR_LEDGER` if
-  those were set); nothing is migrated, and the plugin no longer reads
-  `XDG_STATE_HOME` or `ADVISOR_LEDGER`.
+  Runs recorded before the Advisor data directory existed are not read by the
+  plugin.
 
 ## Model selection
 
@@ -133,11 +186,10 @@ What the lead does with each choice:
   `/advisor status` adds a best-effort "no longer offered" note. Reset with
   `/advisor model <provider>/<model>` (Default, the same model) or
   `/advisor model inherit`, or the same with `verifier-model`.
-- The model menu does not show or send efforts yet. Picking another model or
-  Inherit there sends `/advisor model <provider>/<model>` (or `inherit`)
-  without an effort, so it resets a command-set effort to Default; picking the
-  model already saved sends nothing and keeps the effort. This lasts until the
-  menu gains an effort choice.
+- The model menu shows and sends efforts too (see [Use](#use)). Picking
+  another model there replaces the saved route, including a command-set
+  effort, with that model and its recommended effort; picking Inherit resets
+  both; picking the model already saved sends nothing and keeps the effort.
 - Advisor children record both values in the ledger: `effort_requested` is
   the effort stored when the child first started (a child resumed after a
   Host restart keeps the value of its `started` line, whatever the setting is
@@ -221,9 +273,8 @@ attempts the child is stopped.
 ### What the Host records
 
 The Host writes the result as JSON to `<dataDir>/replies/<id>.md` (exclusive
-create) and appends to `<dataDir>/sessions.jsonl` in the same line format the
-skill's `consult.py` uses: a `started` line, then one terminal line with these
-fields:
+create) and appends to `<dataDir>/sessions.jsonl` in the line format below: a
+`started` line, then one terminal line with these fields:
 
 - `consult_id` = `<id>`, `kind` (`plan` or `advice`), `advisor: dsh`, and
   `backend: dsh:<provider>/<model>`
@@ -319,7 +370,7 @@ the Host logs a warning and fails closed:
 - `/advisor status` and the reply to `/advisor on` say that the folder is not
   configured, not writable or unsafe, with the reason.
 - The lead's instructions switch to a short notice that tells it not to start
-  advisor children and not to substitute `consult.py`.
+  advisor children.
 
 The folder is re-checked at every delegation, child start, status and prompt
 build, so fixing it takes effect without a restart; only an invalid or missing
@@ -347,59 +398,6 @@ The data stays when the plugin is removed or a profile is deleted; DSH has no
 cleanup hook for plugin data. Delete the folder by hand if you no longer need
 it. There is no rotation; the guards read the whole ledger, so revisit this if
 `sessions.jsonl` grows past about 5 MB.
-
-### Comparing with the advisor skill
-
-`scripts/compare.mjs` pairs plugin runs (`advisor: dsh`) with CLI advisor runs
-(any other advisor) by `topic` and prints a Markdown report.
-
-```text
-node packages/advisor/scripts/compare.mjs [--ledger <file>]... [--topics <file>] \
-  [--tallies <file>] [--price <model>=<in>,<out>[,<cacheRead>,<cacheWrite>]]...
-```
-
-- **Topics:** give each briefing a unique topic. Use it for exactly one run per
-  arm: the plugin briefing's first line, and `ADVISOR_TOPIC` for `consult.py`.
-  The report shows the last answered line (`ok` or `degraded`) per topic and
-  arm, or else the last line. Its `runs` column counts every terminal line, so
-  reused topics stay visible. Only lines of kind `plan` or `advice` are paired.
-- **`--topics`:** a JSON object mapping `consult_id` to a topic slug. It
-  supplies or overrides the topic of those lines, for runs recorded before topic
-  tagging existed. A malformed file exits 1.
-- **`--ledger`:** repeatable; lines from every ledger are merged, and a
-  relative `reply_file` resolves against its own ledger's folder. Without it the
-  script reads every existing default: the plugin ledger
-  `<DSH home>/advisor/sessions.jsonl` (`$DSH_HOME`, else `~/.dsh`) and the
-  advisor skill's ledger `~/.local/state/advisor/sessions.jsonl`
-  (`$XDG_STATE_HOME` honoured). `ADVISOR_LEDGER`, if set, replaces the defaults
-  for this script only. If no ledger is found, the script exits 1.
-- **`--tallies`:** a JSON object keyed by `consult_id` that the lead writes
-  from verifier reports:
-  `{"<consult_id>": {"confirmed": 0, "refuted": 0, "unverifiable": 0}}`.
-  Counts are non-negative integers. A malformed file exits 1 with no table.
-- **`--price`:** USD per million tokens, matched on the line's `model`. Token
-  fields are disjoint, so give all four rates; with two rates, cache tokens are
-  not priced. The `recorded` cost column is the line's own `cost_usd`; the
-  `priced` column is tokens times these rates.
-- **Status cells:** the line's own status (`ok`, `degraded`, `failed`,
-  `timeout`, ...), or `missing` when that arm has no run. `degraded` counts as
-  answered.
-- **Reply cells:**
-  - `valid plan` or `valid advice`.
-  - `invalid plan (n)` or `invalid advice (n)`, where `n` is the number of
-    issues.
-  - `wrong kind`: only the other kind's shape was found.
-  - `malformed`: no JSON object in the file, its fenced blocks, or unfenced
-    text.
-  - `missing-file`.
-  - `hash-mismatch`: the file differs from `reply_sha256`, so it is not
-    validated.
-  - `-` for runs that were not answered.
-- **Validity is not symmetric:** plugin replies are validated before they are
-  recorded. For the CLI, validity measures whether it returned the exact JSON
-  shape.
-- **Exit codes:** 0 on success, 2 for usage errors, 1 for an unreadable or
-  missing ledger, or a bad tallies or topics file.
 
 ### What the lead does next
 
@@ -447,8 +445,7 @@ Execution:
 
 Limits of this iteration:
 
-- `cost_usd` is `null`, because the Host knows tokens but not prices. A
-  comparison prices tokens itself.
+- `cost_usd` is `null`, because the Host knows tokens but not prices.
 - `backend` is `dsh:unknown` if the child's model cannot be read.
 - `effort` is `null` when the child's selection does not report its effort;
   `effort_requested` is then the only record of a requested effort.
