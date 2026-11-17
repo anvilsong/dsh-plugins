@@ -20,6 +20,7 @@ import { parseModelSetting, routeLabel } from '../src/state.js'
 import {
   EVIDENCE_TOOL,
   installVerifierBoundary,
+  REPORT_TOOL,
   VERIFIER_TOOLS,
   VERIFIER_WORKFLOW,
   verifierDelegationDenial,
@@ -96,15 +97,16 @@ const VERIFIER_ARGS = {
   read: { file_path: 'src/a.js' },
   team_task_get: { id: 'task-1' },
   [EVIDENCE_TOOL]: {},
+  [REPORT_TOOL]: { entries: [{ ref: '1', status: 'confirmed', reply_line: 1, evidence: ['src/a.js:1'] }] },
 }
 
 function boundaryHarness({ dataDirProblem } = {}) {
   const listeners = {}
   const globalGuards = []
   const agents = new Map()
-  // The evidence tool is registered on each verifier by the boundary itself.
+  // The evidence and report tools are registered on each verifier by the boundary itself.
   const definitions = Object.fromEntries(
-    [...VERIFIER_TOOLS.filter((name) => name !== EVIDENCE_TOOL), 'bash', 'write', 'run_code', 'team_task_update'].map((name) => [name, { name }]),
+    [...VERIFIER_TOOLS.filter((name) => name !== EVIDENCE_TOOL && name !== REPORT_TOOL), 'bash', 'write', 'run_code', 'team_task_update'].map((name) => [name, { name }]),
   )
   const globalNames = new Set(['team_task_get', 'bash', 'write', 'run_code', 'team_task_update'])
   const tools = {
@@ -201,12 +203,13 @@ test('policy and host boundary keep verification read-only and route-exact', () 
   const child = boundary.agent('child', 'advisor-verifier-abcdef012345')
   boundary.listeners['subagent/start']({ id: 'child', local: true, provider: 'spawn' })
   boundary.sequence.push('initial-prompt')
-  assert.deepEqual(boundary.sequence, ['guard', `register:${EVIDENCE_TOOL}`, 'register:grep', 'section', 'initial-prompt'])
+  assert.deepEqual(boundary.sequence, ['guard', `register:${EVIDENCE_TOOL}`, `register:${REPORT_TOOL}`, 'register:grep', 'section', 'initial-prompt'])
   assert.deepEqual(child.restrictions, [])
   assert.equal(child.guards.length, 1)
   assert.equal(child.value.cancelled, false)
 
-  assert.deepEqual(VERIFIER_TOOLS, ['glob', 'grep', 'read', 'team_task_get', EVIDENCE_TOOL])
+  assert.deepEqual(VERIFIER_TOOLS, ['glob', 'grep', 'read', 'team_task_get', EVIDENCE_TOOL, REPORT_TOOL])
+  assert.equal(REPORT_TOOL, 'advisor_verifier_report')
   for (const name of VERIFIER_TOOLS) {
     const exec = { name, agent: child.value, arguments: VERIFIER_ARGS[name] }
     assert.equal(boundary.globalGuards[0](exec), undefined)
@@ -279,6 +282,25 @@ test('status reports the data directory, recent ledger entries, and automatic ve
   assert.ok(result.text.includes(`\nData directory: ${dir}\nRecent advisor runs:\nabc123 fable ok review`), result.text)
   assert.doesNotMatch(result.text, /started1|not configured/)
   assert.deepEqual(warnings, [])
+})
+
+test('status: verification lines are not runs: Recent advisor runs skips them; the projection stays at version 7', async (t) => {
+  const dir = await tempDir(t, 'advisor-verification-status-')
+  const verification = (verifies, extra) => JSON.stringify({ kind: 'verification', schema: 'advisor-verification/1', verifies, verified_kind: 'advice', ts: 1, ...extra })
+  await writeFile(path.join(dir, 'sessions.jsonl'), [
+    JSON.stringify({ consult_id: 'abcdef012345', kind: 'advice', advisor: 'dsh', status: 'ok', topic: 'review' }),
+    verification('abcdef012345', { status: 'recorded', expected: 3, covered: 3 }),
+    verification('abcdef012345', { status: 'unrecorded', reason: 'already_recorded' }),
+    '',
+  ].join('\n'), { mode: 0o600 })
+  await chmod(path.join(dir, 'sessions.jsonl'), 0o600)
+  const { ctx, get, agent } = harness()
+  await apply(ctx, { dataDir: dir })
+  assert.equal(get().definition.stateVersion, 7)
+  const result = await get().command.handler({ agent, rawInput: 'status' })
+  assert.ok(result.text.endsWith(`\nData directory: ${dir}\nRecent advisor runs:\nabcdef012345 dsh advice ok review`), result.text)
+  const runs = result.text.slice(result.text.indexOf('Recent advisor runs:'))
+  assert.doesNotMatch(runs, /verification|recorded|unknown/)
 })
 
 test('prompt: the lead policy names the absolute ledger and replies paths of the configured dataDir', async (t) => {

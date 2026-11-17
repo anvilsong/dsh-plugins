@@ -19,6 +19,7 @@ import {
   createLedger,
   fileSha256Sync,
   LEDGER_FILE,
+  MAX_VERIFICATION_BYTES,
   REPLIES_DIR,
   resolveDataDir,
   sha256,
@@ -31,7 +32,10 @@ const SRC = fileURLToPath(new URL('../src/', import.meta.url))
 const PLAN_ID = 'abcdef012345'
 const PLAN_ID_B = '0123456789ab'
 const hash = (text) => createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex')
-const LEDGER_KEYS = ['appendLedger', 'dir', 'idInUse', 'ledgerEntriesFor', 'ledgerLinesFor', 'ledgerPath', 'recentLedger', 'replyPath', 'repliesDir', 'writableProblem', 'writeReply'].sort()
+const LEDGER_KEYS = [
+  'appendLedger', 'dir', 'idInUse', 'ledgerEntriesFor', 'ledgerLinesFor', 'ledgerPath', 'recentLedger', 'replyPath', 'repliesDir', 'verificationEntriesFor',
+  'writableProblem', 'writeReply', 'writeVerification',
+].sort()
 const UNSAFE_MESSAGE = /must not contain control, line or paragraph separator, bidirectional control, or backtick characters/
 // Every Unicode Bidi_Control character.
 const BIDI_CONTROLS = ['\u061c', '\u200e', '\u200f', '\u202a', '\u202b', '\u202c', '\u202d', '\u202e', '\u2066', '\u2067', '\u2068', '\u2069']
@@ -244,7 +248,7 @@ test('resolveDataDir: checks strings only; an existing folder\'s owner, mode and
 // Static: no environment-derived location remains in the plugin source.
 
 test('exports: only the dataDir API remains; stateDir, ledgerPath, replyPath and the module-level helpers are gone', () => {
-  assert.deepEqual(Object.keys(ledgerModule).sort(), ['LEDGER_FILE', 'REPLIES_DIR', 'createLedger', 'fileSha256Sync', 'resolveDataDir', 'sha256'])
+  assert.deepEqual(Object.keys(ledgerModule).sort(), ['LEDGER_FILE', 'MAX_VERIFICATION_BYTES', 'REPLIES_DIR', 'createLedger', 'fileSha256Sync', 'resolveDataDir', 'sha256'])
 })
 
 test('static: no src/*.js references XDG_STATE_HOME, ADVISOR_LEDGER, .local/state or homedir', () => {
@@ -372,6 +376,156 @@ test('ledger: recentLedger skips started and torn lines, labels plan and advice 
   assert.equal(await ledger.recentLedger(), ['c1 fable ok review', 'p1 dsh plan ok unset', 'p2 dsh plan failed unset'].join('\n'))
   assert.equal(await ledger.recentLedger(1), 'p2 dsh plan failed unset')
   assert.equal(await ledger.recentLedger(10), ['a0 dsh advice ok first', 'c1 fable ok review', 'p1 dsh plan ok unset', 'p2 dsh plan failed unset'].join('\n'))
+})
+
+// ---------------------------------------------------------------------------
+// Verification lines and records: a line without a top-level consult_id, and
+// one exclusive side file per run beside its reply.
+
+/** A verification line as the verifier boundary writes it: flat, Host values only, no consult_id. */
+const verificationLine = (verifies, extra = {}) => ({
+  kind: 'verification', schema: 'advisor-verification/1', verifies, verified_kind: 'advice', ts: 1, status: 'recorded',
+  session_id: 'lead', verifier_session_id: 'verifier-1', backend: 'dsh:unknown', model: null, effort: null, effort_requested: null,
+  reply_sha256: 'f'.repeat(64), report_file: `/data/replies/${verifies}.verification.json`, report_sha256: 'e'.repeat(64),
+  expected: 2, covered: 2, entries: 2, confirmed: 1, refuted: 1, unverifiable: 0, other: 0, submit_attempts: 1, tool_calls: 3, duration_s: 1.5,
+  ...extra,
+})
+
+test('ledger: writeVerification creates replies/<id>.verification.json exclusively, 0600 beside the reply, and hashes the exact bytes', async () => {
+  const ledger = createLedger(path.join(TMP, 'verification'))
+  const reply = await ledger.writeReply(PLAN_ID, 'reply\n')
+  const text = '{\n  "schema": "advisor-verification/1",\n  "note": "h\u00e9llo \u{1F680}"\n}\n'
+  const record = await ledger.writeVerification(PLAN_ID, text)
+  assert.deepEqual(Object.keys(record).sort(), ['file', 'sha256'])
+  assert.equal(record.file, path.join(ledger.repliesDir, `${PLAN_ID}.verification.json`))
+  assert.equal(record.sha256, hash(text))
+  assert.equal(readFileSync(record.file, 'utf8'), text)
+  assert.equal(statSync(record.file).mode & 0o777, 0o600)
+  assert.equal(statSync(ledger.repliesDir).mode & 0o777, 0o700)
+  await assert.rejects(ledger.writeVerification(PLAN_ID, '{"second":true}\n'), { code: 'EEXIST' }, 'one record per run')
+  assert.equal(readFileSync(record.file, 'utf8'), text, 'the first record is kept')
+  assert.equal(readFileSync(reply.file, 'utf8'), 'reply\n', 'the reply is untouched')
+  assert.equal(existsSync(ledger.ledgerPath), false, 'a record adds no ledger line')
+  assert.equal(ledger.idInUse(PLAN_ID_B), false)
+  await ledger.writeVerification(PLAN_ID_B, '{}\n')
+  assert.equal(ledger.idInUse(PLAN_ID_B), false, 'a record file alone does not mark an id as used')
+  assert.deepEqual(tree(ledger.dir), ['replies/', `replies/${PLAN_ID}.md`, `replies/${PLAN_ID}.verification.json`, `replies/${PLAN_ID_B}.verification.json`].sort())
+})
+
+test('ledger: writeVerification refuses bad ids, a record over 64 KB, a planted symlink and an unsafe folder, writing nothing', async (t) => {
+  assert.equal(MAX_VERIFICATION_BYTES, 64 * 1024)
+  const ledger = createLedger(path.join(TMP, 'verification-refusals'))
+  for (const id of ['', 'ABCDEF012345', '../../../../etc', `${PLAN_ID}.md`, undefined, 42]) {
+    await assert.rejects(ledger.writeVerification(id, '{}'), /12 lowercase hex/, JSON.stringify(id))
+  }
+  assert.equal(existsSync(ledger.dir), false, 'a rejected id creates no folder')
+  await assert.rejects(ledger.writeVerification(PLAN_ID, 'x'.repeat(MAX_VERIFICATION_BYTES + 1)), /over the 65536-byte cap/)
+  await assert.rejects(ledger.writeVerification(PLAN_ID, '\u00e9'.repeat(MAX_VERIFICATION_BYTES / 2 + 1)), /over the 65536-byte cap/, 'the cap counts UTF-8 bytes')
+  for (const value of [undefined, null, 42, Buffer.from('{}')]) await assert.rejects(ledger.writeVerification(PLAN_ID, value), TypeError)
+  assert.equal(existsSync(ledger.dir), false, 'nothing is created for a refused record')
+  const exact = await ledger.writeVerification(PLAN_ID, 'y'.repeat(MAX_VERIFICATION_BYTES))
+  assert.equal(statSync(exact.file).size, MAX_VERIFICATION_BYTES, 'a record of exactly the cap is written')
+
+  // A symlink planted where the record goes is never followed.
+  const target = path.join(TMP, 'verification-target.txt')
+  writeFileSync(target, 'untouched\n')
+  symlinkSync(target, path.join(ledger.repliesDir, `${PLAN_ID_B}.verification.json`))
+  await assert.rejects(ledger.writeVerification(PLAN_ID_B, '{}'), { code: 'EEXIST' })
+  assert.equal(readFileSync(target, 'utf8'), 'untouched\n')
+
+  if (POSIX_OWNERS) {
+    const unsafe = createLedger(mkdtempSync(path.join(TMP, 'verification-unsafe-')))
+    t.after(() => chmodSync(unsafe.dir, 0o700))
+    chmodSync(unsafe.dir, 0o777)
+    await assert.rejects(unsafe.writeVerification(PLAN_ID, '{}'), { message: `Advisor data directory is unsafe: ${unsafe.dir} is writable by group or others (mode 0777)` })
+    assert.deepEqual(tree(unsafe.dir), ['replies/'], 'only the folder its mkdir made before the check; no record')
+  }
+})
+
+test('ledger: recentLedger skips verification lines; they are not runs', async () => {
+  const ledger = createLedger(path.join(TMP, 'recent-verification'))
+  mkdirSync(ledger.dir, { recursive: true, mode: 0o700 })
+  writeFileSync(ledger.ledgerPath, `${JSON.stringify(verificationLine(PLAN_ID))}\n`, { mode: 0o600 })
+  assert.equal(await ledger.recentLedger(), 'No consults recorded.', 'a ledger of verification lines has no runs')
+  writeFileSync(ledger.ledgerPath, [
+    JSON.stringify({ consult_id: 'p1', advisor: 'dsh', kind: 'plan', status: 'ok', topic: 'first' }),
+    JSON.stringify({ consult_id: 'a1', advisor: 'dsh', kind: 'advice', status: 'ok', topic: 'second' }),
+    JSON.stringify(verificationLine('p1')),
+    JSON.stringify(verificationLine('a1', { status: 'unrecorded', reason: 'not_called' })),
+    JSON.stringify(verificationLine('a1', { status: 'recorded' })),
+    '',
+  ].join('\n'))
+  assert.equal(await ledger.recentLedger(), ['p1 dsh plan ok first', 'a1 dsh advice ok second'].join('\n'))
+  assert.equal(await ledger.recentLedger(1), 'a1 dsh advice ok second', 'the limit counts runs, not verification lines')
+  assert.doesNotMatch(await ledger.recentLedger(10), /verification|unknown|recorded/)
+})
+
+test('ledger: verificationEntriesFor returns the verification lines naming an id under verifies, a torn one included; ledgerEntriesFor never does', () => {
+  const ledger = createLedger(path.join(TMP, 'verification-entries'))
+  assert.deepEqual(ledger.verificationEntriesFor(PLAN_ID), [], 'no ledger yet')
+  mkdirSync(ledger.dir, { recursive: true, mode: 0o700 })
+  const recorded = verificationLine(PLAN_ID)
+  const unrecorded = verificationLine(PLAN_ID, { status: 'unrecorded', reason: 'not_called', verifier_session_id: 'verifier-2' })
+  writeFileSync(ledger.ledgerPath, [
+    JSON.stringify({ consult_id: PLAN_ID, kind: 'advice', status: 'ok' }), // the run line
+    JSON.stringify(recorded),
+    JSON.stringify(verificationLine(PLAN_ID_B)), // another id
+    JSON.stringify({ kind: 'verification', verifies: `${PLAN_ID}6` }), // a longer id
+    JSON.stringify({ kind: 'review', verifies: PLAN_ID }), // not a verification line
+    JSON.stringify({ nested: { kind: 'verification', verifies: PLAN_ID } }), // nested only
+    JSON.stringify([verificationLine(PLAN_ID)]), // inside an array
+    `{"consult_id":"torn","pad":"FAKE_FRAGMENT${JSON.stringify(unrecorded)}`, // a fragment, then a whole line
+    `{"kind":"verification","verifies":"${PLAN_ID}"`, // a fragment alone
+    '',
+  ].join('\n'), { mode: 0o600 })
+  assert.deepEqual(ledger.verificationEntriesFor(PLAN_ID), [recorded, unrecorded])
+  assert.deepEqual(ledger.verificationEntriesFor(PLAN_ID_B), [verificationLine(PLAN_ID_B)])
+  assert.deepEqual(ledger.verificationEntriesFor('fedcba987654'), [])
+  for (const id of ['', undefined, null, 42]) assert.deepEqual(ledger.verificationEntriesFor(id), [], String(id))
+  assert.deepEqual(ledger.ledgerEntriesFor(PLAN_ID).map((entry) => entry.status), ['ok'], 'the id-keyed readers are unchanged')
+  assert.equal(ledger.idInUse(PLAN_ID_B), false)
+})
+
+test('ledger: a mixed ledger of plan, advice and verification lines leaves ledgerLinesFor, ledgerEntriesFor and idInUse unchanged', async () => {
+  const ledger = createLedger(path.join(TMP, 'mixed'))
+  mkdirSync(ledger.dir, { recursive: true, mode: 0o700 })
+  const THIRD = 'fedcba987654'
+  const runs = [
+    { consult_id: PLAN_ID, kind: 'plan', advisor: 'dsh', status: 'started' },
+    { consult_id: PLAN_ID_B, kind: 'advice', advisor: 'dsh', status: 'started' },
+    { consult_id: PLAN_ID, kind: 'plan', advisor: 'dsh', status: 'ok', reply_file: ledger.replyPath(PLAN_ID), reply_sha256: 'a'.repeat(64), task_count: 2 },
+    { consult_id: PLAN_ID_B, kind: 'advice', advisor: 'dsh', status: 'ok', reply_file: ledger.replyPath(PLAN_ID_B), reply_sha256: 'b'.repeat(64), claim_count: 3 },
+  ]
+  const plain = runs.map((entry) => JSON.stringify(entry))
+  writeFileSync(ledger.ledgerPath, `${plain.join('\n')}\n`, { mode: 0o600 })
+  const before = {
+    plan: ledger.ledgerLinesFor(PLAN_ID), advice: ledger.ledgerLinesFor(PLAN_ID_B), third: ledger.ledgerLinesFor(THIRD),
+    used: [PLAN_ID, PLAN_ID_B, THIRD].map((id) => ledger.idInUse(id)),
+  }
+  const mixed = [
+    plain[0],
+    JSON.stringify(verificationLine(PLAN_ID, { verified_kind: 'plan', status: 'unrecorded', reason: 'not_called' })),
+    plain[1],
+    plain[2],
+    JSON.stringify(verificationLine(PLAN_ID, { verified_kind: 'plan' })),
+    plain[3],
+    JSON.stringify(verificationLine(PLAN_ID_B)),
+    JSON.stringify(verificationLine(THIRD, { status: 'unrecorded', reason: 'reply_withheld' })),
+  ]
+  writeFileSync(ledger.ledgerPath, `${mixed.join('\n')}\n`)
+  const lines = (id) => ledger.ledgerLinesFor(id).map(({ line, text, torn }) => ({ line, text, torn }))
+  assert.deepEqual(lines(PLAN_ID), [{ line: 1, text: plain[0], torn: false }, { line: 4, text: plain[2], torn: false }], 'only the plan run lines, at their physical numbers')
+  assert.deepEqual(lines(PLAN_ID_B), [{ line: 3, text: plain[1], torn: false }, { line: 6, text: plain[3], torn: false }])
+  assert.deepEqual(ledger.ledgerEntriesFor(PLAN_ID), before.plan.map(({ entry }) => entry), 'the same entries as without verification lines')
+  assert.deepEqual(ledger.ledgerEntriesFor(PLAN_ID_B), before.advice.map(({ entry }) => entry))
+  assert.deepEqual(ledger.ledgerEntriesFor(THIRD), before.third, 'a verification line is never an entry of the id it verifies')
+  assert.deepEqual([PLAN_ID, PLAN_ID_B, THIRD].map((id) => ledger.idInUse(id)), before.used)
+  assert.equal(ledger.idInUse(THIRD), false, 'a verification line alone does not mark an id as used')
+  for (const id of [PLAN_ID, PLAN_ID_B]) {
+    assert.ok(ledger.ledgerEntriesFor(id).every((entry) => entry.kind !== 'verification' && entry.consult_id === id), id)
+    assert.equal(ledger.ledgerEntriesFor(id).findLast((entry) => entry.status !== 'started').status, 'ok', `${id}: the last terminal entry is still the ok line`)
+  }
+  assert.equal(await ledger.recentLedger(), `${PLAN_ID} dsh plan ok unset\n${PLAN_ID_B} dsh advice ok unset`)
 })
 
 // ---------------------------------------------------------------------------

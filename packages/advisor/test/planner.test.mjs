@@ -27,6 +27,7 @@ import {
   CONSULT_TOOLS,
   confinedGrep,
   DATA_DIR_NOT_CONFIGURED,
+  evidenceReferenceIssues,
   installPlannerBoundary,
   isDelegationTool,
   MAX_SUBMIT_FAILURES,
@@ -854,6 +855,65 @@ test('validateAdvice: evidence cannot point at protected files', {
   }
 })
 
+test('evidenceReferenceIssues: the one evidence-reference check that advice claims and the verifier report share', () => {
+  for (const reference of [
+    'src/a.js', 'src/a.js:12', 'src/a.js:12-30', 'src/a.js:3-3', 'docs/readme.md:1', 'src\\sub\\b.js:2', 'a b/c.js:4', '.env.example:2', 'sessions.jsonl:3',
+    'src/\u{1F642}.js:1', 'src/a\u00a0b.js', 'docs/\u00e9t\u00e9/\u6f22\u5b57.md:2',
+  ]) {
+    assert.deepEqual(evidenceReferenceIssues(reference), [], reference)
+  }
+  const UNSAFE = 'path must not contain control, format or line separator characters, or unpaired surrogates'
+  const GRAMMAR = 'must be a workspace-relative path with optional :line or :start-end'
+  const table = [
+    // C1 controls, bidi controls, zero-width and other format characters, tags, and unpaired surrogates.
+    ['src/a\u0085b.js', [UNSAFE]],
+    ['src/a\u009bb.js:1', [UNSAFE]],
+    ['src/\u202eb.js', [UNSAFE]],
+    ['src/a\u2066b.js:2', [UNSAFE]],
+    ['src/a\u061cb.js', [UNSAFE]],
+    ['src/a\u200b.js', [UNSAFE]],
+    ['src/a\u200db.js', [UNSAFE]],
+    ['src/a\u2060b.js', [UNSAFE]],
+    ['src/a\ufeffb.js', [UNSAFE]],
+    ['src/a\u00adb.js', [UNSAFE]],
+    ['src/a\u{E0041}b.js', [UNSAFE]],
+    ['src/a\ud800b.js', [UNSAFE]],
+    ['src/a\udc00b.js:3', [UNSAFE]],
+    ['src/a\u200b.js:0', [UNSAFE, 'lines start at 1']],
+    // Rejected before, with their messages unchanged.
+    ['src/a\u2028b.js', [GRAMMAR]],
+    ['src/a\u2029b.js:1', [GRAMMAR]],
+    ['src/a\u200b.js ', [GRAMMAR]],
+    ['src/a\u0007b.js', ['path must not contain control characters']],
+    ['nested/.ssh/known\u200bhosts', ['path reaches a protected file (.ssh)']],
+    ['../a\u202e.js', ['path must not contain ..']],
+    ['/etc/passwd:1', ['path must be workspace-relative']],
+    ['C:\\x.js:1', ['path must be workspace-relative']],
+    ['../x.js:1', ['path must not contain ..']],
+    ['.git/config:1', ['path must not touch .git']],
+    ['src/*.js:1', ['path must be a path prefix, not a glob']],
+    ['~/x.js', ['path must not start with ~']],
+    ['.:3', ['path must not be the workspace root']],
+    ['a\u0000b.js:1', ['path must not contain control characters']],
+    ['', ['must be a workspace-relative path with optional :line or :start-end']],
+    [' src/a.js', ['must be a workspace-relative path with optional :line or :start-end']],
+    ['src/a.js:0', ['lines start at 1']],
+    ['src/a.js:5-3', ['line range must not run backwards']],
+    ['.env:1', ['path reaches a protected file (.env)']],
+    ['config/credentials.json:2', ['path reaches a protected file (credentials.json)']],
+    ['nested/.ssh/known_hosts', ['path reaches a protected file (.ssh)']],
+    ['x.pem:1-3', ['path reaches a protected file (x.pem)']],
+    [undefined, ['must be a workspace-relative path with optional :line or :start-end']],
+    [12, ['must be a workspace-relative path with optional :line or :start-end']],
+  ]
+  for (const [reference, expected] of table) {
+    assert.deepEqual(evidenceReferenceIssues(reference), expected, JSON.stringify(reference))
+    if (typeof reference !== 'string') continue
+    // validateAdvice reports exactly these issues, each under its claim and reference.
+    assert.deepEqual(validateAdvice(withEvidence(reference)).issues, expected.map((issue) => `claims.0.evidence.0: ${issue}`), JSON.stringify(reference))
+  }
+})
+
 test('ADVICE_PARAMETERS: stays in the enforced subset and agrees with validateAdvice on structure', () => {
   const accepted = [advice(), advice({ options: [], risks: [], do_not_build: [], claims: [], open_questions: ['Which owner?'] })]
   for (const fixture of accepted) {
@@ -1564,6 +1624,52 @@ test('start: a cold resume writes no second started line and never reopens a fin
       assert.deepEqual(h.state.ledger, prior, 'nothing is added')
     }
   }
+})
+
+test('start: verification lines carry no top-level consult_id, so the cold-resume, other-kind and id-in-use checks ignore them', async (t) => {
+  // As the verifier boundary writes them: kind verification, the run's id under verifies only.
+  const verification = (verifies, extra = {}) => ({
+    kind: 'verification', schema: 'advisor-verification/1', verifies, verified_kind: 'plan', ts: 1, status: 'recorded', ...extra,
+  })
+  // An open run (only its started line) followed by verification lines naming its id resumes as before.
+  const open = harness({ ledgerMode: 'real' })
+  t.after(open.dispose)
+  await open.ledger.appendLedger({ consult_id: PLAN_ID, kind: 'plan', advisor: 'dsh', status: 'started', topic: 'unset' })
+  await open.ledger.appendLedger(verification(PLAN_ID))
+  await open.ledger.appendLedger(verification(PLAN_ID, { status: 'unrecorded', reason: 'not_called' }))
+  const c = open.child()
+  open.start(c)
+  assert.equal(c.agent.cancelled, 0, 'a line of kind verification does not trip the other-kind check')
+  assert.equal(open.run(c, 'read', { file_path: 'src/a.js' }), undefined)
+  open.brief(c, 'Sanitized briefing.')
+  assert.equal((await open.submit(c, plan())).plan_id, PLAN_ID)
+  await until(() => open.lines().length === 4, 'the ok line')
+  assert.deepEqual(open.lines().map((line) => [line.kind, line.status]), [['plan', 'started'], ['verification', 'recorded'], ['verification', 'unrecorded'], ['plan', 'ok']], 'no second started line')
+
+  // A finished run followed by its verification line is still finished: never reopened, nothing added.
+  for (const self of [PLANNER, CONSULT]) {
+    const kind = self === PLANNER ? 'plan' : 'advice'
+    const done = harness({ ledgerMode: 'real' })
+    t.after(done.dispose)
+    await done.ledger.appendLedger({ consult_id: PLAN_ID, kind, advisor: 'dsh', status: 'started' })
+    await done.ledger.appendLedger({ consult_id: PLAN_ID, kind, advisor: 'dsh', status: 'ok', reply_file: done.ledger.replyPath(PLAN_ID), reply_sha256: 'a'.repeat(64) })
+    await done.ledger.appendLedger(verification(PLAN_ID, { verified_kind: kind }))
+    const before = readFileSync(done.ledger.ledgerPath, 'utf8')
+    const d = done.child({ self })
+    done.start(d)
+    assert.equal(d.agent.cancelled, 1, `${self}: a finished run is stopped instead of running again`)
+    assert.equal(d.registered.has(d.tool), false, self)
+    done.end(d)
+    await settle()
+    assert.equal(readFileSync(done.ledger.ledgerPath, 'utf8'), before, `${self}: nothing is added`)
+  }
+
+  // A verification line alone does not make its id used.
+  const fresh = harness({ ledgerMode: 'real' })
+  t.after(fresh.dispose)
+  await fresh.ledger.appendLedger(verification(PLAN_ID_B, { status: 'unrecorded', reason: 'reply_withheld' }))
+  assert.equal(fresh.ledger.idInUse(PLAN_ID_B), false)
+  assert.equal(fresh.delegate({ name: PLANNER_B }), undefined)
 })
 
 test('start: a child resumed after a Host restart keeps the effort_requested of its started line, whatever the setting is now', async (t) => {

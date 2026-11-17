@@ -12,16 +12,22 @@ import { syncBuiltinESMExports } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import test, { after } from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { apply } from '../src/index.host.js'
-import { createLedger, fileSha256Sync, sha256 } from '../src/ledger.js'
-import { DATA_DIR_NOT_CONFIGURED, dataDirUnusable } from '../src/planner.js'
+import { createLedger, fileSha256Sync, MAX_VERIFICATION_BYTES, sha256 } from '../src/ledger.js'
+import { DATA_DIR_NOT_CONFIGURED, dataDirUnusable, renderAdvice, renderPlan } from '../src/planner.js'
 import { parseModelSetting, spawnArgs } from '../src/state.js'
 import {
   EVIDENCE_PART_BYTES,
   EVIDENCE_TOOL,
   installVerifierBoundary,
   MAX_EVIDENCE_REPLY_BYTES,
+  MAX_REPORT_ENTRIES,
+  MAX_REPORT_FAILURES,
+  REPORT_TOOL,
+  UNRECORDED_REASONS,
+  validateVerifierReport,
+  VERIFICATION_SCHEMA_ID,
   VERIFIER_POLICY,
   VERIFIER_TOOLS,
   VERIFIER_WORKFLOW,
@@ -127,7 +133,12 @@ const okLine = (ledger, id = ID, extra = {}) => line({
 
 function harness(options = {}) {
   // selectedRoute: () => the saved Verifier model (undefined: the boundary's default, Inherit).
-  const { depsArg = 'default', ledger = freshLedger(), noGrep = false, dataDirProblem, workspace = WS, selectedRoute } = options
+  // now: the boundary's clock (undefined: Date.now). installBoundary: the
+  // installVerifierBoundary under test (a mutated copy in the mutation checks).
+  const {
+    depsArg = 'default', ledger = freshLedger(), noGrep = false, dataDirProblem, workspace = WS, selectedRoute, now,
+    installBoundary = installVerifierBoundary,
+  } = options
   const state = { workspace, grepMatches: [], grepCalls: [] }
   const listeners = new Map()
   const hostGuards = []
@@ -187,13 +198,13 @@ function harness(options = {}) {
     logger: { warn: (message) => logs.push(message), info() {}, debug() {} },
   }
   const workspaceOf = (agent) => (agent === lead ? state.workspace : (Object.hasOwn(agent, 'cwd') ? agent.cwd : state.workspace))
-  const defaults = { workspaceOf, ledger }
+  const defaults = { workspaceOf, ledger, ...(now === undefined ? {} : { now }) }
   const deps = typeof depsArg === 'function' ? depsArg(defaults) : defaults
   const install = options.install ?? true
   const dispose = !install ? () => {}
     : depsArg === 'none'
-      ? installVerifierBoundary(ctx, undefined, selectedRoute, dataDirProblem)
-      : installVerifierBoundary(ctx, undefined, selectedRoute, dataDirProblem, deps)
+      ? installBoundary(ctx, undefined, selectedRoute, dataDirProblem)
+      : installBoundary(ctx, undefined, selectedRoute, dataDirProblem, deps)
 
   function child({ id = 'verifier-1', self = VERIFIER, parent = 'lead', refuse = [], guardThrows = false, ...extra } = {}) {
     const handle = { registered: new Map(), shadows: new Map(), guards: [], sections: [], sequence: [], refuse: new Set(refuse), guardThrows }
@@ -254,6 +265,7 @@ function harness(options = {}) {
   const emit = (name, payload) => { for (const fn of [...(listeners.get(name) ?? [])]) fn(payload) }
   const start = (c, info = {}) => emit('subagent/start', { id: c.agent.id, local: true, provider: 'spawn', ...info })
   const end = (c) => emit('subagent/end', { id: c.agent.id })
+  const agentDisposed = (c) => emit('agent/disposed', { agent: c.agent })
   /** Every guard a call meets: the Host guards, then the child's own guards. */
   function run(c, name, args, opts = {}) {
     const exec = { name, arguments: args, agent: Object.hasOwn(opts, 'agent') ? opts.agent : c.agent, toolSet: opts.toolSet }
@@ -275,7 +287,7 @@ function harness(options = {}) {
     start(c, info)
     return c
   }
-  return { state, ctx, lead, ledger, logs, hostGrep, hostGuards, listeners, globalDefs, dispose, child, start, end, emit, run, hostCall, startChild }
+  return { state, ctx, lead, ledger, logs, hostGrep, hostGuards, listeners, globalDefs, dispose, child, start, end, agentDisposed, emit, run, hostCall, startChild }
 }
 
 /** Call the child's own evidence tool the way the Host executes it. */
@@ -356,14 +368,16 @@ const ALLOWED_CALLS = [
   ['read', { file_path: 'src/a.js' }],
   ['team_task_get', { id: 'task-1' }],
   [EVIDENCE_TOOL, {}],
+  [REPORT_TOOL, { entries: [{ ref: '1', status: 'confirmed', reply_line: 1, evidence: ['src/a.js:1'] }] }],
 ]
 
 // ===========================================================================
 // Requirement 5: the allowlist and default deny
 
-test('allowlist: exactly glob, grep, read, team_task_get and advisor_evidence_get; everything else is denied', () => {
+test('allowlist: exactly glob, grep, read, team_task_get, advisor_evidence_get and advisor_verifier_report; everything else is denied', () => {
   assert.equal(EVIDENCE_TOOL, 'advisor_evidence_get')
-  assert.deepEqual(VERIFIER_TOOLS, ['glob', 'grep', 'read', 'team_task_get', 'advisor_evidence_get'])
+  assert.equal(REPORT_TOOL, 'advisor_verifier_report')
+  assert.deepEqual(VERIFIER_TOOLS, ['glob', 'grep', 'read', 'team_task_get', 'advisor_evidence_get', 'advisor_verifier_report'])
   assert.equal(Object.isFrozen(VERIFIER_TOOLS), true)
   const h = harness()
   const c = h.startChild()
@@ -481,13 +495,15 @@ test('confinement: paths resolve against the verifier\'s own working directory i
   h.dispose()
 })
 
-test('confinement: team_task_get and the evidence tool carry no path and bypass path confinement', () => {
+test('confinement: team_task_get, the evidence tool and the report tool carry no path and bypass path confinement', () => {
   const h = harness()
   const c = h.startChild()
   for (const args of [{ id: 'task-1' }, { id: '../../etc/passwd' }, { file_path: '/etc/hosts' }, {}]) {
     assert.equal(h.run(c, 'team_task_get', args), undefined, JSON.stringify(args))
   }
   assert.equal(h.run(c, EVIDENCE_TOOL, {}), undefined)
+  // The report tool's own validation refuses any argument but entries.
+  assert.equal(h.run(c, REPORT_TOOL, { file_path: '/etc/hosts' }), undefined)
   h.dispose()
 })
 
@@ -553,13 +569,14 @@ test('grep: a registration that does not shadow the Host grep fails closed; with
   none.dispose()
 })
 
-test('start: guard first, then the evidence tool and confined grep, then the capture and the policy', () => {
+test('start: guard first, then the evidence tool, the report tool and confined grep, then the capture and the policy', () => {
   const h = harness()
   const c = h.child()
   h.start(c)
-  assert.deepEqual(c.sequence, ['guard', `register:${EVIDENCE_TOOL}`, 'register:grep', 'section'])
+  assert.deepEqual(c.sequence, ['guard', `register:${EVIDENCE_TOOL}`, `register:${REPORT_TOOL}`, 'register:grep', 'section'])
   assert.equal(c.guards.length, 1)
   assert.equal(h.ctx.tools.get(EVIDENCE_TOOL), undefined, 'the evidence tool is registered on the child only')
+  assert.equal(h.ctx.tools.get(REPORT_TOOL), undefined, 'the report tool is registered on the child only')
   assert.equal(c.sections.length, 1)
   assert.equal(c.sections[0].text, VERIFIER_POLICY)
   h.dispose()
@@ -573,6 +590,14 @@ test('start: a refused evidence tool or a guard that cannot be installed fails c
   assert.ok(refused.logs.some((entry) => entry.includes('evidence tool did not register')), refused.logs.join('\n'))
   assert.equal(c.registered.size, 0, 'partial registrations are disposed')
   refused.dispose()
+
+  const noReport = harness()
+  const r = noReport.startChild({ refuse: [REPORT_TOOL] })
+  assert.equal(r.agent.cancelled, 1)
+  for (const [name, args] of ALLOWED_CALLS) assert.match(noReport.run(r, name, args), /failed closed/, name)
+  assert.ok(noReport.logs.some((entry) => entry.includes('report tool did not register')), noReport.logs.join('\n'))
+  assert.equal(r.registered.size, 0, 'partial registrations are disposed')
+  noReport.dispose()
 
   const closed = harness()
   const g = closed.startChild({ guardThrows: true })
@@ -588,7 +613,7 @@ test('start: a later epoch on the same Agent object refreshes the registrations 
   assert.equal(c.agent.cancelled, 0)
   assert.equal(c.guards.length, 1)
   assert.equal(c.sections.length, 1)
-  for (const step of [`unregister:${EVIDENCE_TOOL}`, 'unregister:grep', 'unsection']) assert.ok(c.sequence.includes(step), step)
+  for (const step of [`unregister:${EVIDENCE_TOOL}`, `unregister:${REPORT_TOOL}`, 'unregister:grep', 'unsection']) assert.ok(c.sequence.includes(step), step)
   for (const [name, args] of ALLOWED_CALLS) assert.equal(h.run(c, name, args), undefined, name)
   assert.equal((await evidence(c)).ledger_path, h.ledger.ledgerPath)
 
@@ -1018,8 +1043,9 @@ test('apply(): without the working-directory service the verifier boundary stays
 // Requirement 4: the policy and workflow text
 
 test('text: the verifier policy and the lead workflow describe the evidence tool, its parts, confinement and citations', () => {
-  assert.match(VERIFIER_POLICY, /Only read, grep, glob, team_task_get, and advisor_evidence_get are permitted\./)
+  assert.match(VERIFIER_POLICY, /Only read, grep, glob, team_task_get, advisor_evidence_get, and advisor_verifier_report are permitted\./)
   assert.doesNotMatch(VERIFIER_POLICY, /Only read, grep, glob, and team_task_get are permitted/)
+  assert.doesNotMatch(VERIFIER_POLICY, /Only read, grep, glob, team_task_get, and advisor_evidence_get are permitted/)
   assert.doesNotMatch(VERIFIER_POLICY, /takes no arguments/)
   assert.match(VERIFIER_POLICY, /Its only argument is part, an integer from 1 \(the default\)/)
   assert.match(VERIFIER_POLICY, /parts of at most 32 KB/)
@@ -1727,4 +1753,1178 @@ test('delegation: the name and data-directory checks come first; agent_preset ne
   const throwing = harness({ selectedRoute: () => { throw new Error('state gone') } })
   assert.equal(throwing.hostCall('subagent', { name: VERIFIER, ...spawnArgs(stored) }, throwing.lead), 'Advisor verifier guard failed closed: state gone')
   throwing.dispose()
+})
+
+// ===========================================================================
+// Verification records: advisor_verifier_report stores one status-only record
+// per consult beside the reply, and the Host appends one flat verification
+// line without a top-level consult_id, with counts the Host computes. An
+// allowed verifier that ends without a record gets one unrecorded line.
+
+const settle = () => new Promise((resolve) => setImmediate(resolve))
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+/** Wait until a predicate holds (file appends complete off the event loop). */
+async function until(predicate, label, ms = 5000) {
+  const deadline = Date.now() + ms
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`)
+    await sleep(5)
+  }
+}
+
+/** Advice with `count` claims, rendered as the Host renders replies. */
+function adviceReply(count, id = ID) {
+  return renderAdvice(id, {
+    question: 'Which writer?', recommendation: 'The exclusive one.', rationale: 'Once only.', options: [], risks: [], do_not_build: [],
+    claims: Array.from({ length: count }, (_, index) => ({ claim: `claim ${index + 1}`, evidence: ['src/a.js:1'] })),
+    open_questions: [],
+  })
+}
+/** A plan with these task ids, rendered as the Host renders replies. */
+function planReply(taskIds, id = ID) {
+  const task = (taskId) => ({
+    id: taskId, title: `Do ${taskId}`, level: 'ordinary', level_reason: 'r', write_scopes: [], acceptance: [{ criterion: 'c', verify: 'v' }],
+    blocked_by: [], open_questions: [],
+  })
+  return renderPlan(id, { summary: 'S.', tasks: taskIds.map(task), open_questions: [] })
+}
+
+/**
+ * Record a run as the planner boundary does: its reply through writeReply,
+ * then a started line and a terminal ok line carrying the reply's hash and count.
+ * @returns {Promise<{ file: string, sha256: string, text: string }>}
+ */
+async function recordRun(ledger, { id = ID, kind = 'advice', count = 3, taskIds, reply, ok = {} } = {}) {
+  const ids = taskIds ?? Array.from({ length: count }, (_, index) => `T${index + 1}`)
+  const text = reply ?? (kind === 'plan' ? planReply(ids, id) : adviceReply(count, id))
+  const written = await ledger.writeReply(id, text)
+  await ledger.appendLedger({ consult_id: id, kind, advisor: 'dsh', status: 'started', topic: 'unset' })
+  const countField = kind === 'plan' ? { task_count: ids.length } : { claim_count: count }
+  await ledger.appendLedger({ consult_id: id, kind, advisor: 'dsh', status: 'ok', topic: 'unset', reply_file: written.file, reply_sha256: written.sha256, ...countField, ...ok })
+  return { ...written, text }
+}
+
+const sidePath = (ledger, id = ID) => path.join(ledger.repliesDir, `${id}.verification.json`)
+const ledgerObjects = (ledger) => (fs.existsSync(ledger.ledgerPath)
+  ? readFileSync(ledger.ledgerPath, 'utf8').split('\n').filter(Boolean).map((text) => JSON.parse(text))
+  : [])
+const verificationLines = (ledger) => ledgerObjects(ledger).filter((entry) => entry.kind === 'verification')
+const reportEntry = (ref, status = 'confirmed', extra = {}) => ({
+  ref, status, reply_line: 3, evidence: status === 'unverifiable' ? [] : ['src/a.js:1'], ...extra,
+})
+const VALID_REPORT = Object.freeze({ entries: [reportEntry('1')] })
+// Unequal counts, so that a swap or an off-by-one in any count shows: for
+// advice with 7 claims, 2 confirmed, 1 refuted and 3 unverifiable claim
+// entries (claim 7 has none), and 4 "other" entries of mixed status.
+const UNEQUAL_CLAIMS = 7
+const UNEQUAL_ENTRIES = Object.freeze([
+  reportEntry('1', 'confirmed', { reply_line: 12, evidence: ['src/a.js:1', 'docs/readme.md'] }),
+  reportEntry('2', 'confirmed', { reply_line: 13 }),
+  reportEntry('3', 'refuted', { reply_line: 14, note: 'the caller passes a path' }),
+  reportEntry('4', 'unverifiable', { reply_line: 15 }),
+  reportEntry('5', 'unverifiable', { reply_line: 16 }),
+  reportEntry('6', 'unverifiable', { reply_line: 17 }),
+  reportEntry('other', 'unverifiable', { reply_line: 4, note: 'the recommendation is opinion' }),
+  reportEntry('other', 'confirmed', { reply_line: 6, evidence: ['src/sub/b.js:1'] }),
+  reportEntry('other', 'refuted', { reply_line: 7 }),
+  reportEntry('other', 'confirmed', { reply_line: 8 }),
+])
+const UNEQUAL_COUNTS = Object.freeze({ expected: 7, covered: 6, entries: 10, confirmed: 2, refuted: 1, unverifiable: 3, other: 4 })
+/** The counts of a verification line, by name. */
+const countsOf = (line) => Object.fromEntries(Object.keys(UNEQUAL_COUNTS).map((key) => [key, line[key]]))
+/** The same counts recomputed from the entries of a side file. */
+function countsFromRecord(record, expected) {
+  const numbered = record.entries.filter((entry) => entry.ref !== 'other')
+  const status = (name) => numbered.filter((entry) => entry.status === name).length
+  return {
+    expected, covered: new Set(numbered.map((entry) => entry.ref)).size, entries: record.entries.length,
+    confirmed: status('confirmed'), refuted: status('refuted'), unverifiable: status('unverifiable'), other: record.entries.length - numbered.length,
+  }
+}
+/** The ledger with counted appends and optional replacements, as a boundary dependency. */
+function wrapLedger(base, overrides = {}) {
+  const appended = []
+  return { appended, ledger: { ...base, appendLedger: (entry) => { appended.push(entry); return base.appendLedger(entry) }, ...overrides } }
+}
+
+/** Call the child's own report tool the way the Host executes it. */
+function report(c, args, agent = c.agent) {
+  const tool = c.registered.get(REPORT_TOOL)
+  assert.ok(tool !== undefined, 'the report tool is registered on the child')
+  return tool.execute(args, { name: REPORT_TOOL, arguments: args, agent })
+}
+/** Every guard first, then the tool, as one model tool call. */
+function guardedReport(h, c, args) {
+  const denial = h.run(c, REPORT_TOOL, args)
+  if (denial !== undefined) return Promise.reject(new Error(`denied: ${denial}`))
+  return report(c, args)
+}
+const outcome = (promise) => promise.then(() => 'stored', (error) => error.message)
+const renderReport = (c, value) => c.registered.get(REPORT_TOOL).output.render({}, value).map((block) => block.text).join('\n')
+
+const RECORDED_KEYS = Object.freeze([
+  'kind', 'schema', 'verifies', 'verified_kind', 'ts', 'status', 'session_id', 'verifier_session_id', 'backend', 'model', 'effort',
+  'effort_requested', 'reply_sha256', 'report_file', 'report_sha256', 'expected', 'covered', 'entries', 'confirmed', 'refuted',
+  'unverifiable', 'other', 'submit_attempts', 'tool_calls', 'duration_s',
+])
+const UNRECORDED_KEYS = Object.freeze([
+  'kind', 'schema', 'verifies', 'verified_kind', 'ts', 'status', 'reason', 'session_id', 'verifier_session_id', 'backend', 'model', 'effort',
+  'effort_requested', 'submit_attempts', 'tool_calls', 'duration_s',
+])
+
+test('report: a child-scoped definition with one entries argument and an output schema in the enforced subset', () => {
+  const h = harness()
+  const c = h.startChild()
+  const tool = c.registered.get(REPORT_TOOL)
+  assert.equal(tool.name, REPORT_TOOL)
+  assert.equal(typeof tool.description, 'string')
+  const { parameters } = tool
+  assert.deepEqual([parameters.type, Object.keys(parameters.properties), parameters.required, parameters.additionalProperties], ['object', ['entries'], ['entries'], false])
+  assert.equal(parameters.properties.entries.type, 'array')
+  const { items } = parameters.properties.entries
+  assert.deepEqual(Object.keys(items.properties), ['ref', 'status', 'reply_line', 'evidence', 'note'])
+  assert.deepEqual(items.required, ['ref', 'status', 'reply_line', 'evidence'], 'note is optional')
+  assert.equal(items.additionalProperties, false)
+  assert.deepEqual(items.properties.status.enum, ['confirmed', 'refuted', 'unverifiable'])
+  assert.deepEqual([items.properties.ref.type, items.properties.reply_line.type, items.properties.reply_line.minimum, items.properties.note.type], ['string', 'integer', 1, 'string'])
+  assert.deepEqual(items.properties.evidence.items, { type: 'string' })
+  // No id, path, tally, importance, severity, score or summary input at any level.
+  for (const name of ['id', 'consult_id', 'path', 'reply_path', 'tally', 'importance', 'severity', 'score', 'weight', 'summary', 'verdict', 'confirmed']) {
+    assert.equal(Object.hasOwn(parameters.properties, name) || Object.hasOwn(items.properties, name), false, name)
+  }
+  assert.deepEqual(schemaErrors(tool.output.schema, { recorded: true, verifies: ID, verified_kind: 'advice', missing: ['2', '3'] }), [])
+  assert.deepEqual(schemaErrors(tool.output.schema, { recorded: true, verifies: ID, verified_kind: 'plan', missing: [] }), [])
+  assert.notDeepEqual(schemaErrors(tool.output.schema, { recorded: true, verifies: ID, verified_kind: 'plan', missing: [], confirmed: 1 }), [], 'the result carries no counts')
+  h.dispose()
+})
+
+test('report: validateVerifierReport checks statuses, refs of advice, plans and other, duplicates, ranges, the evidence grammar, protected paths and caps', () => {
+  const advice = Object.freeze({ kind: 'advice', expected: 3 })
+  const planRun = Object.freeze({ kind: 'plan', expected: 2, taskIds: ['T1', 'T3'] })
+  const ok = (args, run = advice) => {
+    const result = validateVerifierReport(args, run)
+    assert.equal(result.ok, true, result.issues?.join('\n'))
+    return result
+  }
+  const bad = (args, run, pattern, label) => {
+    const result = validateVerifierReport(args, run)
+    assert.equal(result.ok, false, `${label}: refused`)
+    assert.match(result.issues.join('\n'), pattern, label)
+  }
+  // Statuses.
+  for (const status of ['confirmed', 'refuted', 'unverifiable']) ok({ entries: [reportEntry('1', status)] })
+  for (const status of ['Confirmed', 'partly', 'verified', '', null, 1]) bad({ entries: [{ ...reportEntry('1'), status }] }, advice, /^entries\.0\.status: /m, String(status))
+  // Advice refs: claim numbers 1..claim_count, each at most once, or "other".
+  const accepted = ok({ entries: [reportEntry('1'), reportEntry('3', 'refuted'), reportEntry('other', 'unverifiable'), reportEntry('other')] })
+  assert.deepEqual(accepted.entries.map((entry) => entry.ref), ['1', '3', 'other', 'other'])
+  assert.deepEqual([accepted.covered, accepted.missing], [2, ['2']])
+  assert.deepEqual(accepted.counts, { entries: 4, confirmed: 1, refuted: 1, unverifiable: 0, other: 2 })
+  const unequal = ok({ entries: UNEQUAL_ENTRIES }, { kind: 'advice', expected: UNEQUAL_CLAIMS })
+  const { expected: _expected, covered: _covered, ...unequalCounts } = UNEQUAL_COUNTS
+  assert.deepEqual([unequal.covered, unequal.missing, unequal.counts], [UNEQUAL_COUNTS.covered, ['7'], unequalCounts])
+  for (const ref of ['0', '4', '03', ' 1', '1 ', '1.0', '-1', '+1', 'T1', 'Other', 'OTHER', 'claim 1', '99999999999999999999']) {
+    bad({ entries: [reportEntry(ref)] }, advice, /^entries\.0\.ref: must be a claim number from 1 to 3 \(the 1-based position of the claim in claims\) or "other"$/m, JSON.stringify(ref))
+  }
+  bad({ entries: [reportEntry('')] }, advice, /^entries\.0\.ref: Too small/m, 'an empty ref')
+  bad({ entries: [reportEntry(2)] }, advice, /^entries\.0\.ref: Invalid input: expected string, received number$/m, 'a number')
+  bad({ entries: [reportEntry('2'), reportEntry('1'), reportEntry('2', 'refuted')] }, advice, /^entries\.2\.ref: claim 2 already has an entry \(entries\.0\); give one entry per claim$/m, 'a duplicate')
+  bad({ entries: [reportEntry('1')] }, { kind: 'advice', expected: 0 }, /^entries\.0\.ref: this advice has no claims; use "other"$/m, 'advice without claims')
+  assert.deepEqual(ok({ entries: [reportEntry('other')] }, { kind: 'advice', expected: 0 }).missing, [])
+  // Plan refs: the plan's task ids, any number of entries each, or "other".
+  const planned = ok({ entries: [reportEntry('T1'), reportEntry('T1'), reportEntry('T1', 'refuted'), reportEntry('other', 'unverifiable')] }, planRun)
+  assert.deepEqual([planned.covered, planned.missing, planned.counts], [1, ['T3'], { entries: 4, confirmed: 2, refuted: 1, unverifiable: 0, other: 1 }])
+  for (const ref of ['T2', 't1', '1', 'T01', ' T1', 'other ']) bad({ entries: [reportEntry(ref)] }, planRun, /^entries\.0\.ref: must be a task id of this plan \(T1, T3\) or "other"$/m, ref)
+  // Evidence: the advice validator's grammar and protected-path rules.
+  for (const [reference, pattern] of [
+    ['/etc/passwd:1', /path must be workspace-relative/], ['../x.js:1', /path must not contain \.\./], ['.git/config', /path must not touch \.git/],
+    ['src/*.js', /path must be a path prefix, not a glob/], ['~/x', /path must not start with ~/], ['src/a.js:0', /lines start at 1/],
+    ['src/a.js:5-3', /line range must not run backwards/], ['.env:1', /path reaches a protected file \(\.env\)/], ['id_rsa', /path reaches a protected file \(id_rsa\)/],
+    ['config/credentials.json:2', /path reaches a protected file \(credentials\.json\)/], [' src/a.js', /must be a workspace-relative path with optional :line or :start-end/],
+  ]) {
+    bad({ entries: [reportEntry('1', 'confirmed', { evidence: ['src/a.js:1', reference] })] }, advice, new RegExp(`^entries\\.0\\.evidence\\.1: ${pattern.source}$`, 'm'), reference)
+  }
+  ok({ entries: [reportEntry('1', 'confirmed', { evidence: ['src/a.js', 'src/a.js:12', 'src/a.js:12-30', '.env.example:1', 'docs/readme.md'] })] })
+  // C1 and bidi controls, zero-width and other format characters, tags, separators and unpaired surrogates never reach the side file.
+  const UNSAFE = /path must not contain control, format or line separator characters, or unpaired surrogates/
+  for (const [label, reference, pattern] of [
+    ['C1 NEL', 'src/a\u0085b.js', UNSAFE], ['C1 CSI', 'src/a\u009bb.js:1', UNSAFE], ['RLO', 'src/\u202eb.js', UNSAFE], ['LRI', 'src/a\u2066b.js', UNSAFE],
+    ['ALM', 'src/a\u061cb.js', UNSAFE], ['ZWSP', 'src/a\u200b.js', UNSAFE], ['ZWJ', 'src/a\u200db.js', UNSAFE], ['word joiner', 'src/a\u2060b.js', UNSAFE],
+    ['inner BOM', 'src/a\ufeffb.js', UNSAFE], ['soft hyphen', 'src/a\u00adb.js', UNSAFE], ['tag', 'src/a\u{E0041}b.js', UNSAFE],
+    ['lone high surrogate', 'src/a\ud800b.js', UNSAFE], ['lone low surrogate', 'src/a\udc00b.js', UNSAFE],
+    ['line separator', 'src/a\u2028b.js', /must be a workspace-relative path with optional :line or :start-end/],
+    ['paragraph separator', 'src/a\u2029b.js', /must be a workspace-relative path with optional :line or :start-end/],
+    ['C0', 'src/a\u0007b.js', /path must not contain control characters/],
+  ]) {
+    bad({ entries: [reportEntry('1', 'confirmed', { evidence: ['src/a.js:1', reference] })] }, advice, new RegExp(`^entries\\.0\\.evidence\\.1: ${pattern.source}$`, 'm'), label)
+  }
+  ok({ entries: [reportEntry('1', 'confirmed', { evidence: ['src/\u{1F642}.js:1', 'src/a\u00a0b.js', 'docs/\u00e9t\u00e9.md'] })] })
+  // Confirmed and refuted need a reference; unverifiable may have none.
+  for (const status of ['confirmed', 'refuted']) {
+    bad({ entries: [reportEntry('1', status, { evidence: [] })] }, advice, new RegExp(`^entries\\.0\\.evidence: ${status} needs at least one repository reference such as src/a\\.js:12$`, 'm'), status)
+  }
+  ok({ entries: [reportEntry('1', 'unverifiable', { evidence: [] })] })
+  ok({ entries: [reportEntry('1', 'unverifiable', { evidence: ['src/a.js:1'] })] })
+  // reply_line is a positive integer.
+  for (const replyLine of [0, -1, 1.5, '3', null, Number.NaN, 2 ** 53]) bad({ entries: [reportEntry('1', 'confirmed', { reply_line: replyLine })] }, advice, /^entries\.0\.reply_line: /m, String(replyLine))
+  // note: optional, plain, at most 300 characters.
+  assert.equal(ok({ entries: [reportEntry('1', 'confirmed', { note: '  checked the caller  ' })] }).entries[0].note, 'checked the caller')
+  assert.equal(Object.hasOwn(ok(VALID_REPORT).entries[0], 'note'), false)
+  ok({ entries: [reportEntry('1', 'confirmed', { note: 'n'.repeat(300) })] })
+  for (const note of ['n'.repeat(301), '', '   ', 7]) bad({ entries: [reportEntry('1', 'confirmed', { note })] }, advice, /^entries\.0\.note: /m, JSON.stringify(note))
+  for (const note of [
+    'line\nbreak', 'tab\there', 'nul\u0000', 'separator\u2028x', 'paragraph\u2029x', 'c1\u0085x', 'csi\u009bx', 'rlo\u202ex', 'lri\u2066x', 'zwsp\u200bx',
+    'zwj\u200dx', 'bom\ufeffx', 'shy\u00adx', 'tag\u{E0041}x', 'high\ud800x', 'low\udc00x', 'ends high\ud800',
+  ]) {
+    bad({ entries: [reportEntry('1', 'confirmed', { note })] }, advice, /^entries\.0\.note: must be plain text without control, format or line separator characters, or unpaired surrogates$/m, JSON.stringify(note))
+  }
+  for (const note of ['emoji \u{1F642} ok', 'nbsp\u00a0ok', '\u00e9t\u00e9 \u6f22\u5b57']) {
+    assert.equal(ok({ entries: [reportEntry('1', 'confirmed', { note })] }).entries[0].note, note, JSON.stringify(note))
+  }
+  assert.equal(ok({ entries: [reportEntry('1', 'confirmed', { note: '\ufeff\u2028trimmed\u2029 ' })] }).entries[0].note, 'trimmed', 'surrounding whitespace, a BOM and separators included, is trimmed')
+  // Caps: 1 to 100 entries, 0 to 5 references of at most 300 characters.
+  assert.equal(MAX_REPORT_ENTRIES, 100)
+  bad({ entries: [] }, advice, /^entries: Too small/m, 'no entries')
+  ok({ entries: Array.from({ length: MAX_REPORT_ENTRIES }, () => reportEntry('other')) })
+  bad({ entries: Array.from({ length: MAX_REPORT_ENTRIES + 1 }, () => reportEntry('other')) }, advice, /^entries: Too big/m, '101 entries')
+  ok({ entries: [reportEntry('1', 'confirmed', { evidence: Array(5).fill('src/a.js:1') })] })
+  bad({ entries: [reportEntry('1', 'confirmed', { evidence: Array(6).fill('src/a.js:1') })] }, advice, /^entries\.0\.evidence: Too big/m, '6 references')
+  bad({ entries: [reportEntry('1', 'confirmed', { evidence: [`src/${'a'.repeat(300)}.js`] })] }, advice, /^entries\.0\.evidence\.0: Too big/m, 'a reference over 300 characters')
+  // No id, path, tally, importance, severity, score or summary input.
+  for (const key of ['importance', 'severity', 'score', 'weight', 'summary', 'id', 'consult_id', 'path', 'claim']) {
+    bad({ entries: [{ ...reportEntry('1'), [key]: 'x' }] }, advice, new RegExp(`^entries\\.0: Unrecognized key: "${key}"$`, 'm'), `entry ${key}`)
+  }
+  for (const key of ['consult_id', 'id', 'path', 'reply_path', 'tally', 'confirmed', 'summary', 'verdict', 'score', 'importance']) {
+    bad({ ...VALID_REPORT, [key]: 'x' }, advice, new RegExp(`^\\(root\\): Unrecognized key: "${key}"$`, 'm'), `root ${key}`)
+  }
+  for (const args of [undefined, null, [], 'x', 7, {}, { entries: 'x' }, { entries: [null] }, { entries: [reportEntry('1'), 'x'] }]) {
+    assert.equal(validateVerifierReport(args, advice).ok, false, JSON.stringify(args))
+  }
+  // An own __proto__ key, as JSON.parse makes one, is refused like any other unknown key.
+  const protoRoot = JSON.parse(`{"entries":[${JSON.stringify(reportEntry('1'))}],"__proto__":{"importance":"high"}}`)
+  assert.equal(Object.hasOwn(protoRoot, '__proto__'), true)
+  bad(protoRoot, advice, /^\(root\): Unrecognized key: "__proto__"$/m, 'root __proto__')
+  const protoEntry = JSON.parse(`{"entries":[${JSON.stringify(reportEntry('1')).slice(0, -1)},"__proto__":{"score":9}}]}`)
+  assert.equal(Object.hasOwn(protoEntry.entries[0], '__proto__'), true)
+  bad(protoEntry, advice, /^entries\.0: Unrecognized key: "__proto__"$/m, 'entry __proto__')
+  const both = JSON.parse(`{"entries":[${JSON.stringify(reportEntry('9')).slice(0, -1)},"__proto__":{}}],"__proto__":{}}`)
+  const issuesOfBoth = validateVerifierReport(both, advice).issues
+  assert.deepEqual(issuesOfBoth.slice(0, 2), ['(root): Unrecognized key: "__proto__"', 'entries.0: Unrecognized key: "__proto__"'])
+})
+
+test('report: a valid advice report is stored once: the side file, one flat ledger line with Host-computed counts, and the uncovered claims in the result', async () => {
+  const ledger = freshLedger()
+  const run = await recordRun(ledger, { count: UNEQUAL_CLAIMS })
+  const clock = { value: 1_700_000_000_000 }
+  const h = harness({ ledger, now: () => clock.value })
+  const c = h.startChild()
+  // Four calls pass the identity checks (one of them is then path-denied); bash is not on the allowlist.
+  for (const [name, args] of [['read', { file_path: 'src/a.js' }], ['grep', { pattern: 'x' }], ['read', { file_path: '/etc/hosts' }], ['bash', {}]]) h.run(c, name, args)
+  clock.value += 12_345
+  const entries = UNEQUAL_ENTRIES
+  const result = await guardedReport(h, c, { entries })
+  assert.deepEqual(result, { recorded: true, verifies: ID, verified_kind: 'advice', missing: ['7'] })
+  assert.deepEqual(schemaErrors(c.registered.get(REPORT_TOOL).output.schema, result), [])
+  assert.equal(renderReport(c, result), `Verification record stored for ${ID}. No entry for claim(s) 7. It cannot be replaced; your final response is still the report.`)
+
+  const file = sidePath(ledger)
+  const bytes = readFileSync(file)
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+  assert.ok(bytes.length <= MAX_VERIFICATION_BYTES)
+  assert.ok(bytes.toString('utf8').endsWith('}\n'))
+  const record = JSON.parse(bytes.toString('utf8'))
+  assert.deepEqual(record, {
+    schema: VERIFICATION_SCHEMA_ID, verifies: ID, entries, reply_sha256: run.sha256, recorded_at: new Date(clock.value).toISOString(),
+  })
+  assert.equal(VERIFICATION_SCHEMA_ID, 'advisor-verification/1')
+
+  await until(() => verificationLines(ledger).length === 1, 'the verification line')
+  const [line] = verificationLines(ledger)
+  assert.deepEqual(Object.keys(line), RECORDED_KEYS, 'flat, in this order, and no top-level consult_id')
+  assert.deepEqual(line, {
+    kind: 'verification', schema: VERIFICATION_SCHEMA_ID, verifies: ID, verified_kind: 'advice', ts: Math.floor(clock.value / 1000), status: 'recorded',
+    session_id: 'lead', verifier_session_id: 'verifier-1', backend: 'dsh:unknown', model: null, effort: null, effort_requested: null,
+    reply_sha256: run.sha256, report_file: file, report_sha256: sha256(bytes),
+    expected: 7, covered: 6, entries: 10, confirmed: 2, refuted: 1, unverifiable: 3, other: 4,
+    submit_attempts: 1, tool_calls: 4, duration_s: 12.3,
+  })
+  assert.deepEqual(countsOf(line), UNEQUAL_COUNTS)
+  assert.deepEqual(countsFromRecord(record, UNEQUAL_CLAIMS), countsOf(line), 'the line counts are those of the side file entries')
+  const ledgerText = readFileSync(ledger.ledgerPath, 'utf8')
+  for (const authored of ['the caller passes a path', 'the recommendation is opinion', 'src/sub/b.js', 'docs/readme.md']) assert.ok(!ledgerText.includes(authored), authored)
+
+  // Once only: the same verifier cannot replace or add a record.
+  await assert.rejects(guardedReport(h, c, { entries: [reportEntry('3')] }), /^Error: Your verification record is already stored and cannot be replaced; end with your final report\.$/)
+  h.end(c)
+  await settle()
+  assert.equal(verificationLines(ledger).length, 1, 'a recorded verifier gets no unrecorded line')
+  assert.deepEqual(readFileSync(file), bytes)
+  h.dispose()
+})
+
+test('report: plan refs are the plan\'s task ids; several entries may name one task, and covered counts distinct tasks', async () => {
+  const ledger = freshLedger()
+  const run = await recordRun(ledger, { kind: 'plan', taskIds: ['T1', 'T2', 'T5'] })
+  const h = harness({ ledger })
+  const c = h.startChild()
+  await assert.rejects(report(c, { entries: [reportEntry('T3')] }), /entries\.0\.ref: must be a task id of this plan \(T1, T2, T5\) or "other"/)
+  // Unequal counts: entries, not tasks, are counted per status; covered counts distinct tasks.
+  const entries = [
+    reportEntry('T1'), reportEntry('T1'), reportEntry('T5', 'refuted'),
+    reportEntry('T5', 'unverifiable'), reportEntry('T1', 'unverifiable'), reportEntry('T5', 'unverifiable'),
+    reportEntry('other', 'refuted'), reportEntry('other', 'confirmed'), reportEntry('other', 'unverifiable'), reportEntry('other', 'refuted'),
+  ]
+  const result = await report(c, { entries })
+  assert.deepEqual(result, { recorded: true, verifies: ID, verified_kind: 'plan', missing: ['T2'] })
+  assert.match(renderReport(c, result), /No entry for task\(s\) T2\./)
+  await until(() => verificationLines(ledger).length === 1, 'the verification line')
+  const [line] = verificationLines(ledger)
+  assert.deepEqual([line.verified_kind, line.reply_sha256, line.submit_attempts], ['plan', run.sha256, 2])
+  assert.deepEqual(countsOf(line), { expected: 3, covered: 2, entries: 10, confirmed: 2, refuted: 1, unverifiable: 3, other: 4 })
+  assert.deepEqual(countsFromRecord(JSON.parse(readFileSync(sidePath(ledger), 'utf8')), 3), countsOf(line))
+  // A full cover says so.
+  const full = freshLedger()
+  await recordRun(full, { kind: 'plan', taskIds: ['T1'] })
+  const f = harness({ ledger: full })
+  const fc = f.startChild()
+  assert.match(renderReport(fc, await report(fc, { entries: [reportEntry('T1')] })), /Every task has an entry\./)
+  h.dispose()
+  f.dispose()
+})
+
+test('report: two concurrent calls store exactly one record (a synchronous latch before any await)', async () => {
+  const base = freshLedger()
+  await recordRun(base)
+  const writes = []
+  const { ledger } = wrapLedger(base, { writeVerification: (id, text) => { writes.push(id); return base.writeVerification(id, text) } })
+  const h = harness({ ledger })
+  const c = h.startChild()
+  const results = await Promise.allSettled([report(c, VALID_REPORT), report(c, VALID_REPORT)])
+  assert.deepEqual(results.map((result) => result.status), ['fulfilled', 'rejected'])
+  assert.match(results[1].reason.message, /^Your verification record is being stored and cannot be replaced; end with your final report\.$/)
+  assert.deepEqual(writes, [ID], 'one write')
+  await assert.rejects(report(c, VALID_REPORT), /already stored/)
+  await until(() => verificationLines(base).length === 1, 'the verification line')
+  assert.equal(verificationLines(base)[0].submit_attempts, 1, 'a call stopped by the latch is not an attempt')
+  h.end(c)
+  await settle()
+  assert.equal(verificationLines(base).length, 1)
+  h.dispose()
+})
+
+test('report: one record per consult: a second verifier on the same consult gets already_recorded and the first record is kept', async () => {
+  const ledger = freshLedger()
+  await recordRun(ledger)
+  const h = harness({ ledger })
+  const first = h.startChild()
+  await report(first, { entries: [reportEntry('1', 'confirmed', { note: 'first' })] })
+  const before = readFileSync(sidePath(ledger))
+  const second = h.startChild({ id: 'verifier-2' }) // the same consult, another verifier
+  await assert.rejects(report(second, { entries: [reportEntry('1', 'refuted', { note: 'second' })] }),
+    /^Error: Not recorded: this consult already has a verification record \(one per consult\)\. Your final response is still the report\.$/)
+  await assert.rejects(report(second, VALID_REPORT), /^Error: advisor_verifier_report is closed \(already_recorded\); your final response is still the report\.$/)
+  assert.deepEqual(readFileSync(sidePath(ledger)), before, 'the first record is kept')
+  assert.equal(second.agent.cancelled, 0)
+  h.end(first)
+  h.end(second)
+  await until(() => verificationLines(ledger).length === 2, 'the unrecorded line')
+  assert.deepEqual(verificationLines(ledger).map((line) => [line.status, line.reason, line.verifier_session_id, line.submit_attempts]), [
+    ['recorded', undefined, 'verifier-1', 1],
+    ['unrecorded', 'already_recorded', 'verifier-2', 1],
+  ])
+  h.dispose()
+})
+
+test('report: a failed record write or line append closes the tool with write_failed; the verifier keeps running', async () => {
+  const base = freshLedger()
+  await recordRun(base)
+  const denied = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+  const { ledger } = wrapLedger(base, { writeVerification: async () => { throw denied } })
+  const h = harness({ ledger })
+  const c = h.startChild()
+  await assert.rejects(report(c, VALID_REPORT), /^Error: Not recorded: the verification record could not be stored \(EACCES: permission denied\)\. Your final response is still the report\.$/)
+  await assert.rejects(report(c, VALID_REPORT), /is closed \(write_failed\)/)
+  assert.equal(c.agent.cancelled, 0)
+  assert.equal(h.run(c, 'read', { file_path: 'src/a.js' }), undefined, 'the other tools still work')
+  h.end(c)
+  await until(() => verificationLines(base).length === 1, 'the unrecorded line')
+  assert.deepEqual(verificationLines(base).map((line) => [line.status, line.reason]), [['unrecorded', 'write_failed']])
+  h.dispose()
+
+  // The record is stored but its line cannot be appended: the file stays, the outcome is write_failed.
+  const second = freshLedger()
+  await recordRun(second)
+  let full = true
+  const appendFails = wrapLedger(second, {
+    appendLedger: (entry) => (full && entry.kind === 'verification' ? Promise.reject(new Error('ledger disk full')) : second.appendLedger(entry)),
+  })
+  const s = harness({ ledger: appendFails.ledger })
+  const sc = s.startChild()
+  await assert.rejects(report(sc, VALID_REPORT), /could not be stored \(ledger disk full\)/)
+  assert.ok(fs.existsSync(sidePath(second)), 'the record file stays, like a reply whose ok line failed')
+  full = false
+  s.end(sc)
+  await until(() => verificationLines(second).length === 1, 'the unrecorded line')
+  assert.deepEqual(verificationLines(second).map((line) => [line.status, line.reason]), [['unrecorded', 'write_failed']])
+  s.dispose()
+})
+
+test('report: a clock that throws never leaves the latch set, an event handler throwing, or the verifier unstarted', async () => {
+  const ledger = freshLedger()
+  await recordRun(ledger)
+  let broken = false
+  const h = harness({ ledger, now: () => { if (broken) throw new Error('clock gone'); return 1_700_000_000_000 } })
+  const c = h.startChild()
+  broken = true
+  await assert.rejects(report(c, VALID_REPORT), /^Error: Not recorded: the verification record could not be stored \(clock gone\)\. Your final response is still the report\.$/)
+  await assert.rejects(report(c, VALID_REPORT), /is closed \(write_failed\)/, 'the latch was released')
+  assert.equal(fs.existsSync(sidePath(ledger)), false)
+  assert.doesNotThrow(() => h.end(c))
+  await settle()
+  assert.ok(h.logs.some((entry) => entry.includes(`the verification line of ${ID} could not be appended: clock gone`)), h.logs.join('\n'))
+  assert.equal(verificationLines(ledger).length, 0)
+  h.dispose()
+
+  const s = harness({ ledger: freshLedger(), now: () => { throw new Error('clock gone') } })
+  const sc = s.startChild()
+  assert.equal(sc.agent.cancelled, 0)
+  assert.equal(s.run(sc, 'read', { file_path: 'src/a.js' }), undefined)
+  assert.doesNotThrow(() => s.dispose())
+})
+
+test('report: a reply that changed, is withheld or unreadable, or whose run did not end ok is refused without a write; degraded is accepted', async () => {
+  const sameSize = (text) => text.replace('claim 1', 'claim X')
+  const cases = [
+    ['the reply changed', async (ledger) => { const run = await recordRun(ledger); writeFileSync(run.file, `${run.text} `) }, 'reply_changed', /^the reply no longer matches the reply_sha256 of its terminal ledger line$/],
+    ['the reply changed at the same size', async (ledger) => { const run = await recordRun(ledger); writeFileSync(run.file, sameSize(run.text)) }, 'reply_changed', /no longer matches the reply_sha256/],
+    ['the reply was deleted', async (ledger) => { const run = await recordRun(ledger); rmSync(run.file) }, 'reply_withheld', /^the reply is withheld: the reply file does not exist$/],
+    ['the reply became a symlink', async (ledger) => {
+      const run = await recordRun(ledger)
+      fs.renameSync(run.file, `${run.file}.moved`)
+      symlinkSync(`${run.file}.moved`, run.file)
+    }, 'reply_withheld', /^the reply is withheld: the reply file is a symbolic link$/],
+    ['the run failed', async (ledger) => {
+      await ledger.writeReply(ID, adviceReply(3))
+      await ledger.appendLedger({ consult_id: ID, kind: 'advice', status: 'started' })
+      await ledger.appendLedger({ consult_id: ID, kind: 'advice', status: 'failed', failure_reason: 'x' })
+    }, 'reply_withheld', /^the reply is withheld: the last terminal ledger entry for this consult_id \(sessions\.jsonl:2\) does not name /],
+    ['a failed line after the ok line', async (ledger) => {
+      await recordRun(ledger)
+      await ledger.appendLedger({ consult_id: ID, kind: 'advice', status: 'failed' })
+    }, 'reply_withheld', /does not name .* as its reply_file$/],
+    ['no line for this consult', async (ledger) => { await recordRun(ledger, { id: OTHER_ID }) }, 'reply_withheld', /^the reply is withheld: the ledger has no terminal entry for this consult_id$/],
+    ['a terminal status that is not ok or degraded', async (ledger) => { await recordRun(ledger, { ok: { status: 'done' } }) }, 'reply_withheld', /^the last terminal ledger entry has status done, not ok or degraded$/],
+    ['a terminal line of another kind', async (ledger) => { await recordRun(ledger, { ok: { kind: 'review' } }) }, 'reply_withheld', /^the last terminal ledger entry is not a plan or advice run$/],
+    ['a terminal line without its count', async (ledger) => { await recordRun(ledger, { ok: { claim_count: undefined } }) }, 'reply_withheld', /^the last terminal ledger entry has no claim_count$/],
+    ['a terminal line without reply_sha256', async (ledger) => { await recordRun(ledger, { ok: { reply_sha256: undefined } }) }, 'reply_withheld', /^the last terminal ledger entry records no reply_sha256$/],
+    ['a plan reply without task ids', async (ledger) => { await recordRun(ledger, { kind: 'plan', reply: '{"schema":"advisor-plan/1"}\n', taskIds: ['T1'] }) }, 'reply_withheld', /^the reply is not a plan with task ids$/],
+  ]
+  for (const [label, setup, reason, issue] of cases) {
+    const ledger = freshLedger()
+    await setup(ledger)
+    const h = harness({ ledger })
+    const c = h.startChild()
+    const message = await outcome(report(c, VALID_REPORT))
+    const match = /^Not recorded: (.*)\. Your final response is still the report\.$/.exec(message)
+    assert.ok(match !== null, `${label}: ${message}`)
+    assert.match(match[1], issue, label)
+    assert.equal(fs.existsSync(sidePath(ledger)), false, `${label}: no record`)
+    assert.equal(c.agent.cancelled, 0, label)
+    h.end(c)
+    await until(() => verificationLines(ledger).length === 1, label)
+    assert.deepEqual(verificationLines(ledger).map((line) => [line.status, line.reason]), [['unrecorded', reason]], label)
+    h.dispose()
+  }
+
+  if (typeof process.getuid === 'function') {
+    // The data directory turned unsafe: the reply is withheld, nothing is written.
+    const ledger = freshLedger()
+    await recordRun(ledger)
+    const h = harness({ ledger })
+    const c = h.startChild()
+    fs.chmodSync(ledger.dir, 0o777)
+    try {
+      assert.match(await outcome(report(c, VALID_REPORT)), /^Not recorded: the reply is withheld: the Advisor data directory is unsafe: .* is writable by group or others \(mode 0777\)\./)
+      assert.equal(fs.existsSync(sidePath(ledger)), false)
+    } finally {
+      fs.chmodSync(ledger.dir, 0o700)
+    }
+    h.end(c)
+    await until(() => verificationLines(ledger).length === 1, 'unsafe folder')
+    assert.equal(verificationLines(ledger)[0].reason, 'reply_withheld')
+    h.dispose()
+  }
+
+  const degraded = freshLedger()
+  await recordRun(degraded, { ok: { status: 'degraded' } })
+  const d = harness({ ledger: degraded })
+  assert.equal((await report(d.startChild(), VALID_REPORT)).recorded, true, 'a degraded terminal line is accepted')
+  d.dispose()
+})
+
+test('report: bound to its own verifier: another verifier, the lead, a missing agent and a stale record are refused; the Host guard refuses it by name for any other agent', async () => {
+  const ledger = freshLedger()
+  await recordRun(ledger)
+  await recordRun(ledger, { id: OTHER_ID })
+  const h = harness({ ledger })
+  const c = h.startChild()
+  const other = h.startChild({ id: 'verifier-2', self: OTHER_VERIFIER })
+  for (const agent of [other.agent, h.lead]) {
+    await assert.rejects(report(c, VALID_REPORT, agent), /^Error: advisor_verifier_report is bound to another advisor verifier\.$/, agent.id)
+  }
+  const tool = c.registered.get(REPORT_TOOL)
+  await assert.rejects(tool.execute(VALID_REPORT, { name: REPORT_TOOL, arguments: VALID_REPORT }), /^Error: advisor_verifier_report is bound to another advisor verifier\.$/, 'a call without an agent')
+  await assert.rejects(tool.execute(VALID_REPORT, undefined), /bound to another advisor verifier/, 'no execution context')
+  const mate = { id: 'mate', names: { self: 'mate', parent: 'lead' }, root: h.lead }
+  for (const agent of [h.lead, mate, undefined]) {
+    assert.equal(h.hostCall(REPORT_TOOL, VALID_REPORT, agent), 'advisor_verifier_report is only available to its advisor verifier.', String(agent?.id))
+  }
+  assert.match(h.run(c, REPORT_TOOL, VALID_REPORT, { agent: other.agent }), /no exact agent scope/, 'the child guard refuses another agent')
+  assert.equal(fs.existsSync(sidePath(ledger)), false)
+  assert.equal(fs.existsSync(sidePath(ledger, OTHER_ID)), false)
+  assert.notEqual(c.registered.get(REPORT_TOOL), other.registered.get(REPORT_TOOL), 'one definition per verifier')
+  // Each verifier records only its own consult; the id comes from its name, never from an argument.
+  await report(other, { entries: [reportEntry('2')] })
+  assert.equal(fs.existsSync(sidePath(ledger, OTHER_ID)), true)
+  assert.equal(fs.existsSync(sidePath(ledger)), false)
+  // A new Agent object under the same id shuts the old one's tool out; the new one records.
+  const stale = c.registered.get(REPORT_TOOL)
+  const replacement = h.child()
+  h.start(replacement)
+  await assert.rejects(stale.execute(VALID_REPORT, { name: REPORT_TOOL, arguments: VALID_REPORT, agent: c.agent }), /^Error: Advisor verifier failed closed: no tools are permitted\.$/)
+  assert.equal((await report(replacement, VALID_REPORT)).verifies, ID)
+  h.dispose()
+
+  // A verifier denied at start has no report tool, and both guards deny the name.
+  const refused = harness({ ledger: freshLedger(), dataDirProblem: () => DATA_DIR_NOT_CONFIGURED })
+  const r = refused.startChild()
+  assert.equal(r.registered.has(REPORT_TOOL), false)
+  assert.match(refused.run(r, REPORT_TOOL, VALID_REPORT), /failed closed/)
+  assert.match(refused.hostCall(REPORT_TOOL, VALID_REPORT, r.agent), /failed closed/)
+  refused.dispose()
+})
+
+test('report: after five refused calls the tool closes; the verifier is never cancelled over it', async () => {
+  assert.equal(MAX_REPORT_FAILURES, 5)
+  const ledger = freshLedger()
+  await recordRun(ledger)
+  const h = harness({ ledger })
+  const c = h.startChild()
+  const invalid = { entries: [reportEntry('9')] }
+  for (let attempt = 1; attempt < MAX_REPORT_FAILURES; attempt++) {
+    await assert.rejects(report(c, invalid), /^Error: Not recorded\. Fix these problems and call advisor_verifier_report again:\n- entries\.0\.ref: must be a claim number from 1 to 3 /)
+  }
+  await assert.rejects(report(c, invalid), /^Error: Not recorded: advisor_verifier_report refused 5 calls and is now closed; your final response is still the report\.$/)
+  await assert.rejects(report(c, VALID_REPORT), /^Error: advisor_verifier_report is closed \(invalid_payload\); your final response is still the report\.$/, 'a valid report after the cap is not stored')
+  assert.equal(c.agent.cancelled, 0)
+  assert.equal(fs.existsSync(sidePath(ledger)), false)
+  for (const [name, args] of ALLOWED_CALLS) assert.equal(h.run(c, name, args), undefined, `${name} is still allowed`)
+  assert.equal(typeof (await evidence(c)).reply_sha256, 'string', 'the evidence tool still serves the reply')
+  h.end(c)
+  await until(() => verificationLines(ledger).length === 1, 'the unrecorded line')
+  assert.deepEqual(verificationLines(ledger).map((line) => [line.status, line.reason, line.submit_attempts]), [['unrecorded', 'invalid_payload', 5]])
+  h.dispose()
+
+  // Fixed within the cap: recorded, with every attempt counted.
+  const retry = freshLedger()
+  await recordRun(retry)
+  const r = harness({ ledger: retry })
+  const rc = r.startChild()
+  await assert.rejects(report(rc, invalid))
+  await assert.rejects(report(rc, { entries: [] }))
+  await report(rc, VALID_REPORT)
+  await until(() => verificationLines(retry).length === 1, 'the verification line')
+  assert.deepEqual(verificationLines(retry).map((line) => [line.status, line.submit_attempts]), [['recorded', 3]])
+  r.dispose()
+})
+
+test('report: a record over 64 KB is refused as an invalid payload and nothing is written; a large record under the cap is stored', async () => {
+  const ledger = freshLedger()
+  await recordRun(ledger)
+  const h = harness({ ledger })
+  const c = h.startChild()
+  const reference = (index) => `src/${String(index).padStart(3, '0')}/${'d'.repeat(280)}.js:1`
+  const large = Array.from({ length: MAX_REPORT_ENTRIES }, (_, index) => reportEntry('other', 'confirmed', {
+    evidence: Array.from({ length: 5 }, () => reference(index)), note: 'n'.repeat(300),
+  }))
+  assert.equal(validateVerifierReport({ entries: large }, { kind: 'advice', expected: 3 }).ok, true, 'each entry is valid on its own')
+  await assert.rejects(report(c, { entries: large }), /^Error: Not recorded\. Fix these problems and call advisor_verifier_report again:\n- the record would be \d+ bytes, over the 65536-byte cap: shorten notes or evidence, or drop entries$/)
+  assert.equal(fs.existsSync(sidePath(ledger)), false)
+  assert.equal(c.agent.cancelled, 0)
+  // Stored: claims 1 and 2 confirmed, 3 refuted, and 17 "other" entries, 5 of them unverifiable.
+  const stored = large.slice(0, 20).map((entry, index) => (index < 3
+    ? { ...entry, ref: String(index + 1), status: index < 2 ? 'confirmed' : 'refuted' }
+    : { ...entry, status: index < 8 ? 'unverifiable' : 'confirmed' }))
+  await report(c, { entries: stored })
+  const size = fs.statSync(sidePath(ledger)).size
+  assert.ok(size > 32 * 1024 && size <= MAX_VERIFICATION_BYTES, `${size} bytes`)
+  assert.equal(fs.statSync(sidePath(ledger)).mode & 0o777, 0o600)
+  await until(() => verificationLines(ledger).length === 1, 'the verification line')
+  const [line] = verificationLines(ledger)
+  assert.equal(line.submit_attempts, 2)
+  assert.deepEqual(countsOf(line), { expected: 3, covered: 3, entries: 20, confirmed: 2, refuted: 1, unverifiable: 0, other: 17 })
+  assert.deepEqual(countsFromRecord(JSON.parse(readFileSync(sidePath(ledger), 'utf8')), 3), countsOf(line))
+  h.dispose()
+})
+
+test('unrecorded: an allowed verifier that ends without a record appends one unrecorded line with a fixed reason, once', async () => {
+  const eacces = () => Promise.reject(Object.assign(new Error('EACCES'), { code: 'EACCES' }))
+  const cases = [
+    ['not_called', async () => {}, 0],
+    ['invalid_payload', async (c) => { await outcome(report(c, { entries: [] })) }, 1],
+    ['reply_changed', async (c, run) => { writeFileSync(run.file, `${run.text} `); await outcome(report(c, VALID_REPORT)) }, 1],
+    ['reply_withheld', async (c, run) => { rmSync(run.file); await outcome(report(c, VALID_REPORT)) }, 1],
+    ['already_recorded', async (c, _run, base) => { await base.writeVerification(ID, '{}\n'); await outcome(report(c, VALID_REPORT)) }, 1],
+    ['write_failed', async (c) => { await outcome(report(c, VALID_REPORT)) }, 1, { writeVerification: eacces }],
+    // The last refusal decides.
+    ['reply_changed', async (c, run) => {
+      await outcome(report(c, { entries: [] }))
+      writeFileSync(run.file, `${run.text} `)
+      await outcome(report(c, VALID_REPORT))
+    }, 2],
+  ]
+  for (const [reason, act, attempts, overrides] of cases) {
+    const base = freshLedger()
+    const run = await recordRun(base)
+    const { ledger, appended } = wrapLedger(base, overrides)
+    const clock = { value: 1_700_000_000_000 }
+    const h = harness({ ledger, now: () => clock.value })
+    const c = h.startChild()
+    await act(c, run, base)
+    clock.value += 2_000
+    h.end(c)
+    assert.equal(appended.length, 1, `${reason}: appended at the end`)
+    h.agentDisposed(c)
+    h.end(c)
+    h.dispose()
+    assert.equal(appended.length, 1, `${reason}: once`)
+    await until(() => verificationLines(base).length === 1, reason)
+    const [line] = verificationLines(base)
+    assert.deepEqual(Object.keys(line), UNRECORDED_KEYS, reason)
+    assert.deepEqual(line, {
+      kind: 'verification', schema: VERIFICATION_SCHEMA_ID, verifies: ID, verified_kind: 'advice', ts: Math.floor(clock.value / 1000), status: 'unrecorded', reason,
+      session_id: 'lead', verifier_session_id: 'verifier-1', backend: 'dsh:unknown', model: null, effort: null, effort_requested: null,
+      submit_attempts: attempts, tool_calls: 0, duration_s: 2,
+    }, reason)
+  }
+  assert.deepEqual([...UNRECORDED_REASONS].sort(), [...new Set(cases.map(([reason]) => reason))].sort(), 'every reason is covered')
+  assert.equal(Object.isFrozen(UNRECORDED_REASONS), true)
+})
+
+test('unrecorded: agent/disposed and plugin dispose write it once; recorded and denied verifiers write none; an end during the write waits for it', async () => {
+  // agent/disposed alone, then a late end.
+  {
+    const base = freshLedger()
+    await recordRun(base)
+    const { ledger, appended } = wrapLedger(base)
+    const h = harness({ ledger })
+    const c = h.startChild()
+    h.agentDisposed(c)
+    h.end(c)
+    h.dispose()
+    assert.deepEqual(appended.map((line) => [line.status, line.reason]), [['unrecorded', 'not_called']])
+  }
+  // Plugin dispose stops the verifier and writes its line once.
+  {
+    const base = freshLedger()
+    await recordRun(base)
+    const { ledger, appended } = wrapLedger(base)
+    const h = harness({ ledger })
+    const c = h.startChild()
+    h.dispose()
+    assert.equal(c.agent.cancelled, 1)
+    h.end(c)
+    assert.deepEqual(appended.map((line) => [line.status, line.reason]), [['unrecorded', 'not_called']])
+  }
+  // A recorded verifier writes no unrecorded line, whatever ends it.
+  {
+    const base = freshLedger()
+    await recordRun(base)
+    const { ledger, appended } = wrapLedger(base)
+    const h = harness({ ledger })
+    const c = h.startChild()
+    await report(c, VALID_REPORT)
+    h.end(c)
+    h.agentDisposed(c)
+    h.dispose()
+    assert.deepEqual(appended.map((line) => line.status), ['recorded'])
+  }
+  // A verifier denied at start is not allowed: no line at all.
+  for (const [label, options, childOptions] of [
+    ['malformed name', {}, { self: `${VERIFIER}-x` }],
+    ['not the lead\'s child', {}, { parent: 'mate' }],
+    ['data directory unusable', { dataDirProblem: () => DATA_DIR_NOT_CONFIGURED }, {}],
+    ['workspace unknown', { workspace: 'relative' }, {}],
+    ['its boundary failed closed at the first start', {}, { refuse: [REPORT_TOOL] }],
+  ]) {
+    const base = freshLedger()
+    await recordRun(base)
+    const { ledger, appended } = wrapLedger(base)
+    const h = harness({ ledger, ...options })
+    const c = h.startChild(childOptions)
+    assert.equal(c.agent.cancelled, 1, label)
+    h.end(c)
+    h.agentDisposed(c)
+    h.dispose()
+    assert.deepEqual(appended, [], label)
+  }
+  // The verifier ends while its record is being written: the write decides.
+  for (const fails of [false, true]) {
+    const base = freshLedger()
+    await recordRun(base)
+    let release
+    const { ledger, appended } = wrapLedger(base, {
+      writeVerification: async (id, text) => {
+        await new Promise((resolve) => { release = resolve })
+        if (fails) throw new Error('disk full')
+        return base.writeVerification(id, text)
+      },
+    })
+    const h = harness({ ledger })
+    const c = h.startChild()
+    const pending = outcome(report(c, VALID_REPORT))
+    await settle()
+    h.end(c)
+    assert.deepEqual(appended, [], `${fails}: no line while the write is in flight`)
+    release()
+    assert.match(await pending, fails ? /could not be stored \(disk full\)/ : /^stored$/)
+    const outcomeLine = [fails ? ['unrecorded', 'write_failed'] : ['recorded', undefined]]
+    // The call in flight writes the outcome itself, before anything else disposes the verifier.
+    assert.deepEqual(appended.map((line) => [line.status, line.reason]), outcomeLine, `${fails}: written by the call in flight`)
+    await settle()
+    h.agentDisposed(c)
+    h.dispose()
+    assert.deepEqual(appended.map((line) => [line.status, line.reason]), outcomeLine, String(fails))
+  }
+  // A new Agent object under the same id takes the verifier over: the late
+  // disposal of the old object writes no early unrecorded line.
+  {
+    const base = freshLedger()
+    await recordRun(base)
+    const { ledger, appended } = wrapLedger(base)
+    const h = harness({ ledger })
+    const old = h.startChild()
+    const replacement = h.child()
+    h.start(replacement)
+    h.agentDisposed(old)
+    assert.deepEqual(appended, [], 'no line while the new object still runs')
+    assert.equal((await report(replacement, VALID_REPORT)).recorded, true)
+    h.end(replacement)
+    h.agentDisposed(replacement)
+    h.dispose()
+    assert.deepEqual(appended.map((line) => line.status), ['recorded'])
+  }
+  // A later start of an ended verifier keeps its outcome.
+  {
+    const base = freshLedger()
+    await recordRun(base)
+    const { ledger, appended } = wrapLedger(base)
+    const h = harness({ ledger })
+    const c = h.startChild()
+    h.end(c)
+    h.start(c)
+    assert.equal(c.agent.cancelled, 0)
+    await assert.rejects(report(c, VALID_REPORT), /^Error: Not recorded: this verifier already ended without a record; the first outcome of a verifier is final\. Your final response is still the report\.$/)
+    h.end(c)
+    assert.deepEqual(appended.map((line) => [line.status, line.reason]), [['unrecorded', 'not_called']])
+    const recorded = harness({ ledger: wrapLedger(await (async () => { const l = freshLedger(); await recordRun(l); return l })()).ledger })
+    const rc = recorded.startChild()
+    await report(rc, VALID_REPORT)
+    recorded.end(rc)
+    recorded.start(rc)
+    await assert.rejects(report(rc, VALID_REPORT), /already stored/)
+    recorded.end(rc)
+    await settle()
+    assert.deepEqual(verificationLines(recorded.ledger).map((line) => line.status), ['recorded'])
+    recorded.dispose()
+    h.dispose()
+  }
+})
+
+test('final lines: the first verification line of a verifier session is final, also for a new Agent object under its id or after a plugin reload', async () => {
+  const statuses = (ledger) => verificationLines(ledger).map((line) => [line.status, line.reason, line.verifier_session_id])
+  // 1. Ended without a record, disposed, then a new Agent object under the same id starts and reports.
+  {
+    const base = freshLedger()
+    await recordRun(base)
+    const { ledger, appended } = wrapLedger(base)
+    const h = harness({ ledger })
+    const c = h.startChild()
+    h.end(c)
+    h.agentDisposed(c)
+    const again = h.child() // the same id, a new Agent object
+    h.start(again)
+    assert.equal(again.agent.cancelled, 0)
+    assert.match(await outcome(report(again, VALID_REPORT)), /^Not recorded: this verifier already ended without a record; the first outcome of a verifier is final\. Your final response is still the report\.$/)
+    h.end(again)
+    h.agentDisposed(again)
+    h.dispose()
+    assert.deepEqual(appended.map((line) => [line.status, line.reason]), [['unrecorded', 'not_called']], 'no recorded line and no second unrecorded line')
+    assert.equal(fs.existsSync(sidePath(base)), false)
+  }
+  // 2. The same after a plugin reload: the new boundary knows the verifier only from the ledger.
+  for (const reportsAgain of [true, false]) {
+    const base = freshLedger()
+    await recordRun(base)
+    const first = harness({ ledger: base })
+    first.end(first.startChild())
+    await until(() => verificationLines(base).length === 1, 'the unrecorded line')
+    first.dispose()
+    const { ledger, appended } = wrapLedger(base)
+    const reloaded = harness({ ledger })
+    const again = reloaded.startChild() // the same id 'verifier-1'
+    if (reportsAgain) {
+      assert.match(await outcome(report(again, VALID_REPORT)), /^Not recorded: this verifier already has a verification line in the ledger; the first one is final\. Your final response is still the report\.$/)
+      await assert.rejects(report(again, VALID_REPORT), /is closed \(already_recorded\)/)
+    }
+    reloaded.end(again)
+    reloaded.agentDisposed(again)
+    reloaded.dispose()
+    assert.deepEqual(appended, [], `${reportsAgain}: the reloaded boundary writes nothing for it`)
+    assert.deepEqual(statuses(base), [['unrecorded', 'not_called', 'verifier-1']])
+    assert.equal(fs.existsSync(sidePath(base)), false)
+  }
+  // 3. A verifier that recorded, then a reload: its later report is refused and its end writes no unrecorded line.
+  {
+    const base = freshLedger()
+    await recordRun(base)
+    const first = harness({ ledger: base })
+    const c = first.startChild()
+    await report(c, VALID_REPORT)
+    first.end(c)
+    first.dispose()
+    await until(() => verificationLines(base).length === 1, 'the recorded line')
+    const reloaded = harness({ ledger: base })
+    const again = reloaded.startChild()
+    assert.match(await outcome(report(again, VALID_REPORT)), /already has a verification line in the ledger/)
+    reloaded.end(again)
+    reloaded.dispose()
+    await settle()
+    assert.deepEqual(statuses(base), [['recorded', undefined, 'verifier-1']])
+  }
+  // 4. Another verifier session on the same consult still records after the first ended without a record.
+  {
+    const base = freshLedger()
+    await recordRun(base)
+    const h = harness({ ledger: base })
+    h.end(h.startChild())
+    await until(() => verificationLines(base).length === 1, 'the unrecorded line')
+    const other = h.startChild({ id: 'verifier-2' })
+    assert.equal((await report(other, VALID_REPORT)).recorded, true)
+    h.end(other)
+    h.dispose()
+    await until(() => verificationLines(base).length === 2, 'the recorded line')
+    assert.deepEqual(statuses(base), [['unrecorded', 'not_called', 'verifier-1'], ['recorded', undefined, 'verifier-2']])
+  }
+  // 5. A recorded line of the consult refuses every later report, also when its side file is gone.
+  {
+    const base = freshLedger()
+    await recordRun(base)
+    const h = harness({ ledger: base })
+    const c = h.startChild()
+    await report(c, VALID_REPORT)
+    h.end(c)
+    await until(() => verificationLines(base).length === 1, 'the recorded line')
+    rmSync(sidePath(base))
+    const other = h.startChild({ id: 'verifier-2' })
+    assert.match(await outcome(report(other, VALID_REPORT)), /^Not recorded: this consult already has a verification record \(one per consult\)\./)
+    assert.equal(fs.existsSync(sidePath(base)), false, 'no second record')
+    h.end(other)
+    h.dispose()
+    await until(() => verificationLines(base).length === 2, 'the unrecorded line')
+    assert.deepEqual(statuses(base), [['recorded', undefined, 'verifier-1'], ['unrecorded', 'already_recorded', 'verifier-2']])
+  }
+})
+
+test('report: no verifier-authored text reaches sessions.jsonl; it lives only in the side file', async () => {
+  const ledger = freshLedger()
+  await recordRun(ledger)
+  const h = harness({ ledger })
+  const c = h.startChild()
+  await outcome(report(c, { entries: [reportEntry('FAKE_REF_CANARY', 'confirmed', { note: 'FAKE_REFUSED_NOTE' })], FAKE_KEY_CANARY: 'FAKE_VALUE_CANARY' }))
+  await outcome(report(c, { entries: [reportEntry('1', 'confirmed', { evidence: ['src/FAKE_PROTECTED/.env'] })] }))
+  assert.match(await outcome(report(c, { entries: [reportEntry('1', 'confirmed', { note: 'FAKE_BIDI\u202eNOTE', evidence: ['src/FAKE_ZW\u200b.js'] })] })), /must be plain text without control, format/)
+  assert.match(await outcome(report(c, JSON.parse(`{"entries":[${JSON.stringify(reportEntry('1'))}],"__proto__":{"note":"FAKE_PROTO_CANARY"}}`))), /Unrecognized key: "__proto__"/)
+  await report(c, {
+    entries: [
+      reportEntry('1', 'confirmed', { note: 'FAKE_NOTE_CANARY', evidence: ['src/FAKE_EVIDENCE_CANARY.js:4'] }),
+      reportEntry('other', 'unverifiable', { note: 'FAKE_OTHER_NOTE' }),
+    ],
+  })
+  const second = h.startChild({ id: 'verifier-2' })
+  await outcome(report(second, { entries: [reportEntry('2', 'refuted', { note: 'FAKE_SECOND_NOTE', evidence: ['src/FAKE_SECOND.js'] })] }))
+  h.end(c)
+  h.end(second)
+  await until(() => verificationLines(ledger).length === 2, 'both verification lines')
+  const ledgerText = readFileSync(ledger.ledgerPath, 'utf8')
+  assert.doesNotMatch(ledgerText, /FAKE_/, 'no ref, note, evidence or key from a verifier is on any line')
+  const side = readFileSync(sidePath(ledger), 'utf8')
+  for (const canary of ['FAKE_NOTE_CANARY', 'FAKE_EVIDENCE_CANARY', 'FAKE_OTHER_NOTE']) assert.ok(side.includes(canary), canary)
+  assert.doesNotMatch(side, /FAKE_SECOND|FAKE_REF_CANARY|FAKE_REFUSED|FAKE_KEY|FAKE_VALUE|FAKE_PROTECTED|FAKE_BIDI|FAKE_ZW|FAKE_PROTO/, 'refused entries are never stored')
+  const stored = JSON.parse(side).entries.flatMap((entry) => [entry.note ?? '', ...entry.evidence])
+  assert.ok(stored.every((text) => !/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/u.test(text)), 'no control, format or separator character, and no unpaired surrogate, is stored')
+  for (const line of verificationLines(ledger)) {
+    for (const [key, value] of Object.entries(line)) {
+      if (typeof value !== 'string') continue
+      const hostValues = [ID, VERIFICATION_SCHEMA_ID, 'verification', 'advice', 'recorded', 'unrecorded', 'already_recorded', 'lead', 'verifier-1', 'verifier-2', 'dsh:unknown', sidePath(ledger)]
+      assert.ok(hostValues.includes(value) || /^[0-9a-f]{64}$/.test(value), `${key}: ${value}`)
+    }
+  }
+  h.dispose()
+})
+
+test('readers: after verification lines, the evidence tool still serves the reply and lists only run lines; id-keyed readers are unchanged', async () => {
+  const ledger = freshLedger()
+  const run = await recordRun(ledger)
+  const before = { entries: ledger.ledgerEntriesFor(ID), used: ledger.idInUse(ID), recent: await ledger.recentLedger() }
+  const h = harness({ ledger })
+  const first = h.startChild()
+  const firstEvidence = await evidence(first)
+  await report(first, VALID_REPORT)
+  h.end(first)
+  // A second verifier of the same consult (an A/B round): unrecorded already_recorded.
+  const second = h.startChild({ id: 'verifier-2' })
+  await outcome(report(second, VALID_REPORT))
+  h.end(second)
+  await until(() => verificationLines(ledger).length === 2, 'two verification lines')
+  // A third verifier still gets the reply: the terminal entry is still the ok line.
+  const third = h.startChild({ id: 'verifier-3' })
+  const value = await evidence(third)
+  assert.equal(value.reply_text, firstEvidence.reply_text)
+  assert.equal(value.reply_sha256, run.sha256)
+  assert.equal(value.reply_reason, null)
+  assert.deepEqual(value.entries, firstEvidence.entries, 'the same ledger lines, at the same numbers: no verification line')
+  assert.doesNotMatch(render(third, value), /verification/)
+  assert.deepEqual(ledger.ledgerEntriesFor(ID), before.entries)
+  assert.equal(ledger.idInUse(ID), before.used)
+  assert.equal(await ledger.recentLedger(), before.recent, '/advisor status lists runs only')
+  assert.ok(verificationLines(ledger).every((line) => !Object.hasOwn(line, 'consult_id')))
+  h.dispose()
+})
+
+test('report: the line names the verifier\'s own route: its reported selection, else the stored Verifier model; effort_requested is the stored effort at its first start', async () => {
+  const stored = { provider: 'openrouter', model: '~deepseek/deepseek-flash-latest', effort: 'low' }
+  const cases = [
+    ['a reported selection with its effort', stored, { provider: stored.provider, model: stored.model, reasoningEffort: 'low' }, { backend: `dsh:${stored.provider}/${stored.model}`, model: stored.model, effort: 'low', effort_requested: 'low' }],
+    ['a reported selection without an effort', { provider: 'p', model: 'm' }, { provider: 'p', model: 'm' }, { backend: 'dsh:p/m', model: 'm', effort: null, effort_requested: null }],
+    ['an unreadable selection falls back to the stored route', stored, new Error('no selection'), { backend: `dsh:${stored.provider}/${stored.model}`, model: stored.model, effort: null, effort_requested: 'low' }],
+    ['Inherit and no selection', null, undefined, { backend: 'dsh:unknown', model: null, effort: null, effort_requested: null }],
+  ]
+  for (const [label, setting, current, expected] of cases) {
+    const ledger = freshLedger()
+    await recordRun(ledger)
+    let selected = setting
+    const h = harness({ ledger, selectedRoute: () => selected })
+    const c = h.startChild({ model: { current() { if (current instanceof Error) throw current; return current } } })
+    selected = { provider: 'later', model: 'changed', effort: 'max' } // a later change of the setting does not matter
+    await report(c, VALID_REPORT)
+    await until(() => verificationLines(ledger).length === 1, label)
+    const [line] = verificationLines(ledger)
+    assert.deepEqual({ backend: line.backend, model: line.model, effort: line.effort, effort_requested: line.effort_requested }, expected, label)
+    h.dispose()
+  }
+  // A throwing setting at start records null.
+  const ledger = freshLedger()
+  await recordRun(ledger)
+  const h = harness({ ledger, selectedRoute: () => { throw new Error('state gone') } })
+  const c = h.startChild()
+  assert.equal(c.agent.cancelled, 0)
+  h.end(c)
+  await until(() => verificationLines(ledger).length === 1, 'the unrecorded line')
+  assert.deepEqual([verificationLines(ledger)[0].backend, verificationLines(ledger)[0].effort_requested], ['dsh:unknown', null])
+  h.dispose()
+})
+
+test('text: the verifier policy and the lead workflow ask for one status-only report that matches the final response and decides nothing', () => {
+  const policy = VERIFIER_POLICY.replace(/\s+/g, ' ')
+  for (const phrase of [
+    'After you finish the claim review, call advisor_verifier_report once with one entry per claim you checked, status and file:line evidence only; the entries must match your final report.',
+    'for advice the 1-based position of the claim in claims, for a plan the task id, otherwise "other"',
+    'confirmed and refuted need at least one', 'an optional plain note of at most 300 characters',
+    'The record is measurement, not a verdict, and its absence invalidates nothing', 'Your final response stays the sole report.',
+    'Do not provide an aggregate tally, score, accept/reject conclusion, or overall verdict.',
+  ]) assert.ok(policy.includes(phrase), phrase)
+  const workflow = VERIFIER_WORKFLOW.replace(/\s+/g, ' ')
+  for (const phrase of [
+    'the teammate calls advisor_verifier_report once, with one entry per claim it checked: status and file:line evidence only.',
+    'no consult_id', 'The record is measurement, not a verdict, and its absence invalidates nothing; the lead\'s task, completion, and hash checks do not change.',
+    'Its final response is the sole report', 'the lead keeps both hash checks',
+  ]) assert.ok(workflow.includes(phrase), phrase)
+  for (const text of [VERIFIER_POLICY, VERIFIER_WORKFLOW]) assert.doesNotMatch(text, /importance|severity|weight/i)
+})
+
+test('text: the README documents the report tool, the record file, the verification line, the unrecorded reasons, the readers and offline tallies', () => {
+  const text = readFileSync(README, 'utf8')
+  const collapsed = text.replace(/\s+/g, ' ')
+  assert.ok(!collapsed.includes('verifiers write no ledger line'), 'the stale sentence is gone')
+  assert.ok(collapsed.includes('its verification line records `effort` and `effort_requested` the same way'))
+  const data = text.slice(text.indexOf('### Data directory'), text.indexOf('### What the lead does next')).replace(/\s+/g, ' ')
+  assert.ok(data.includes('`<dataDir>/replies/<id>.verification.json`: at most one verification record per run (mode 0600, created exclusively, at most 64 KB)'), 'the data directory lists the record file')
+  assert.ok(data.includes('Verification lines have no top-level `consult_id`, so they are never an entry of the run they verify.'))
+  const evidenceSection = text.slice(text.indexOf('## Evidence verification'), text.indexOf('### Verification records')).replace(/\s+/g, ' ')
+  for (const phrase of [
+    'Only `read`, `grep`, `glob`, `team_task_get`, `advisor_evidence_get`, and `advisor_verifier_report` are allowed.',
+    'After the claim review it calls `advisor_verifier_report` once', 'its absence invalidates nothing', 'the final response counts',
+  ]) assert.ok(evidenceSection.includes(phrase), phrase)
+  assert.ok(text.indexOf('### Verification records') > text.indexOf('## Evidence verification') && text.indexOf('### Verification records') < text.indexOf('## License'))
+  const section = text.slice(text.indexOf('### Verification records'), text.indexOf('## License')).replace(/\s+/g, ' ')
+  for (const phrase of [
+    '`advisor_verifier_report`', 'one entry per claim it checked', 'The record is measurement, not a verdict', 'a missing record invalidates nothing',
+    '`entries`, holds 1 to 100 entries', '`"other"`', 'appears at most once', '`confirmed` and `refuted` need at least one', 'at most 300 characters',
+    'There is no ID, path, tally, importance, severity, score or summary input.', 'A claim without an entry is not an error', '`expected` and `covered`',
+    'The result carries no counts.', 'After five refused calls the tool closes; the verifier is never stopped over it.', 'A synchronous latch lets only one call write.',
+    '`<dataDir>/replies/<id>.verification.json`, created exclusively with mode 0600, at most 64 KB', '`schema: advisor-verification/1`', '`recorded_at`',
+    'Verifier-authored text, the notes and evidence, lives only in this file', 'with Host-authored values only',
+    ...RECORDED_KEYS.map((key) => `\`${key}\``), '`status: unrecorded`', ...UNRECORDED_REASONS.map((reason) => `\`${reason}\``),
+    'One record per consult', 'records `already_recorded`', 'no top-level `consult_id`', '`/advisor status` skips them', 'state version 7',
+    'There are no token or cost fields for verifiers.',
+    // Plan counts are per entry; ids are agent ids; the first line of a verifier session is final.
+    'For a plan the status counts are per entry, not per task: one task can have several entries.',
+    '| `session_id`, `verifier_session_id` | the agent ids of the lead and of the verifier, as in the planner\'s `session_id` and `planner_session_id` |',
+    'The first verification line of a verifier session is final.', 'a later report from the same agent id is refused as `already_recorded`',
+    'no second `unrecorded` line is written', 'also after a plugin reload or for a new Agent object under the same id',
+    // The offline tally divides by the verified runs, not by all ok runs.
+    'divide by the `ok` or `degraded` terminal lines that have a verification line for their ID, `recorded` or `unrecorded`',
+    'not by all `ok` terminal lines', 'only runs verified while verification was on',
+  ]) assert.ok(section.includes(phrase), phrase)
+  for (const stale of ['divide their count by all `ok` terminal lines', 'the `ok` terminal lines lacking a `recorded` verification line', 'the lead\'s and the verifier\'s session']) {
+    assert.ok(!section.includes(stale), `stale: ${stale}`)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Mutation checks: each protection is removed from a temporary copy of the
+// sources, and the scenario that pins it must hold for the real sources and
+// fail for the copy.
+
+const ZOD_URL = import.meta.resolve('zod')
+const SOURCES = Object.freeze({ verifier: { installVerifierBoundary }, ledger: { createLedger } })
+
+/** Load a copy of src/ (verifier, ledger, planner, state) with `search` replaced once in `file`. */
+async function mutant(file, search, replace) {
+  const dir = mkdtempSync(path.join(TMP, 'mutant-'))
+  for (const name of ['verifier.js', 'ledger.js', 'planner.js', 'state.js']) {
+    let text = readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8').replaceAll("from 'zod'", `from ${JSON.stringify(ZOD_URL)}`)
+    if (name === file) {
+      assert.equal(text.split(search).length - 1, 1, `the mutation target occurs once in ${file}: ${search}`)
+      text = text.replace(search, () => replace)
+    }
+    writeFileSync(path.join(dir, name), text)
+  }
+  const load = (name) => import(pathToFileURL(path.join(dir, name)).href)
+  return { verifier: await load('verifier.js'), ledger: await load('ledger.js') }
+}
+
+/** Run a scenario on the real sources (it must hold) and on the mutant (it must not). */
+async function assertPinned(scenario, file, search, replace) {
+  assert.equal(await scenario(SOURCES), true, 'the protection holds in src/')
+  assert.equal(await scenario(await mutant(file, search, replace)), false, 'without it the scenario fails')
+}
+
+/** A fresh recorded run on the given ledger module, and a harness on the given boundary. */
+async function scenarioSetup(modules, overrides, runOptions) {
+  const base = modules.ledger.createLedger(mkdtempSync(path.join(TMP, 'scenario-')))
+  const run = await recordRun(base, runOptions)
+  const { ledger, appended } = wrapLedger(base, overrides?.(base))
+  const h = harness({ ledger, installBoundary: modules.verifier.installVerifierBoundary })
+  return { base, run, ledger, appended, h }
+}
+
+test('mutation: the synchronous latch is what stops a concurrent second write', async () => {
+  await assertPinned(async (modules) => {
+    let writes = 0
+    const { h } = await scenarioSetup(modules, (base) => ({ writeVerification: (id, text) => { writes++; return base.writeVerification(id, text) } }))
+    const c = h.startChild()
+    const results = await Promise.allSettled([report(c, VALID_REPORT), report(c, VALID_REPORT)])
+    h.end(c)
+    h.dispose()
+    const refused = results.filter((result) => result.status === 'rejected')
+    return writes === 1 && refused.length === 1 && /being stored/.test(refused[0].reason.message)
+  }, 'verifier.js', '    report.recording = true\n', '')
+})
+
+test('mutation: the reply hash check is what refuses a changed reply', async () => {
+  await assertPinned(async (modules) => {
+    const { base, run, h } = await scenarioSetup(modules)
+    writeFileSync(run.file, `${run.text} `)
+    const c = h.startChild()
+    const message = await outcome(report(c, VALID_REPORT))
+    h.end(c)
+    h.dispose()
+    return /no longer matches the reply_sha256/.test(message) && !fs.existsSync(sidePath(base))
+  }, 'verifier.js', 'if (replySha256 !== entry.reply_sha256)', 'if (false)')
+})
+
+test('mutation: the exclusive create is what keeps one record per consult', async () => {
+  await assertPinned(async (modules) => {
+    const { base, h } = await scenarioSetup(modules)
+    // A record without its line (its append failed, or another host wrote it):
+    // no ledger line refuses the report, only the exclusive create does.
+    const first = await base.writeVerification(ID, '{"first":true}\n')
+    const c = h.startChild()
+    const message = await outcome(report(c, { entries: [reportEntry('1', 'refuted', { note: 'second' })] }))
+    h.end(c)
+    h.dispose()
+    await settle()
+    return /already has a verification record/.test(message) && readFileSync(first.file, 'utf8') === '{"first":true}\n'
+  }, 'ledger.js', "await fs.writeFile(target, bytes, { flag: 'wx', mode: 0o600 })", "await fs.writeFile(target, bytes, { flag: 'w', mode: 0o600 })")
+})
+
+test('mutation: the agent binding is what keeps another agent from recording for a verifier', async () => {
+  await assertPinned(async (modules) => {
+    const { base, h } = await scenarioSetup(modules)
+    const c = h.startChild()
+    const other = h.startChild({ id: 'verifier-2', self: OTHER_VERIFIER })
+    const byOther = await outcome(report(c, VALID_REPORT, other.agent))
+    const byLead = await outcome(report(c, VALID_REPORT, h.lead))
+    h.dispose()
+    return /bound to another advisor verifier/.test(byOther) && /bound to another advisor verifier/.test(byLead) && !fs.existsSync(sidePath(base))
+  }, 'verifier.js', "    if (exec?.agent === undefined || exec.agent !== record.agent) throw new Error(`${REPORT_TOOL} is bound to another advisor verifier.`)\n", '')
+})
+
+test('mutation: the Host computes each count from the validated entries, other refs apart; a swap or an off-by-one shows', async () => {
+  const scenario = async (modules) => {
+    const { base, h } = await scenarioSetup(modules, undefined, { count: UNEQUAL_CLAIMS })
+    const c = h.startChild()
+    await report(c, { entries: UNEQUAL_ENTRIES })
+    await until(() => verificationLines(base).length === 1, 'the verification line')
+    h.dispose()
+    return JSON.stringify(countsOf(verificationLines(base)[0])) === JSON.stringify(UNEQUAL_COUNTS)
+  }
+  for (const [search, replace] of [
+    ['const numbered = entries.filter((entry) => entry.ref !== OTHER_REF)', 'const numbered = entries'],
+    ["confirmed: count('confirmed'), refuted: count('refuted')", "confirmed: count('refuted'), refuted: count('confirmed')"],
+    ["refuted: count('refuted'), unverifiable: count('unverifiable')", "refuted: count('unverifiable'), unverifiable: count('refuted')"],
+    ["unverifiable: count('unverifiable'), other", "unverifiable: count('unverifiable') - 1, other"],
+    ['other: entries.length - numbered.length', 'other: entries.length - numbered.length + 1'],
+    ['return { entries: entries.length,', 'return { entries: numbered.length,'],
+    ['covered: checked.covered,', 'covered: run.expected,'],
+    ['expected: run.expected,', 'expected: checked.covered,'],
+  ]) await assertPinned(scenario, 'verifier.js', search, replace)
+})
+
+test('mutation: no top-level consult_id is what keeps the readers and the evidence tool unchanged', async () => {
+  await assertPinned(async (modules) => {
+    const { base, run, h } = await scenarioSetup(modules)
+    const before = base.ledgerEntriesFor(ID)
+    const c = h.startChild()
+    await report(c, VALID_REPORT)
+    h.end(c)
+    await until(() => verificationLines(base).length === 1, 'the verification line')
+    const later = h.startChild({ id: 'verifier-2' })
+    const value = await evidence(later)
+    h.dispose()
+    return JSON.stringify(base.ledgerEntriesFor(ID)) === JSON.stringify(before) && value.reply_sha256 === run.sha256 && value.entries.length === 2
+      && !Object.hasOwn(verificationLines(base)[0], 'consult_id')
+  }, 'verifier.js', "...lineHead(report, 'recorded', run.kind, recordedAt),", "...lineHead(report, 'recorded', run.kind, recordedAt), consult_id: report.consultId,")
+})
+
+test('mutation: the once-only flag is what keeps a second unrecorded line out', async () => {
+  await assertPinned(async (modules) => {
+    const { appended, h } = await scenarioSetup(modules)
+    const c = h.startChild()
+    h.end(c)
+    h.agentDisposed(c)
+    h.dispose()
+    return appended.length === 1 && appended[0].status === 'unrecorded'
+  }, 'verifier.js', 'if (report === undefined || report.recorded || report.finalized) return', 'if (report === undefined || report.recorded) return')
 })

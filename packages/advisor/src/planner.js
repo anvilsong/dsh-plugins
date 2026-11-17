@@ -367,6 +367,32 @@ export const ADVICE_PARAMETERS = Object.freeze({
 })
 
 const EVIDENCE = /^(.+?)(?::(\d+)(?:-(\d+))?)?$/
+// Characters no evidence reference may carry: C0 and C1 controls, format
+// characters (bidi controls, zero-width and soft-hyphen characters, tags),
+// unpaired surrogates, and line and paragraph separators.
+const UNSAFE_TEXT = /[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/u
+
+/**
+ * The problems of one evidence reference, the grammar that advice claims and
+ * the verifier's report share: a workspace-relative path with an optional
+ * :line or :start-end, under the write-scope path rules, that does not reach
+ * a protected file and carries no control, format or separator character and
+ * no unpaired surrogate. An input refused for another reason keeps that
+ * reason's message.
+ * @returns {string[]} issues without a location prefix; empty when it is valid
+ */
+export function evidenceReferenceIssues(reference) {
+  const match = typeof reference === 'string' ? EVIDENCE.exec(reference.trim() === reference ? reference : '') : null
+  if (match === null || reference === '') return ['must be a workspace-relative path with optional :line or :start-end']
+  const issues = []
+  const issue = scopeIssue(match[1])
+  if (issue !== undefined) issues.push(`path ${issue}`)
+  else if (protectedSegment(match[1]) !== undefined) issues.push(`path reaches a protected file (${protectedSegment(match[1])})`)
+  else if (UNSAFE_TEXT.test(reference)) issues.push('path must not contain control, format or line separator characters, or unpaired surrogates')
+  if (match[3] !== undefined && Number(match[3]) < Number(match[2])) issues.push('line range must not run backwards')
+  if (match[2] !== undefined && Number(match[2]) === 0) issues.push('lines start at 1')
+  return issues
+}
 
 /**
  * Validate submitted advice.
@@ -393,17 +419,7 @@ export function validateAdvice(args) {
   })
   advice.claims.forEach((claim, index) => {
     claim.evidence.forEach((reference, refIndex) => {
-      const at = `claims.${index}.evidence.${refIndex}`
-      const match = EVIDENCE.exec(reference.trim() === reference ? reference : '')
-      if (match === null || reference === '') {
-        issues.push(`${at}: must be a workspace-relative path with optional :line or :start-end`)
-        return
-      }
-      const issue = scopeIssue(match[1])
-      if (issue !== undefined) issues.push(`${at}: path ${issue}`)
-      else if (protectedSegment(match[1]) !== undefined) issues.push(`${at}: path reaches a protected file (${protectedSegment(match[1])})`)
-      if (match[3] !== undefined && Number(match[3]) < Number(match[2])) issues.push(`${at}: line range must not run backwards`)
-      if (match[2] !== undefined && Number(match[2]) === 0) issues.push(`${at}: lines start at 1`)
+      for (const issue of evidenceReferenceIssues(reference)) issues.push(`claims.${index}.evidence.${refIndex}: ${issue}`)
     })
   })
   return issues.length > 0 ? { ok: false, issues } : { ok: true, advice }

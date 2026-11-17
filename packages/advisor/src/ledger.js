@@ -5,6 +5,9 @@ import path from 'node:path'
 // Plugin-owned Advisor data in one folder, dataDir:
 //   <dataDir>/sessions.jsonl     the ledger: one O_APPEND write per line, mode 0600
 //   <dataDir>/replies/<id>.md    one immutable reply per run: exclusive create, mode 0600
+//   <dataDir>/replies/<id>.verification.json
+//                                at most one verification record per run, beside
+//                                its reply: exclusive create, mode 0600
 // Folders are created with mode 0700. The line format is documented in the
 // README. Several hosts of this plugin can share one folder: every write is one
 // append or an exclusive create.
@@ -13,6 +16,8 @@ import path from 'node:path'
 
 export const LEDGER_FILE = 'sessions.jsonl'
 export const REPLIES_DIR = 'replies'
+/** Largest verification record, in UTF-8 bytes. */
+export const MAX_VERIFICATION_BYTES = 64 * 1024
 
 const ID_PATTERN = /^[0-9a-f]{12}$/
 // C0 and C1 controls (\p{Cc}, which includes U+0085), every Unicode
@@ -134,6 +139,11 @@ function isEntryOf(value, id) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) && value.consult_id === id
 }
 
+/** Whether a parsed value is a verification line of this consult: an object of kind verification whose `verifies` is the id. */
+function isVerificationOf(value, id) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && value.kind === 'verification' && value.verifies === id
+}
+
 /**
  * Parse one physical ledger line. A failed short append can leave a fragment
  * without its newline, so the next whole line is glued behind it. A line
@@ -142,12 +152,13 @@ function isEntryOf(value, id) {
  * tried from the end backward (the glued whole line comes last), within the
  * caps above.
  * @param {string} line
- * @param {string} [id] recover only an object whose top-level consult_id is
- *   this id; its suffix must contain the id
+ * @param {string} [id] recover only an object that `matches` this id (by
+ *   default, whose top-level consult_id is the id); its suffix must contain the id
+ * @param {(value: unknown, id: string) => boolean} [matches]
  * @returns {{ value: unknown, at: number } | undefined} the parsed value and
  *   the offset it starts at: 0 for the whole line, else a recovered entry
  */
-function parseLedgerLine(line, id) {
+function parseLedgerLine(line, id, matches = isEntryOf) {
   try {
     return { value: JSON.parse(line), at: 0 }
   } catch { /* torn, foreign, or a whole line behind a fragment */ }
@@ -166,7 +177,7 @@ function parseLedgerLine(line, id) {
     } catch {
       continue
     }
-    if (id === undefined || isEntryOf(value, id)) return { value, at }
+    if (id === undefined || matches(value, id)) return { value, at }
   }
   return undefined
 }
@@ -202,10 +213,15 @@ export function createLedger(dir) {
   const ledgerPath = path.join(root, LEDGER_FILE)
   const repliesDir = path.join(root, REPLIES_DIR)
 
+  /** The id itself when it is an advisor id (12 lowercase hex); throws for any other id. */
+  function checkedId(id) {
+    if (typeof id !== 'string' || !ID_PATTERN.test(id)) throw new Error('Advisor reply id must be 12 lowercase hex characters')
+    return id
+  }
+
   /** Path of the reply file for an advisor id (12 lowercase hex); throws for any other id. */
   function replyPath(id) {
-    if (typeof id !== 'string' || !ID_PATTERN.test(id)) throw new Error('Advisor reply id must be 12 lowercase hex characters')
-    return path.join(repliesDir, `${id}.md`)
+    return path.join(repliesDir, `${checkedId(id)}.md`)
   }
 
   /** Append one JSON line with a single O_APPEND write. */
@@ -243,6 +259,26 @@ export function createLedger(dir) {
   }
 
   /**
+   * Write the verification record of a run beside its reply,
+   * `replies/<id>.verification.json`, exclusively and with mode 0600; at most
+   * MAX_VERIFICATION_BYTES. The exclusive create is the one-record-per-run
+   * guarantee: a second record, or a planted symlink, rejects with EEXIST.
+   * Returns its path and the sha256 of the exact bytes.
+   */
+  async function writeVerification(id, text) {
+    const target = path.join(repliesDir, `${checkedId(id)}.verification.json`)
+    if (typeof text !== 'string') throw new TypeError('Advisor verification record must be a string')
+    const bytes = Buffer.from(text, 'utf8')
+    if (bytes.length > MAX_VERIFICATION_BYTES) {
+      throw new Error(`Advisor verification record is ${bytes.length} bytes, over the ${MAX_VERIFICATION_BYTES}-byte cap`)
+    }
+    await fs.mkdir(repliesDir, { recursive: true, mode: 0o700 })
+    assertUsable({ root: true, replies: true })
+    await fs.writeFile(target, bytes, { flag: 'wx', mode: 0o600 })
+    return { file: target, sha256: sha256(bytes) }
+  }
+
+  /**
    * The physical ledger lines holding an entry of this consult_id, in file
    * order (sync; for the guards and the verifier's evidence tool): the 1-based
    * line number, the entry's text, the parsed entry, and whether the line is
@@ -275,18 +311,43 @@ export function createLedger(dir) {
     return ledgerLinesFor(id).map(({ entry }) => entry)
   }
 
+  /**
+   * The verification lines of a consult, in file order (sync): objects of
+   * kind verification whose `verifies` is the id, recovered from a torn line
+   * like entries are. They carry no top-level consult_id, so
+   * ledgerLinesFor and ledgerEntriesFor never return them.
+   */
+  function verificationEntriesFor(id) {
+    if (typeof id !== 'string' || id === '') return []
+    let text
+    try {
+      text = readFileSync(ledgerPath, 'utf8')
+    } catch {
+      return []
+    }
+    if (!text.includes(id)) return []
+    const entries = []
+    for (const line of text.split('\n')) {
+      if (!line.includes(id)) continue
+      const parsed = parseLedgerLine(line, id, isVerificationOf)
+      if (parsed !== undefined && isVerificationOf(parsed.value, id)) entries.push(parsed.value)
+    }
+    return entries
+  }
+
   /** Whether a reply file or any ledger line already uses this id (throws for a malformed id). */
   function idInUse(id) {
     return existsSync(replyPath(id)) || ledgerEntriesFor(id).length > 0
   }
 
-  /** The last terminal runs, one line each, for /advisor status. */
+  /** The last terminal runs, one line each, for /advisor status; verification lines are not runs. */
   async function recentLedger(limit = 3) {
     try {
       const text = await fs.readFile(ledgerPath, 'utf8')
       const entries = text.split('\n').filter(Boolean).map((line) => {
         const entry = parseLedgerLine(line)?.value
         if (entry === null || typeof entry !== 'object' || Array.isArray(entry) || entry.status === 'started') return null
+        if (entry.kind === 'verification') return null
         const kind = entry.kind === 'plan' || entry.kind === 'advice' ? ` ${entry.kind}` : ''
         return `${entry.consult_id ?? 'unknown'} ${entry.advisor ?? 'unknown'}${kind} ${entry.status ?? 'unknown'} ${entry.topic ?? 'unset'}`
       }).filter(Boolean).slice(-limit)
@@ -430,8 +491,10 @@ export function createLedger(dir) {
     replyPath,
     appendLedger,
     writeReply,
+    writeVerification,
     ledgerEntriesFor,
     ledgerLinesFor,
+    verificationEntriesFor,
     idInUse,
     recentLedger,
     writableProblem,

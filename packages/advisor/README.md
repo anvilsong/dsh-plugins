@@ -254,7 +254,9 @@ What the lead does with each choice:
   Host restart keeps the value of its `started` line, whatever the setting is
   by then), `effort` what the child's own model selection reports (see
   [What the Host records](#what-the-host-records)). The verifier's effort is
-  enforced at delegation only; verifiers write no ledger line.
+  enforced at delegation only; its verification line records `effort` and
+  `effort_requested` the same way (see
+  [Verification records](#verification-records)).
 
 Live check, before the menu gains an effort choice:
 
@@ -321,7 +323,8 @@ Checks:
   is recommended, and names are unique
 - `risks` and `do_not_build`
 - `claims`: the repository facts the advice relies on, each with 1–5
-  `path[:line[-line]]` references, for the verifier
+  `path[:line[-line]]` references, for the verifier; a reference may not
+  contain control, format or line separator characters or unpaired surrogates
 - `open_questions`
 
 ### Invalid submissions
@@ -357,6 +360,10 @@ create) and appends to `<dataDir>/sessions.jsonl` in the line format below: a
 A child that ends, times out (30 minutes), exceeds 150 tool calls, or is stopped
 without a result gets a `status: failed` line with `failure_reason`.
 
+Verifiers add `kind: verification` lines, which name the run under
+`verifies` instead of `consult_id`; see
+[Verification records](#verification-records).
+
 ### Data directory
 
 All Advisor data lives in one plugin-owned folder, `dataDir`:
@@ -364,6 +371,9 @@ All Advisor data lives in one plugin-owned folder, `dataDir`:
 - `<dataDir>/sessions.jsonl`: the ledger, one JSON line per write (mode 0600).
 - `<dataDir>/replies/<id>.md`: one immutable reply per run (mode 0600, created
   exclusively).
+- `<dataDir>/replies/<id>.verification.json`: at most one verification record
+  per run (mode 0600, created exclusively, at most 64 KB); see
+  [Verification records](#verification-records).
 - Folders are created with mode 0700.
 
 The bundle patch sets the default, `dataDir: !!js dshHomePath('advisor')`, so
@@ -443,7 +453,9 @@ reads no environment variables for any of this.
 After a short write, the Host ends the partial line with a newline, and the
 ledger readers skip an unparseable fragment and recover a whole line behind it.
 A line that parses as a whole is taken as it is; only an object whose
-top-level `consult_id` is the ID counts as an entry of that ID. The recovery
+top-level `consult_id` is the ID counts as an entry of that ID. Verification
+lines have no top-level `consult_id`, so they are never an entry of the run
+they verify. The recovery
 tries at most 64 offsets per line, from the end of the line backward, and only
 on lines of at most 1 MB, so one hostile line cannot stall the guards.
 
@@ -541,6 +553,10 @@ After an advisor run whose terminal ledger line has status `ok`:
      about sources outside the workspace, such as the DSH installation and its
      harness sources or other repositories, which the verifier cannot read.
    - There is no aggregate score or overall verdict.
+   - After the claim review it calls `advisor_verifier_report` once with the
+     status and `file:line` evidence of each claim it checked (see
+     [Verification records](#verification-records)). The record is
+     measurement, not a verdict, and its absence invalidates nothing.
 5. After the report, the lead re-reads the task pointers and checks the reply
    hash again; any change invalidates the report. While the Host process runs,
    it also refuses a verifier whose reply file no longer matches the hash it
@@ -595,10 +611,11 @@ part) in these cases:
 
 The verifier boundary is default-deny:
 
-- Only `read`, `grep`, `glob`, `team_task_get`, and `advisor_evidence_get` are
-  allowed. Shell commands, writes, task mutations, messaging, further
-  delegation, and `run_code` are denied, including scoped or late-registered
-  tools.
+- Only `read`, `grep`, `glob`, `team_task_get`, `advisor_evidence_get`, and
+  `advisor_verifier_report` are allowed. Shell commands, writes, task
+  mutations, messaging, further delegation, and `run_code` are denied,
+  including scoped or late-registered tools. The report tool has no path or ID
+  argument: the Host writes its one record.
 - `read`, `grep`, and `glob` are confined exactly like advisor children: paths
   stay inside the lead's workspace after symlinks are resolved and may not
   contain `..`, protected files are refused, and `grep` drops matches in
@@ -633,10 +650,121 @@ Limits of the verifier:
   the workspace as described above: a workspace that contains the data
   directory still exposes the ledger and the replies to them, and a workspace
   of `/` is accepted for them.
+- The Host checks the form of a verification record, not its truth: it does
+  not open the cited evidence files, and where the record and the final
+  response differ, the final response counts.
 
 The plugin keeps one ledger in its `dataDir` and creates no plan store, retry
 engine, or orchestration framework. Restart DSH manually after Host code changes; the
 existing Web URL and `app.asar` are left untouched.
+
+### Verification records
+
+After its claim review the verifier calls `advisor_verifier_report` once, with
+one entry per claim it checked. The record is measurement, not a verdict: the
+verifier's final response stays the sole report, the lead's task, completion
+and hash checks do not change, and a missing record invalidates nothing. Like
+`advisor_evidence_get`, the tool is registered on each verifier only, bound
+to it, and refused by name to every other agent; its consult ID is the 12 hex
+characters of the verifier's own name.
+
+Its one argument, `entries`, holds 1 to 100 entries:
+
+- `ref`: for advice the 1-based position of the claim in `claims`, as a string
+  such as `"3"`; for a plan the task ID, such as `"T2"`; or `"other"` for any
+  other claim. An advice claim number lies between 1 and the terminal line's
+  `claim_count` and appears at most once; a plan task ID must be one of the
+  plan's and may appear in several entries.
+- `status`: `confirmed`, `refuted`, or `unverifiable`.
+- `reply_line`: the physical reply line of the claim, a positive integer.
+- `evidence`: 0 to 5 workspace-relative references in the grammar of advice
+  claims (`path`, `path:line` or `path:start-end`; no absolute, `~`, `..`,
+  `.git`, glob or protected path, and no control, format or line separator
+  character or unpaired surrogate). `confirmed` and `refuted` need at least
+  one.
+- `note`: optional plain text of at most 300 characters, without control,
+  format or line separator characters or unpaired surrogates.
+
+There is no ID, path, tally, importance, severity, score or summary input. A
+claim without an entry is not an error: the result names the claims or tasks
+that no entry covers, and the record keeps `expected` and `covered`, so the gap
+stays measurable. The result carries no counts.
+
+The Host refuses a report, lists the problems and writes nothing when the
+entries are invalid or the record would exceed 64 KB; when the reply is
+withheld or unreadable, exactly as for `advisor_evidence_get`, or the last
+terminal ledger line is not an `ok` or `degraded` plan or advice run with its
+count and `reply_sha256`; or when the bytes it reads no longer hash to that
+`reply_sha256`. After five refused calls the tool closes; the verifier is never
+stopped over it. A synchronous latch lets only one call write. A valid report
+is written once:
+
+1. `<dataDir>/replies/<id>.verification.json`, created exclusively with mode
+   0600, at most 64 KB: `schema: advisor-verification/1`, `verifies` (the
+   ID), the validated `entries`, the `reply_sha256` the Host read, and
+   `recorded_at`. Verifier-authored text, the notes and evidence, lives only
+   in this file; the verifier's file tools are denied the data directory.
+2. One flat line appended to `sessions.jsonl`, with Host-authored values only:
+
+| Field | Value |
+|---|---|
+| `kind`, `schema` | `verification`, `advisor-verification/1` |
+| `verifies`, `verified_kind` | the run's ID and kind, `plan` or `advice` |
+| `ts`, `status` | Unix seconds, `recorded` |
+| `session_id`, `verifier_session_id` | the agent ids of the lead and of the verifier, as in the planner's `session_id` and `planner_session_id` |
+| `backend`, `model`, `effort`, `effort_requested` | the verifier's own route, recorded as for advisor children |
+| `reply_sha256` | the hash the Host read |
+| `report_file`, `report_sha256` | the record file and the hash of its bytes |
+| `expected`, `covered` | the run's `claim_count` or `task_count`, and how many of those claims or tasks have an entry |
+| `entries` | the number of entries |
+| `confirmed`, `refuted`, `unverifiable` | claim or task entries per status |
+| `other` | entries with ref `other`; with the three counts above it sums to `entries` |
+| `submit_attempts`, `tool_calls`, `duration_s` | report calls checked, tool calls admitted past the verifier's identity checks, and seconds since its first start |
+
+For a plan the status counts are per entry, not per task: one task can have
+several entries. There are no token or cost fields for verifiers.
+
+An allowed verifier that ends without a record (at `subagent/end`,
+`agent/disposed`, or when the plugin unloads) gets one line with
+`status: unrecorded`, unless its session already has a verification line: the
+same fields without `reply_sha256`, the record fields and the counts
+(`verified_kind` is `null` when the ledger names no plan or advice run), plus a
+`reason`:
+
+- `not_called`: it never called the tool.
+- `invalid_payload`: its last refused call had invalid entries.
+- `reply_changed`: the reply no longer hashed to its `reply_sha256`.
+- `reply_withheld`: the reply was withheld or unreadable, or the run did not
+  end `ok` or `degraded`.
+- `already_recorded`: the consult already had a record.
+- `write_failed`: the record or its line could not be written. If only the
+  line failed, the record file stays, like a reply whose `ok` line failed.
+
+One record per consult: the exclusive create is the guarantee, and a record
+cannot be amended or replaced. A second verifier on the same consult, as in an
+A/B round, records `already_recorded`; compare such runs with separate data
+directories. A `recorded` line closes its consult: every later report is
+refused as `already_recorded`, also when the record file is gone.
+
+The first verification line of a verifier session is final. Once a verifier
+session, its agent id, has a `recorded` or `unrecorded` line, no second
+`unrecorded` line is written and a later report from the same agent id is
+refused as `already_recorded`, also after a plugin reload or for a new Agent
+object under the same id. The Host checks the ledger for this, so it holds
+across reloads; another verifier session on the same consult may still record.
+
+Verification lines carry no top-level `consult_id`, so the readers keyed by ID
+never see them: the evidence tool still serves the reply to a later verifier,
+and the planner's resume and ID checks and `idInUse` are unchanged.
+`/advisor status` skips them, because they are not runs. The session
+projection stays at state version 7.
+
+Offline tallies: divide by the `ok` or `degraded` terminal lines that have a
+verification line for their ID, `recorded` or `unrecorded`, and not by all `ok`
+terminal lines: only runs verified while verification was on count, and a run
+nobody verified has no verification line. The `unrecorded` lines give the
+reasons. A Host crash writes no `unrecorded` line, so a verifier that ended
+with the Host is missing from both counts.
 
 ## License
 
