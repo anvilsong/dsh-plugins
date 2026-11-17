@@ -73,6 +73,8 @@ app's **Settings → Plugins** page for normal Desktop installations.
 Reload the page after a client-only change. Restart the Host after a Host or
 composition change.
 
+Verifying client plugins: follow the [manual live menu checklist](docs/live-menu-checklist.md).
+
 ## License
 
 The usage package is [MIT licensed](packages/usage/LICENSE).

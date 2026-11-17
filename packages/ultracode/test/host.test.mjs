@@ -88,6 +88,31 @@ test('policy requires a final section for all examination gaps', () => {
   assert.match(POLICY, /every gap in the critic's output/)
 })
 
+test('policy carries the three verification-discipline rules', () => {
+  assert.match(POLICY, /Before spawning review or critic agents, run the project's own cheap deterministic checks \(tests, build, linter\) where they exist, and show their output instead of saying the work is done/)
+  assert.match(POLICY, /still failing after three fix rounds, stop, report what remains, and ask the user instead of looping/)
+  assert.match(POLICY, /Do not stack extra reviewers on top of the primary one/)
+  assert.match(POLICY, /Point each later round at the findings and failures of earlier rounds instead of re-checking everything from scratch/)
+  const bullets = POLICY.split('\n').filter((line) => line.startsWith('- '))
+  assert.equal(bullets.length, 11)
+})
+
+test('the new rules leave the budget, critic, and gaps text unchanged', () => {
+  assert.ok(POLICY.includes('- Budget: A turn allows at most 23 work delegations; the 24th delegation is reserved for a final completeness critic if any delegation occurred. Host delegation limits are hard limits. On exhaustion, report what is unverified rather than quietly reducing rigor.'))
+  assert.ok(POLICY.includes("- Final completeness critic: Give the critic the original request and final result (the draft you intend to send), not worker transcripts. Ask it to identify missing or unverified work. Every gap in the critic's output must appear in the final answer. The orchestrator may fix gaps inline, but may not delegate again or drop them."))
+  assert.ok(POLICY.endsWith("- Final gaps section: End every final answer with a section headed `## Not examined / not verified`. Write `none` if it is empty. Otherwise include all gaps from budgets, file or time limits, or truncation, and every gap in the critic's output."))
+  assert.doesNotMatch(POLICY, /\b2[5-9] work delegations|\b(?:25|26)th delegation/)
+})
+
+test('the prompt section adds the new rules only while active', async () => {
+  const { ctx, get, agent, setState } = harness()
+  await apply(ctx)
+  const { section } = get()
+  assert.equal(section.text({ agent }), '')
+  setState({ active: true, pending: null, run: null })
+  assert.equal(section.text({ agent }), POLICY)
+})
+
 test('the command validates input and reports state without changing Team', async () => {
   const { ctx, get, agent } = harness()
   await apply(ctx)

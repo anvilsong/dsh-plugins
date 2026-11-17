@@ -12,6 +12,12 @@ and token cost:
 - Use DSH AgentTeam for durable roles when team collaboration is enabled.
 - Run one well-scoped fan-out per phase and synthesize results locally.
 - Have material findings checked by an agent that did not produce them.
+- Run the project's cheap checks (tests, build, linter) before spawning
+  reviewers, and show their output instead of claiming the work is done.
+- Stop after three failing fix rounds on the same check or finding: report what
+  remains and ask the user instead of looping.
+- Use one reviewer, not stacked extras, and point later rounds at earlier
+  findings and failures instead of re-checking everything.
 - Do not lower reasoning effort to save tokens.
 - End every final answer with a `Not examined / not verified` section.
 
