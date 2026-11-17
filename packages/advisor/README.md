@@ -24,8 +24,9 @@ then checks its claims against the repository.
 The model-options menu has one **Advisor** switch and two menu cells: **Advisor
 model** and **Verifier model**. Both cells are dimmed while Advisor is off.
 Each cell opens one side flyout of single-choice rows: **Inherit**, the
-authorized models grouped by provider, then an **Effort** group for the model
-the cell shows: the saved model, or the one a pick is still saving. A choice
+authorized models grouped by provider, with the **Effort** rows of the model
+the cell shows (the saved model, or the one a pick is still saving) directly
+under that model's own row, indented, as in the Model router. A choice
 sends one complete command and closes the flyout; Tab also picks the focused
 row. The explanation lives in the Advisor info tooltip.
 Advisor off stops advisor runs and verification but keeps both model
@@ -37,11 +38,11 @@ What each row sends (`/advisor model` for the Advisor model,
 
 - **Inherit:** `inherit`, never with an effort.
 - **Another model:** `<provider>/<model>` plus its recommended effort, if any.
-  For the Advisor model that is the highest effort the model advertises whose
-  id is not `max` (for example `xhigh`); a model that advertises only `max` or
-  no efforts, or whose efforts the model directory cannot tell (not listed
-  yet, or no usable effort id), gets none. The Verifier model's recommendation
-  is always Default, so its picks send no effort.
+  For the Advisor model that is the highest advertised effort that is neither
+  `max` nor `off` (for example `xhigh`); a model that advertises no other
+  effort or no efforts, or whose efforts the model directory cannot tell (not
+  listed yet, or no usable effort id), gets none. The Verifier model's
+  recommendation is always Default, so its picks send no effort.
 - **The model the cell shows:** nothing, so an effort set by command is kept.
   To change the effort of a model that is not saved yet, pick it, then reopen
   the flyout.
@@ -51,33 +52,38 @@ What each row sends (`/advisor model` for the Advisor model,
 - **Default:** `<provider>/<model>` without an effort: the model's own default
   effort.
 
-The Effort group is headed with its model (**Effort for claude-opus-5-5**) and
-lists **Default**, then the efforts the model advertises, by name and in their
-order, as DSH's model directory for the session reports them. When the
-directory reports the model's own default effort and it is one of those
-efforts, the first row names it: **Default (High)**; otherwise it reads plain
-**Default**. Either way it sends no effort, and the cell shows nothing extra
-for it. The recommended row is marked "recommended": for the Advisor model the
-highest effort below `max`, for the Verifier model Default. If the Advisor
-model's recommended effort is the model's default, the mark sits on that
-effort's row and the Default row only names it. The Advisor model's Default
-row carries the mark itself when there is no effort below `max` (the model
-advertises only `max`, or no efforts and an effort is saved), or when the
-directory cannot tell the model's efforts and the group shows only for a saved
-effort. The group is hidden for Inherit and for an unavailable saved route. If
-the directory does not list the model, lists none of its efforts in a usable
-form, or the model advertises no efforts, the group appears only when an
-effort is saved: Default plus that id. A saved id that the model does not
-advertise is listed last in the warning colour (plainly when the directory
-cannot tell); the menu never clears or changes a saved effort by itself.
+The Effort rows form a group of their own (labelled **Effort for
+claude-opus-5-5** for screen readers; there is no heading row and no separator)
+right after their model's row, so a long model list needs no scrolling to reach
+them. They list **Default**, then the efforts the model advertises, by name
+and in their order, as DSH's model directory for the session reports them.
+When the directory reports the model's own default effort and it is one of
+those efforts, the first row names it: **Default (High)**; otherwise it reads
+plain **Default**. Either way it sends no effort, and the cell shows nothing
+extra for it. The recommended row is marked "recommended": for the Advisor
+model the highest effort that is neither `max` nor `off`, for the Verifier
+model Default. If the Advisor model's recommended effort is the model's
+default, the mark sits on that effort's row and the Default row only names it.
+The Advisor model's Default row carries the mark itself when there is no such
+effort (the model advertises only `max` or `off`, or no efforts and an effort
+is saved), or when the directory cannot tell the model's efforts and the group
+shows only for a saved effort. The group is hidden for Inherit and for an
+unavailable saved route. If the directory does not list the model, lists none
+of its efforts in a usable form, or the model advertises no efforts, the group
+appears only when an effort is saved: Default plus that id. A saved id that
+the model does not advertise is listed last in the warning colour (plainly
+when the directory cannot tell); the menu never clears or changes a saved
+effort by itself.
 
 The Effort rows do not change while the flyout is open; a directory update
 shows when it is next opened. If the cell's model changes while the flyout is
 open (a pending pick is refused, another tab saves another model, or the model
-leaves the authorized list), the group stays in place under its model's name,
+leaves the authorized list), the group stays in place under its model's row,
 but its rows are disabled and send nothing; the next opening shows the new
-model's group. The model rows, unlike the Effort rows, still follow the
-authorized list while the flyout is open.
+model's group. If that model leaves the authorized list, its row stays too
+until the flyout closes, disabled and in the warning colour, so no row moves
+or disappears from under the pointer or the keyboard focus. The other model
+rows follow the authorized list while the flyout is open.
 
 The cell shows `<model> · <effort id>`, or only the model for Default; a long
 model name is cut before the effort. Any refusal while a pick whose effort the
@@ -91,22 +97,29 @@ and its refusal leaves the model's recommended effort in place.
 
 **Automatic effort.** When the model menu opens and the Advisor model is
 saved as a model without an effort (Default), the Advisor model cell applies
-that model's recommended effort once, by itself: it sends
-`/advisor model <provider>/<model> effort=<id>`, the line a pick of that model
-sends (the highest advertised effort whose id is not `max`). It sends only
-while Advisor is on, the cell's flyout is closed, the cell is not locked or
-saving, no Advisor update is pending, the saved route is authorized, the saved
-setting is still the one the cell first showed in that opening of the menu (a
-change from another tab or a typed command stops it until the menu is opened
-again), and the model directory lists the model's efforts with one below
-`max`. While the directory cannot tell the model's efforts yet, the cell waits
-and sends nothing; a model that advertises only `max` or no efforts gets
-nothing. A session with Advisor off gets it once Advisor is on while the menu
-is open. It is tried at most once per opening and never retried: a refusal is
-reported like any other, the setting stays as it was, and that model's next
-picks in that opening go without the effort. The command's chat entry and the
-cell's ` · <effort>` are the only signs; there is no other notice and no
-switch to turn it off. To undo it, pick **Default** in the Effort group.
+that model's recommended effort by itself, once per session in each browser:
+it sends `/advisor model <provider>/<model> effort=<id>`, the line a pick of
+that model sends (the highest advertised effort that is neither `max` nor
+`off`). It sends only while Advisor is on, the cell's flyout is closed, the
+cell is not locked or saving, no Advisor update is pending, the saved route is
+authorized, the saved setting is still the one the cell first showed in that
+opening of the menu (a change from another tab or a typed command stops it
+until the menu is opened again), and the model directory lists the model's
+efforts with one that is neither `max` nor `off`. While the directory cannot
+tell the model's efforts yet, the cell waits and sends nothing; a model that
+advertises no other effort, or no efforts, gets nothing. A session with
+Advisor off gets it once Advisor is on while the menu is open. While the Host
+checks the effort of that command (up to 10 s), the Advisor switch and the
+rows of both model cells ignore input, as for any effort you set. The attempt
+is claimed (see the key below) before the line is sent, and a claimed attempt
+is final in that browser: if the command service is unavailable, the line is
+not admitted, or the Host refuses it, or if the menu closes while the command
+is in flight and it then fails, nothing tries again; pick the effort by hand.
+A failure is reported like any other, the setting stays as it was, and that
+model's next picks in that opening go without the effort. The command's chat
+entry and the cell's ` · <effort>` are the only signs; there is no other
+notice and no switch to turn it off. To undo it, pick **Default** among its
+Effort rows.
 
 Before it sends, the cell records the session in the browser's localStorage
 under `dsh.autoEffort.v1:advisor:<session id>:advisorModel`: one key per

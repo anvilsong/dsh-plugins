@@ -208,7 +208,10 @@ function createRuntime() {
       }
     },
   }
-  const mount = (component) => {
+  // `attach(output, instance)` runs after the component returns and before
+  // its effects, as React attaches DOM refs before layout effects: a rig can
+  // put a fake DOM node into a ref there.
+  const mount = (component, { attach } = {}) => {
     const instance = { hooks: [], index: 0, pending: [], dirty: false, props: null, trace: [] }
     const render = (props) => {
       if (props !== undefined) instance.props = props
@@ -218,6 +221,7 @@ function createRuntime() {
       instance.dirty = false
       instance.trace = []
       const output = component(instance.props)
+      attach?.(output, instance)
       const effects = instance.pending
       for (const effect of effects) { current = instance; effect() }
       return output
@@ -486,7 +490,7 @@ const ALL_ROUTES = [FABLE, OPUS, MAX_ONLY, PLAIN, UNLISTED, FLASH]
 const keyOf = (route) => `${route.provider}/${route.model}`
 const withEffort = (route, effort) => ({ ...route, effort })
 
-const EFFORT_NAMES = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' }
+const EFFORT_NAMES = { off: 'Off', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' }
 const efforts = (...ids) => ids.map((id) => ({ id, name: EFFORT_NAMES[id] ?? id }))
 // Provider groups as the directory snapshot holds them, efforts least to
 // greatest. PLAIN advertises none; UNLISTED is authorized but not listed.
@@ -598,13 +602,21 @@ function cellHarness({ cell = 'advisor', view = {}, routes = ALL_ROUTES, getServ
   }
   // The Effort group by its element key: its label names its model.
   const effortGroup = () => find(items(), (node) => node.props.role === 'group' && node.props.key === 'effort')
-  const effortHeading = () => textOf(find(effortGroup(), (node) => node.props.className === 'adv-heading'))
   const effortRows = () => {
     const group = effortGroup()
     return group === undefined ? undefined : findAll(group, (node) => typeof node.props.onSelect === 'function')
   }
   // `<label>[ (<note>)][ [warning]]=<checked>` per Effort row; undefined without the group.
   const effortSummary = () => effortRows()?.map((row) => `${row.props.label}${row.props.note ? ` (${row.props.note})` : ''}${row.props.warning ? ' [warning]' : ''}=${row.props.checked}`)
+  // The flyout's rows, headings, separators and groups in document order:
+  // `model:<key>` rows, `effort:<label>` rows, `group:<label>`, `heading:<text>`.
+  const layout = () => findAll(items(), (node) => node.props.role === 'separator' || node.props.role === 'group'
+    || node.props.className === 'adv-heading' || typeof node.props.onSelect === 'function').map((node) => {
+    if (node.props.role === 'separator') return 'separator'
+    if (node.props.role === 'group') return `group:${node.props['aria-label']}`
+    if (node.props.className === 'adv-heading') return `heading:${textOf(node)}`
+    return `${node.props.effort ? 'effort' : 'model'}:${node.props.title && !node.props.effort ? node.props.title : node.props.label}`
+  })
   const settle = async () => {
     await ticks()
     rerender()
@@ -641,10 +653,10 @@ function cellHarness({ cell = 'advisor', view = {}, routes = ALL_ROUTES, getServ
     rerender()
   }
   return {
-    state, initialView, calls, reports, closes,
+    state, initialView, calls, reports, closes, runtime,
     get mounted() { return mounted },
     rerender, setProps, remount, desired, cellNode, cellValue, items, rows, openFlyout, closeFlyout,
-    effortGroup, effortHeading, effortRows, effortSummary,
+    effortGroup, effortRows, effortSummary, layout,
     pickModel, pickInherit, pickEffort, fail, save,
     trace: () => mounted.instance.trace.join(','),
   }
@@ -709,18 +721,16 @@ test('effort source: a model listed without efforts gets no group unless an effo
   assert.deepEqual(empty.effortSummary(), ['Default (recommended)=false', 'xhigh [warning]=true'], 'an empty list is none')
 })
 
-test('effort group: after a separator, Default, then the saved model\'s advertised efforts by name, in order', () => {
+test('effort group: right under the saved model\'s row, Default, then its advertised efforts by name, in order', () => {
   const getService = directoryService(fakeDirectory())
   const opus = cellHarness({ view: { advisorModel: OPUS }, getService })
   opus.openFlyout()
   assert.deepEqual(opus.effortSummary(), ['Default (High)=true', 'Low=false', 'Medium=false', 'High=false', 'Extra high (recommended)=false', 'Max=false'])
   assert.deepEqual(opus.effortRows().map((row) => row.props.title ?? '-'), ['-', 'low', 'medium', 'high', 'xhigh', 'max'])
   const items = Array.from(opus.items()).filter(Boolean)
-  assert.deepEqual(items.map((node) => node.props.role ?? node.props.label), ['Inherit', 'separator', 'group', 'group', 'separator', 'group'])
-  // The group's label and heading name its model, so it reads as that model's efforts.
-  assert.deepEqual(items.filter((node) => node.props.role === 'group').map((node) => node.props['aria-label']), ['anthropic', 'openrouter', 'Effort for claude-opus-5-5'])
-  assert.equal(opus.effortHeading(), 'Effort for claude-opus-5-5')
-  assert.equal(find(opus.effortGroup(), (node) => node.props.className === 'adv-heading').props['aria-hidden'], 'true', 'the label speaks for the heading')
+  // One separator, after Inherit; the Effort group is inside its provider's group.
+  assert.deepEqual(items.map((node) => node.props.role ?? node.props.label), ['Inherit', 'separator', 'group', 'group'])
+  assert.deepEqual(findAll(items, (node) => node.props.role === 'group').map((node) => node.props['aria-label']), ['anthropic', 'Effort for claude-opus-5-5', 'openrouter'])
 
   // The Effort rows are the flyout's menuitemradio rows, so its key handler
   // (arrows, Home/End, Tab, Enter/Space on the button) covers them.
@@ -739,7 +749,7 @@ test('effort group: after a separator, Default, then the saved model\'s advertis
   const flash = cellHarness({ view: { advisorModel: FLASH }, getService })
   flash.openFlyout()
   assert.deepEqual(flash.effortSummary(), ['Default=true', 'Low=false', 'High (recommended)=false'], 'only the saved model\'s efforts')
-  assert.equal(flash.effortHeading(), 'Effort for ~deepseek/deepseek-flash-latest', 'the model id as its row shows it')
+  assert.equal(flash.effortGroup().props['aria-label'], 'Effort for ~deepseek/deepseek-flash-latest', 'the model id as its row shows it')
 
   const savedMax = cellHarness({ view: { advisorModel: withEffort(FABLE, 'max') }, getService })
   savedMax.openFlyout()
@@ -794,7 +804,7 @@ test('a saved effort the model does not advertise is appended last in the warnin
   assert.deepEqual(harness.calls, ['/advisor model anthropic/claude-fable-5-2'], 'only a pick changes it')
 })
 
-test('recommended default: another model\'s row sends its highest advertised effort below max for the Advisor model', async () => {
+test('recommended default: another model\'s row sends its highest advertised effort that is neither max nor off for the Advisor model', async () => {
   const getService = directoryService(fakeDirectory())
   for (const [route, line] of [
     [OPUS, '/advisor model anthropic/claude-opus-5-5 effort=xhigh'],
@@ -1085,17 +1095,15 @@ test('locale: the effort strings exist in both the en and zh tables and render l
   harness.openFlyout()
   const group = harness.effortGroup()
   assert.equal(group.props['aria-label'], 'claude-opus-5-5 的推理等级', 'the zh label names the model')
-  assert.equal(harness.effortHeading(), 'claude-opus-5-5 的推理等级', 'the zh heading names the model')
   const rows = findAll(group, (node) => typeof node.props.onSelect === 'function')
   assert.equal(rows[0].props.label, 'Default（High）', 'the zh pattern names the default')
   assert.equal(rows.find((row) => row.props.title === 'xhigh').props.note, '推荐')
 })
 
-test('locale: the en Effort heading and label name the model; a table without the pattern still names it', () => {
+test('locale: the en Effort label names the model; a table without the pattern still names it', () => {
   const english = cellHarness({ view: { advisorModel: OPUS }, getService: directoryService(fakeDirectory()) })
   english.openFlyout()
   assert.equal(english.effortGroup().props['aria-label'], 'Effort for claude-opus-5-5')
-  assert.equal(english.effortHeading(), 'Effort for claude-opus-5-5')
   // A locale binding that answers an unknown key with the key itself.
   const tables = {}
   const locale = {
@@ -1108,7 +1116,6 @@ test('locale: the en Effort heading and label name the model; a table without th
     getService: (name) => name === 'locale' ? locale : name === 'modelDirectories' ? directory.service : undefined,
   })
   fallback.openFlyout()
-  assert.equal(fallback.effortHeading(), 'Effort · claude-opus-5-5')
   assert.equal(fallback.effortGroup().props['aria-label'], 'Effort · claude-opus-5-5')
 })
 
@@ -1209,7 +1216,7 @@ test('Default row: the localized patterns, en and zh', () => {
   assert.deepEqual(labels('zh', FLASH), ['~deepseek/deepseek-flash-latest 的推理等级', 'Default'], 'zh: no default advertised')
 })
 
-test('recommended mark: Advisor keeps highest-below-max, Verifier marks Default, and an equal default is named without a second mark', () => {
+test('recommended mark: Advisor keeps the highest effort that is neither max nor off, Verifier marks Default, and an equal default is named without a second mark', () => {
   const getService = directoryService(fakeDirectory())
   const summary = (cell, route, effort) => {
     const harness = cellHarness({ cell, view: { [cell === 'verifier' ? 'verifierModel' : 'advisorModel']: effort === undefined ? route : withEffort(route, effort) }, getService })
@@ -1291,7 +1298,6 @@ test('effort group: if the cell\'s model changes while the flyout is open, the g
   assert.deepEqual(effortLive(other), every(true))
   other.save(FLASH)
   assert.deepEqual(effortLabels(other), OPUS_ROWS, 'the rows stay mounted: still the efforts of their model')
-  assert.equal(other.effortHeading(), 'Effort for claude-opus-5-5', 'the heading names the group\'s model')
   assert.equal(other.effortGroup().props['aria-label'], 'Effort for claude-opus-5-5')
   assert.deepEqual(effortLive(other), every(false))
   assert.equal(other.effortRows().some((row) => row.props.checked), false, 'no effort row is checked for another model')
@@ -1306,7 +1312,7 @@ test('effort group: if the cell\'s model changes while the flyout is open, the g
   other.closeFlyout()
   other.openFlyout()
   assert.deepEqual(other.effortSummary(), ['Default=true', 'Low=false', 'High (recommended)=false'], 'the next open shows the new model\'s group')
-  assert.equal(other.effortHeading(), 'Effort for ~deepseek/deepseek-flash-latest')
+  assert.equal(other.effortGroup().props['aria-label'], 'Effort for ~deepseek/deepseek-flash-latest')
   assert.deepEqual(effortLive(other), [true, true, true])
 
   // A pending automatic pick is refused while the flyout shows its group.
@@ -1349,15 +1355,19 @@ test('effort group: if the cell\'s model changes while the flyout is open, the g
   assert.deepEqual(lineOut.calls, ['/advisor model anthropic/claude-opus-5-5 effort=xhigh'])
 
   // The saved model leaves the authorized list, or the list goes away.
-  for (const [name, routes] of [['unauthorized', ALL_ROUTES.filter((route) => route !== OPUS)], ['no list', null]]) {
+  for (const [name, routes, others] of [['unauthorized', ALL_ROUTES.filter((route) => route !== OPUS), 5], ['no list', null, 0]]) {
     const leaves = cellHarness({ view: { advisorModel: OPUS }, getService })
     leaves.openFlyout()
     leaves.state.routes = routes
     leaves.rerender()
     assert.deepEqual(effortLabels(leaves), OPUS_ROWS, `${name}: the effort rows stay`)
-    assert.equal(leaves.effortHeading(), 'Effort for claude-opus-5-5', name)
+    assert.equal(leaves.effortGroup().props['aria-label'], 'Effort for claude-opus-5-5', name)
     assert.deepEqual(effortLive(leaves), every(false), name)
-    assert.equal(leaves.rows().some((row) => row.props.title === keyOf(OPUS)), false, `${name}: the model rows follow the list, as before`)
+    // The group's own model row stays with it while the flyout is open,
+    // disabled; the other model rows follow the list.
+    const modelRows = leaves.rows().filter((row) => row.props.title !== undefined && !row.props.effort)
+    assert.deepEqual(modelRows.filter((row) => row.props.title === keyOf(OPUS)).map((row) => row.props.disabled), [true], `${name}: its row stays, disabled`)
+    assert.equal(modelRows.length, others + 1, `${name}: the other model rows follow the list`)
     await pressEffortRows(leaves)
     assert.deepEqual(leaves.calls, [], name)
   }
@@ -2170,4 +2180,437 @@ test('automatic effort: the cell calls the same hooks in the same order on every
     traces.push([`${name}, re-rendered`, other.trace()])
   }
   for (const [name, trace] of traces) assert.equal(trace, hooks, name)
+})
+
+// ---- Effort rows directly under their model's row ----
+
+const OPUS_EFFORT_ROWS = ['effort:Default (High)', 'effort:Low', 'effort:Medium', 'effort:High', 'effort:Extra high', 'effort:Max']
+// The flyout's rows in document order for a saved OPUS: one separator (after
+// Inherit), the provider headings, and the Effort group inside its provider's
+// group, right after the OPUS row and before the models that follow it.
+const OPUS_LAYOUT = [
+  'model:Inherit', 'separator',
+  'group:anthropic', 'heading:anthropic',
+  'model:anthropic/claude-fable-5-2',
+  'model:anthropic/claude-opus-5-5',
+  'group:Effort for claude-opus-5-5', ...OPUS_EFFORT_ROWS,
+  'model:anthropic/claude-max-only', 'model:anthropic/claude-plain', 'model:anthropic/claude-unlisted',
+  'group:openrouter', 'heading:openrouter',
+  'model:openrouter/~deepseek/deepseek-flash-latest',
+]
+
+test('effort rows sit directly under their model\'s row, in its provider group: no separator, no heading, none at the bottom', () => {
+  const getService = directoryService(fakeDirectory())
+  for (const cell of ['advisor', 'verifier']) {
+    const view = cell === 'advisor' ? { advisorModel: OPUS } : { verifierModel: OPUS }
+    const harness = cellHarness({ cell, view, getService })
+    harness.openFlyout()
+    assert.deepEqual(harness.layout(), OPUS_LAYOUT, `${cell}: after the OPUS row (not the first of its provider), before the models that follow`)
+    assert.equal(findAll(harness.items(), (node) => node.props.className === 'adv-separator').length, 1, `${cell}: the one separator is Inherit's`)
+    assert.equal(harness.layout().some((entry) => entry.startsWith('heading:Effort')), false, `${cell}: no heading row`)
+    assert.equal(find(harness.effortGroup(), (node) => node.props.className === 'adv-heading'), undefined, `${cell}: nothing but rows in the group`)
+    assert.equal(harness.layout().at(-1), 'model:openrouter/~deepseek/deepseek-flash-latest', `${cell}: nothing is left at the bottom`)
+  }
+
+  // The first model of its group: the rows come right after it and before OPUS.
+  const first = cellHarness({ view: { advisorModel: FABLE }, getService })
+  first.openFlyout()
+  assert.deepEqual(first.layout().slice(2, 12), [
+    'group:anthropic', 'heading:anthropic', 'model:anthropic/claude-fable-5-2', 'group:Effort for claude-fable-5-2',
+    'effort:Default (Extra high)', 'effort:Extra high', 'effort:Max', 'model:anthropic/claude-opus-5-5', 'model:anthropic/claude-max-only', 'model:anthropic/claude-plain',
+  ])
+  // The last model of the last group: the rows end the flyout.
+  const last = cellHarness({ view: { advisorModel: FLASH }, getService })
+  last.openFlyout()
+  assert.deepEqual(last.layout().slice(-7), [
+    'group:openrouter', 'heading:openrouter', 'model:openrouter/~deepseek/deepseek-flash-latest',
+    'group:Effort for ~deepseek/deepseek-flash-latest', 'effort:Default', 'effort:Low', 'effort:High',
+  ])
+  assert.equal(last.layout().filter((entry) => entry.startsWith('group:Effort')).length, 1, 'only the current model has a group')
+
+  // Models without a group: Inherit, a stale route, a model listed without efforts, a model the directory lacks.
+  for (const [name, view] of [['inherit', {}], ['stale', { advisorModel: { provider: 'gone', model: 'x' } }], ['plain', { advisorModel: PLAIN }], ['unlisted', { advisorModel: UNLISTED }]]) {
+    const none = cellHarness({ view, getService })
+    none.openFlyout()
+    assert.equal(none.layout().some((entry) => entry.startsWith('group:Effort')), false, name)
+    assert.equal(none.layout().some((entry) => entry.startsWith('effort:')), false, name)
+  }
+})
+
+test('effort rows look like the router\'s: indented, radio rows, a check on the checked row only, the caption right of the label', () => {
+  const harness = cellHarness({ view: { advisorModel: withEffort(OPUS, 'xhigh') }, getService: directoryService(fakeDirectory()) })
+  const css = textOf(find(harness.openFlyout(), (node) => node.type === 'style'))
+  assert.match(css, /\.adv-efforts\{display:flex;flex:none;flex-direction:column\}/)
+  assert.match(css, /\.adv-option-effort\{padding-inline-start:23px\}/)
+  assert.match(css, /\.adv-option-effort \.adv-option-label\{color:var\(--dsw-alias-label-secondary\)\}/)
+  assert.equal(harness.effortGroup().props.className, 'adv-efforts')
+  const model = harness.rows().find((row) => row.props.title === keyOf(OPUS))
+  assert.equal(model.type(model.props).props.className, 'adv-option', 'a model row is not indented')
+  const rendered = harness.effortRows().map((row) => row.type(row.props))
+  assert.equal(rendered.length, 6)
+  for (const row of rendered) {
+    assert.equal(row.props.className, 'adv-option adv-option-effort')
+    assert.equal(row.props.role, 'menuitemradio')
+  }
+  const checks = rendered.map((row) => find(row, (node) => node.props.className === 'adv-check').children.some((child) => child !== null))
+  assert.deepEqual(checks, [false, false, false, false, true, false], 'the glyph is on the checked row only')
+  const recommended = rendered[4]
+  assert.deepEqual(recommended.children.filter(Boolean).map((child) => child.props.className), ['adv-option-label', 'adv-option-note', 'adv-check'], 'the caption sits between label and check')
+  assert.equal(textOf(find(recommended, (node) => node.props.className === 'adv-option-note')), 'recommended')
+  assert.equal(rendered.filter((row) => find(row, (node) => node.props.className === 'adv-option-note') !== undefined).length, 1)
+  assert.equal(textOf(find(rendered[0], (node) => node.props.className === 'adv-option-label')), 'Default (High)')
+})
+
+test('effort rows: the zh group label names the model, in place right after its row', () => {
+  const tables = {}
+  const locale = { register(_namespace, dictionaries) { Object.assign(tables, dictionaries) }, bind: () => (key) => tables.zh[key] ?? key }
+  const directory = fakeDirectory()
+  const harness = cellHarness({
+    view: { advisorModel: OPUS },
+    getService: (name) => name === 'locale' ? locale : name === 'modelDirectories' ? directory.service : undefined,
+  })
+  harness.openFlyout()
+  const layout = harness.layout()
+  assert.equal(layout[layout.indexOf('model:anthropic/claude-opus-5-5') + 1], 'group:claude-opus-5-5 的推理等级')
+  assert.equal(layout[layout.indexOf('group:claude-opus-5-5 的推理等级') + 1], 'effort:Default（High）')
+})
+
+test('effort rows stay put while the flyout is open: frozen, disabled when the model changes, still under their model\'s row if it leaves the list', async () => {
+  const directory = fakeDirectory()
+  const harness = cellHarness({ view: { advisorModel: OPUS }, getService: directoryService(directory) })
+  harness.openFlyout()
+  assert.deepEqual(harness.layout(), OPUS_LAYOUT)
+  // The catalog changes while open: rows built once.
+  directory.publish([{ id: 'anthropic', models: [{ id: 'claude-opus-5-5', reasoning: { efforts: efforts('low') } }] }])
+  harness.rerender()
+  assert.deepEqual(harness.layout(), OPUS_LAYOUT, 'frozen while open')
+  // Another model becomes current: the rows stay under their model, disabled.
+  harness.save(FLASH)
+  assert.deepEqual(harness.layout(), OPUS_LAYOUT, 'the group stays under the model it was built for')
+  assert.deepEqual(effortLive(harness), every(false))
+  // Its model leaves the authorized list: its row stays, disabled, and the
+  // Effort rows stay under it, so nothing moves.
+  harness.state.routes = ALL_ROUTES.filter((route) => route !== OPUS)
+  harness.rerender()
+  assert.deepEqual(harness.layout(), OPUS_LAYOUT, 'the same layout: nothing moves to the end')
+  const kept = harness.rows().find((row) => row.props.title === keyOf(OPUS))
+  assert.equal(kept.props.disabled, true)
+  assert.deepEqual(effortLive(harness), every(false))
+  await pressEffortRows(harness)
+  assert.deepEqual(harness.calls, [], 'a disabled row sends nothing')
+  // The kept row is not the cell's model (Flash is): even its handler sends
+  // nothing for a route that is no longer authorized.
+  harness.openFlyout()
+  kept.type(kept.props).props.onClick()
+  kept.props.onSelect()
+  await ticks()
+  harness.rerender()
+  assert.deepEqual(harness.calls, [], 'no line for an unauthorized route')
+  // The next opening shows the new model's group where its row is.
+  harness.closeFlyout()
+  harness.state.routes = ALL_ROUTES
+  directory.publish(CATALOG)
+  harness.openFlyout()
+  const reopened = harness.layout()
+  assert.deepEqual(reopened.slice(-5), ['model:openrouter/~deepseek/deepseek-flash-latest', 'group:Effort for ~deepseek/deepseek-flash-latest', 'effort:Default', 'effort:Low', 'effort:High'])
+})
+
+// Whether a rendered element matches one compound selector: a tag, `.class`,
+// `[attr]` and `[attr="value"]` parts, as the DOM renders the props (aria-
+// and data- booleans as "true"/"false", className as class). Anything else
+// (combinators, lists, pseudo-classes) throws, so no selector passes unread.
+function matchesSelector(node, selector) {
+  const parts = /^([a-z]+)?((?:\.[\w-]+|\[[\w-]+(?:="[^"]*"|='[^']*')?\])*)$/i.exec(selector)
+  if (parts === null) throw new Error(`fake DOM: unsupported selector ${selector}`)
+  if (parts[1] !== undefined && node.type !== parts[1]) return false
+  for (const [, className, attribute, quoted] of parts[2].matchAll(/\.([\w-]+)|\[([\w-]+)(?:=("[^"]*"|'[^']*'))?\]/g)) {
+    if (className !== undefined) {
+      if (!String(node.props.className ?? '').split(/\s+/).includes(className)) return false
+      continue
+    }
+    const raw = node.props[attribute === 'class' ? 'className' : attribute]
+    const shown = raw === undefined || raw === null ? null
+      : typeof raw === 'boolean' && !/^(aria|data)-/.test(attribute) ? (raw ? '' : null)
+        : String(raw)
+    if (shown === null || (quoted !== undefined && shown !== quoted.slice(1, -1))) return false
+  }
+  return true
+}
+
+// Fake DOM for ModelFlyout: its own element tree expanded (function
+// components called, no hooks in rows) behind a root element that is in its
+// ref before its effects run, as React attaches refs before layout effects,
+// so the layout effect's initial focus runs against it. querySelector and
+// querySelectorAll honour the selector, in document order; every element is
+// one focusable object, the same each time it is found.
+function flyoutRig(harness, doc) {
+  const flyout = find(harness.rerender(), (node) => typeof node.type === 'function' && node.props.cellRef)
+  const expand = (node) => {
+    if (Array.isArray(node)) return node.flatMap(expand)
+    if (node === null || node === undefined) return []
+    if (typeof node !== 'object') return [node]
+    if (typeof node.type === 'function') return expand(node.type(node.props))
+    return [{ type: node.type, props: node.props, children: node.children.flatMap(expand) }]
+  }
+  const elements = new Map()
+  const element = (node) => {
+    if (!elements.has(node)) {
+      elements.set(node, {
+        node,
+        focus() { doc.activeElement = this },
+        click() { node.props.onClick() },
+      })
+    }
+    return elements.get(node)
+  }
+  let tree = []
+  const below = (selector) => findAll(tree, (node) => typeof node === 'object' && matchesSelector(node, selector)).map(element)
+  const root = {
+    style: { setProperty() {} },
+    offsetHeight: 120,
+    contains: (target) => [...elements.values()].includes(target),
+    querySelectorAll: (selector) => below(selector),
+    querySelector: (selector) => below(selector)[0] ?? null,
+  }
+  const mounted = harness.runtime.mount(flyout.type, {
+    attach(rendered, instance) {
+      // The flyout's own element is the root; the rows are inside it.
+      tree = expand(rendered).flatMap((node) => node.children)
+      instance.hooks[0].current = root
+    },
+  })
+  const output = mounted.render({ ...flyout.props, children: flyout.children[0] })
+  const buttons = root.querySelectorAll('[role="menuitemradio"]')
+  const key = (name, extra = {}) => {
+    let prevented = false
+    output.props.onKeyDown({ key: name, nativeEvent: {}, preventDefault() { prevented = true }, stopPropagation() {}, ...extra })
+    return prevented
+  }
+  const focused = () => doc.activeElement === null ? null : doc.activeElement.node.props.title ?? doc.activeElement.node.children.map(textOf).join('')
+  return { buttons, key, focused }
+}
+
+test('keyboard: arrows, Home and End walk the model rows and the effort rows in document order; Tab picks; the checked model row is first', async () => {
+  const doc = { activeElement: null, addEventListener() {}, removeEventListener() {} }
+  const harness = cellHarness({
+    view: { advisorModel: OPUS }, getService: directoryService(fakeDirectory()),
+    globals: { get document() { return doc } },
+  })
+  harness.openFlyout()
+  const rig = flyoutRig(harness, doc)
+  const label = (button) => textOf(find(button.node, (node) => node.props.className === 'adv-option-label'))
+  assert.deepEqual(rig.buttons.map(label), ['Inherit', 'claude-fable-5-2', 'claude-opus-5-5', 'Default (High)', 'Low', 'Medium', 'High', 'Extra high', 'Max',
+    'claude-max-only', 'claude-plain', 'claude-unlisted', '~deepseek/deepseek-flash-latest'], 'document order: each effort row right after its model row')
+  assert.equal(doc.activeElement, rig.buttons[2], 'the layout effect focused the checked model row, before the effort rows')
+
+  const labels = () => (doc.activeElement === null ? null : label(doc.activeElement))
+  assert.equal(rig.key('Home'), true)
+  assert.equal(labels(), 'Inherit')
+  const walked = [labels()]
+  for (let step = 1; step < rig.buttons.length; step++) {
+    rig.key('ArrowDown')
+    walked.push(labels())
+  }
+  assert.deepEqual(walked, ['Inherit', 'claude-fable-5-2', 'claude-opus-5-5', 'Default (High)', 'Low', 'Medium', 'High', 'Extra high', 'Max',
+    'claude-max-only', 'claude-plain', 'claude-unlisted', '~deepseek/deepseek-flash-latest'], 'down visits model and effort rows in document order')
+  rig.key('ArrowDown')
+  assert.equal(labels(), 'Inherit', 'wraps')
+  rig.key('ArrowUp')
+  assert.equal(labels(), '~deepseek/deepseek-flash-latest', 'up wraps to the last row')
+  rig.key('ArrowUp'); rig.key('ArrowUp'); rig.key('ArrowUp'); rig.key('ArrowUp')
+  assert.equal(labels(), 'Max', 'up steps back into the effort rows')
+  rig.key('End')
+  assert.equal(labels(), '~deepseek/deepseek-flash-latest')
+
+  // Tab settles on the focused effort row; Enter/Space are the button's click.
+  rig.buttons[6].focus()
+  assert.equal(rig.key('Tab'), true)
+  await ticks()
+  assert.deepEqual(harness.calls, ['/advisor model anthropic/claude-opus-5-5 effort=high'])
+  // A click (Enter/Space) on another model's row sends that model's line.
+  rig.buttons[9].click()
+  await ticks()
+  assert.deepEqual(harness.calls, ['/advisor model anthropic/claude-opus-5-5 effort=high', '/advisor model anthropic/claude-max-only'])
+})
+
+// ---- Review fixes: off is never recommended; rows that stay mounted; initial focus ----
+
+test('recommended effort: the highest advertised effort that is neither max nor off, for a pick, the mark and the automatic effort alike', async () => {
+  for (const [ids, recommended] of [
+    [['off', 'max'], undefined],
+    [['off'], undefined],
+    [['off', 'low', 'max'], 'low'],
+    [['off', 'low', 'high'], 'high'],
+    [['low', 'off'], 'low'],
+  ]) {
+    const name = `[${ids}]`
+    const catalog = catalogOf({ efforts: efforts(...ids) })
+    const line = recommended === undefined ? '/advisor model anthropic/claude-fable-5-2' : `/advisor model anthropic/claude-fable-5-2 effort=${recommended}`
+    // A pick of the model, from another setting.
+    const pick = cellHarness({ getService: directoryService(fakeDirectory(catalog)) })
+    await pick.pickModel(FABLE)
+    assert.deepEqual(pick.calls, [line], `${name}: the pick`)
+    // The mark in its Effort rows: on that effort, or on Default.
+    const mark = cellHarness({ view: { advisorModel: FABLE }, getService: directoryService(fakeDirectory(catalog)) })
+    mark.openFlyout()
+    assert.deepEqual(mark.effortRows().filter((row) => row.props.note === 'recommended').map((row) => row.props.title ?? 'Default'),
+      [recommended ?? 'Default'], `${name}: the mark`)
+    // The automatic effort for the model saved without one.
+    const automatic = autoHarness({ view: { advisorModel: FABLE }, directory: fakeDirectory(catalog) })
+    await churn(automatic)
+    assert.deepEqual(automatic.calls, recommended === undefined ? [] : [line], `${name}: the automatic effort`)
+    assert.deepEqual(automatic.storage.log, recommended === undefined ? [] : [`get ${MARKER}`, `set ${MARKER}=auto`, `get ${MARKER}`], `${name}: claimed only to send`)
+  }
+  // The Verifier model keeps Default.
+  const verifier = cellHarness({ cell: 'verifier', view: { verifierModel: FABLE }, getService: directoryService(fakeDirectory(catalogOf({ efforts: efforts('off', 'low', 'high') }))) })
+  verifier.openFlyout()
+  assert.deepEqual(verifier.effortSummary(), ['Default (recommended)=true', 'Off=false', 'Low=false', 'High=false'])
+})
+
+// React reconciles a child list by key: an unkeyed child is keyed by its
+// index, and a nested array is a fragment at its index. `reactPath` walks
+// from the flyout's child list to the first element `match` accepts and
+// gives, per level, its key, its type and the keys of its siblings.
+function reactPath(list, match) {
+  const isNode = (child) => child !== null && typeof child === 'object'
+  const keyAt = (child, index) => !Array.isArray(child) && child.props.key !== undefined ? `key:${child.props.key}` : `index:${index}`
+  const childList = (node) => node.children.length === 1 && Array.isArray(node.children[0]) ? node.children[0] : node.children
+  const walk = (children) => {
+    const siblings = children.flatMap((child, index) => isNode(child) ? [keyAt(child, index)] : [])
+    for (let index = 0; index < children.length; index++) {
+      const child = children[index]
+      if (!isNode(child)) continue
+      const level = { key: keyAt(child, index), type: Array.isArray(child) ? 'fragment' : child.type, siblings }
+      if (!Array.isArray(child) && match(child)) return [level]
+      const deeper = walk(Array.isArray(child) ? child : childList(child))
+      if (deeper !== null) return [level, ...deeper]
+    }
+    return null
+  }
+  return walk(list)
+}
+
+// The keys React moves (a Placement on a kept fiber, which re-inserts its DOM
+// node) when a keyed list goes from `before` to `after`: its lastPlacedIndex rule.
+function movedKeys(before, after) {
+  const old = new Map(before.map((key, index) => [key, index]))
+  const moved = []
+  let lastPlaced = 0
+  for (const key of after) {
+    if (!old.has(key)) continue
+    if (old.get(key) < lastPlaced) moved.push(key)
+    else lastPlaced = old.get(key)
+  }
+  return moved
+}
+
+// React keeps the element's DOM node (so a focused row keeps focus) when
+// both renders reach it through the same keys and types and no level of
+// the path is moved among its siblings.
+function assertKept(before, after, name) {
+  assert.notEqual(before, null, `${name}: rendered before`)
+  assert.notEqual(after, null, `${name}: still rendered`)
+  assert.deepEqual(after.map((level) => level.key), before.map((level) => level.key), `${name}: the same parents and keys`)
+  assert.equal(after.every((level, depth) => level.type === before[depth].type), true, `${name}: the same types`)
+  for (const [depth, level] of before.entries()) {
+    assert.equal(movedKeys(level.siblings, after[depth].siblings).includes(level.key), false, `${name}: not moved at depth ${depth}`)
+  }
+}
+
+test('reconciler check: it tells a kept element from one that moves to another parent, is re-inserted, or is re-keyed', () => {
+  const row = (key) => ({ type: 'button', props: { key }, children: [] })
+  const group = (key, rows) => ({ type: 'div', props: { key }, children: [{ type: 'div', props: {}, children: [] }, rows] })
+  const target = (node) => node.props.key === 'x'
+  const before = [group('a', [row('1'), row('x'), row('2')]), group('b', [row('3')])]
+  assertKept(reactPath(before, target), reactPath([group('a', [row('1'), null, row('x')]), group('b', [])], target), 'a sibling leaves')
+  assert.throws(() => assertKept(reactPath(before, target), reactPath([group('a', [row('1'), row('2')]), group('b', [row('3')]), row('x')], target), 'to the end'))
+  assert.throws(() => assertKept(reactPath(before, target), reactPath([group('a', [row('2'), row('1'), row('x')])], target), 'reordered'))
+  assert.throws(() => assertKept(reactPath(before, target), reactPath([group('b', [row('3')]), group('a', [row('1'), row('x')])], target), 'its group moved'))
+  assert.throws(() => assertKept(reactPath(before, target), reactPath([group('a', [row('1'), row('x')]).children], target), 'its parent re-keyed'))
+})
+
+test('effort rows: when their model leaves the list while the flyout is open, its row stays in place, disabled, and React keeps every row mounted', async () => {
+  const getService = directoryService(fakeDirectory())
+  const others = ALL_ROUTES.filter((route) => route !== OPUS)
+  const keptRows = ['model:anthropic/claude-opus-5-5', 'group:Effort for claude-opus-5-5', ...OPUS_EFFORT_ROWS]
+  for (const [name, routes, layout] of [
+    ['another tab removes it', others, OPUS_LAYOUT],
+    ['the models before it go too', others.filter((route) => route !== FABLE), OPUS_LAYOUT.filter((entry) => entry !== 'model:anthropic/claude-fable-5-2')],
+    ['its provider\'s other models go too', [FLASH],
+      ['model:Inherit', 'separator', 'group:anthropic', 'heading:anthropic', ...keptRows, 'group:openrouter', 'heading:openrouter', 'model:openrouter/~deepseek/deepseek-flash-latest']],
+    ['the list goes away', null, ['model:Inherit', 'separator', 'group:anthropic', 'heading:anthropic', ...keptRows]],
+  ]) {
+    const harness = cellHarness({ view: { advisorModel: withEffort(OPUS, 'xhigh') }, getService })
+    harness.openFlyout()
+    const before = harness.items()
+    harness.state.routes = routes
+    harness.rerender()
+    const after = harness.items()
+    for (const [what, key] of [['the group', 'effort'], ['the checked effort row', 'effort:xhigh'], ['another effort row', 'default'], ['its model row', keyOf(OPUS)]]) {
+      assertKept(reactPath(before, (node) => node.props.key === key), reactPath(after, (node) => node.props.key === key), `${name}: ${what}`)
+    }
+    assert.deepEqual(harness.layout(), layout, `${name}: the layout`)
+    // The kept row: disabled, in the warning colour, and it sends nothing.
+    const kept = harness.rows().find((row) => row.props.title === keyOf(OPUS))
+    assert.equal(kept.props.disabled, true, name)
+    assert.equal(kept.props.warning, true, name)
+    assert.equal(kept.type(kept.props).props['aria-disabled'], 'true', `${name}: aria-disabled, so it keeps focus`)
+    kept.type(kept.props).props.onClick()
+    await pressEffortRows(harness)
+    harness.openFlyout()
+    harness.rows().find((row) => row.props.title === keyOf(OPUS))?.props.onSelect()
+    await ticks()
+    assert.deepEqual(harness.calls, [], `${name}: nothing is sent`)
+    // The next opening shows the list as it is: no row for that model.
+    harness.closeFlyout()
+    harness.openFlyout()
+    assert.equal(harness.rows().some((row) => row.props.title === keyOf(OPUS)), false, `${name}: gone at the next opening`)
+    assert.equal(harness.effortGroup(), undefined, `${name}: and no Effort rows for an unavailable route`)
+  }
+
+  // The group's model need not be the saved one: a pick being saved, then
+  // the model leaves the list.
+  const pending = cellHarness({ view: { advisorModel: FABLE }, getService, execute: () => new Promise(() => {}) })
+  await pending.pickModel(OPUS)
+  pending.openFlyout()
+  const before = pending.items()
+  pending.state.routes = others
+  pending.rerender()
+  for (const key of ['effort', 'effort:xhigh', keyOf(OPUS)]) {
+    assertKept(reactPath(before, (node) => node.props.key === key), reactPath(pending.items(), (node) => node.props.key === key), `pending: ${key}`)
+  }
+  assert.equal(pending.rows().find((row) => row.props.title === keyOf(OPUS)).props.disabled, true)
+})
+
+test('initial focus: the flyout focuses the checked model row, not its checked effort row; the first row when none is checked', () => {
+  const getService = directoryService(fakeDirectory())
+  const label = (element) => element === null ? null : textOf(find(element.node, (node) => node.props.className === 'adv-option-label'))
+  for (const [name, view, expected] of [
+    ['a saved effort', { advisorModel: withEffort(OPUS, 'xhigh') }, 'claude-opus-5-5'],
+    ['Default', { advisorModel: OPUS }, 'claude-opus-5-5'],
+    ['the first model of its provider', { advisorModel: withEffort(FABLE, 'max') }, 'claude-fable-5-2'],
+    ['Inherit', {}, 'Inherit'],
+    ['an unavailable saved route (nothing checked)', { advisorModel: withEffort({ provider: 'gone', model: 'retired-model' }, 'high') }, 'Inherit'],
+  ]) {
+    const doc = { activeElement: null, addEventListener() {}, removeEventListener() {} }
+    const harness = cellHarness({ view, getService, globals: { get document() { return doc } } })
+    harness.openFlyout()
+    const rig = flyoutRig(harness, doc)
+    assert.equal(label(doc.activeElement), expected, name)
+    assert.equal(rig.buttons.includes(doc.activeElement), true, `${name}: one of the flyout's rows`)
+    if (name === 'a saved effort') {
+      assert.deepEqual(rig.buttons.filter((button) => button.node.props['aria-checked'] === true).map(label), ['claude-opus-5-5', 'Extra high'], 'both are checked; the model row comes first')
+    }
+  }
+  // The rig honours the selector: a selector for the checked effort row
+  // finds that row, not the model row, and an unsupported one throws.
+  const doc = { activeElement: null, addEventListener() {}, removeEventListener() {} }
+  const harness = cellHarness({ view: { advisorModel: withEffort(OPUS, 'xhigh') }, getService, globals: { get document() { return doc } } })
+  harness.openFlyout()
+  const rig = flyoutRig(harness, doc)
+  const checkedEffort = rig.buttons.filter((button) => matchesSelector(button.node, '.adv-option-effort[aria-checked="true"]')).map(label)
+  assert.deepEqual(checkedEffort, ['Extra high'])
+  assert.deepEqual(rig.buttons.filter((button) => matchesSelector(button.node, 'button.adv-option[role="menuitemradio"][aria-checked="true"]')).map(label), ['claude-opus-5-5', 'Extra high'])
+  assert.equal(rig.buttons.some((button) => matchesSelector(button.node, '[aria-disabled]')), false, 'nothing is disabled here')
+  assert.throws(() => matchesSelector(rig.buttons[0].node, '.adv-group [role="menuitemradio"]'), /unsupported selector/)
 })

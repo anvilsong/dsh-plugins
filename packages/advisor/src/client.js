@@ -116,6 +116,9 @@ window.__ModuleLoader__.load({
       .adv-option-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .adv-option[data-warning] .adv-option-label{color:var(--dsw-alias-state-warn-label)}
       .adv-option-note{flex:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}
+      .adv-efforts{display:flex;flex:none;flex-direction:column}
+      .adv-option-effort{padding-inline-start:23px}
+      .adv-option-effort .adv-option-label{color:var(--dsw-alias-label-secondary)}
       .adv-check{display:grid;place-items:center;flex:0 0 14px;color:var(--dsw-alias-label-primary)}
       .adv-group+.adv-group{margin-top:3px}
       .adv-heading{padding:4px 7px 2px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;font-weight:500}
@@ -332,11 +335,13 @@ window.__ModuleLoader__.load({
       }, props.children(closeRef))
     }
 
+    // A model row, or with `effort` an indented effort row (same look; an
+    // optional right-aligned note such as "recommended" comes before the check).
     function ModelRow(props) {
       return h('button', {
         type: 'button',
         role: 'menuitemradio',
-        className: 'adv-option',
+        className: props.effort ? 'adv-option adv-option-effort' : 'adv-option',
         'aria-checked': props.checked,
         'aria-disabled': props.disabled ? 'true' : undefined,
         'data-warning': props.warning ? '' : undefined,
@@ -428,12 +433,14 @@ window.__ModuleLoader__.load({
 
     /**
      * The Advisor model's recommended effort: the highest advertised one
-     * whose id is not `max`, since the planner runs under a 30-minute and
-     * 150-tool-call cap; undefined (Default) when there is none.
+     * whose id is neither `max` (the planner runs under a 30-minute and
+     * 150-tool-call cap) nor `off` (no reasoning at all), as the router's
+     * Hard judgment level picks; undefined (Default) when there is none.
      */
-    function highestBelowMax(advertised) {
+    function recommendedAdvisorEffort(advertised) {
       for (let index = advertised.efforts.length - 1; index >= 0; index--) {
-        if (advertised.efforts[index].id !== 'max') return advertised.efforts[index].id
+        const id = advertised.efforts[index].id
+        if (id !== 'max' && id !== 'off') return id
       }
       return undefined
     }
@@ -465,13 +472,28 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The Effort group's heading and label, naming the model the group was
-     * built for (its id as its model row shows it): `Effort for <model>`.
+     * The Effort group's label, naming the model the group was built for (its
+     * id as its model row shows it): `Effort for <model>`.
      */
-    function effortHeading(t, key) {
+    function effortLabel(t, key) {
       const model = key.slice(key.indexOf('/') + 1)
       const pattern = t('effort.labelFor')
       return pattern.includes('{model}') ? pattern.replace('{model}', () => model) : `${t('effort.label')} · ${model}`
+    }
+
+    /**
+     * The model keys an open flyout shows: the authorized ones, plus `key`
+     * once it has left them, where it stood in `opened` (the authorized keys
+     * as the flyout opened): after the nearest earlier one still authorized,
+     * else first. Its row and the Effort rows under it so keep their parent
+     * and their order among the other rows, and React keeps their DOM nodes.
+     */
+    function keepInPlace(authorized, opened, key) {
+      for (let index = opened.indexOf(key) - 1; index >= 0; index--) {
+        const at = authorized.indexOf(opened[index])
+        if (at >= 0) return [...authorized.slice(0, at + 1), key, ...authorized.slice(at + 1)]
+      }
+      return [key, ...authorized]
     }
 
     /**
@@ -591,7 +613,7 @@ window.__ModuleLoader__.load({
       autoEffort,
       saved: (view) => savedSetting(view?.[field]),
     })
-    const ADVISOR_MODEL_CELL = routeCell('advisorModel', 'advisorModel', '/advisor model', highestBelowMax, true)
+    const ADVISOR_MODEL_CELL = routeCell('advisorModel', 'advisorModel', '/advisor model', recommendedAdvisorEffort, true)
     // Its recommendation is Default, so it has nothing to apply by itself.
     const VERIFIER_CELL = routeCell('verifierModel', 'model', '/advisor verifier-model', () => undefined)
 
@@ -669,7 +691,8 @@ window.__ModuleLoader__.load({
       // useAutoEffort does, once). Another model gets the cell's recommended
       // effort, read from the directory at the pick.
       const chooseModel = (key, close) => {
-        if (key === current.key) {
+        // A row kept after its route left the list sends nothing either.
+        if (key === current.key || !authorized.includes(key)) {
           close.current(cellRef.current ?? undefined)
           return
         }
@@ -680,8 +703,30 @@ window.__ModuleLoader__.load({
         const effort = refused.current.has(key) ? undefined : config.recommend(effortsFor(props.ctx, props.sessionId, keyRoute(key)))
         choose({ key, effort, auto: effort !== undefined }, close)
       }
+      const showStale = stale && desired === null
+      if (!open) {
+        openEfforts.current = undefined
+      } else if (openEfforts.current === undefined) {
+        // Built once per opening, for the current model; none for Inherit or
+        // a stale route. `keys`: the authorized keys as it opened.
+        const advertised = current.key === INHERIT || !authorized.includes(current.key)
+          ? null
+          : effortsFor(props.ctx, props.sessionId, keyRoute(current.key))
+        const rows = advertised === null ? null : effortRows(advertised, current.effort, config.recommend(advertised))
+        openEfforts.current = rows === null ? null : { key: current.key, rows, keys: authorized }
+      }
+      const efforts = open ? openEfforts.current : null
+      // The group keeps the model it was built for and is labelled with it. If
+      // the cell's model changes while the flyout is open (a pending pick
+      // refused, another tab's save, the route no longer authorized), its
+      // rows stay mounted, in place under that model's row, but disabled,
+      // and send nothing: a pick there would switch the setting to the
+      // group's model. That row stays too, disabled, if its route leaves the
+      // list (keepInPlace). The next opening shows the new model's group.
+      const effortsLive = efforts !== null && current.key === efforts.key && authorized.includes(efforts.key)
+      const shown = efforts === null || authorized.includes(efforts.key) ? authorized : keepInPlace(authorized, efforts.keys, efforts.key)
       const groups = []
-      for (const key of authorized) {
+      for (const key of shown) {
         const provider = key.slice(0, key.indexOf('/'))
         let group = groups.find((candidate) => candidate.provider === provider)
         if (group === undefined) {
@@ -690,36 +735,31 @@ window.__ModuleLoader__.load({
         }
         group.keys.push(key)
       }
-      const showStale = stale && desired === null
-      if (!open) {
-        openEfforts.current = undefined
-      } else if (openEfforts.current === undefined) {
-        // Built once per opening, for the current model; none for Inherit or
-        // a stale route.
-        const advertised = current.key === INHERIT || !authorized.includes(current.key)
-          ? null
-          : effortsFor(props.ctx, props.sessionId, keyRoute(current.key))
-        const rows = advertised === null ? null : effortRows(advertised, current.effort, config.recommend(advertised))
-        openEfforts.current = rows === null ? null : { key: current.key, rows }
-      }
-      const efforts = open ? openEfforts.current : null
-      // The group keeps the model it was built for and is headed with it. If
-      // the cell's model changes while the flyout is open (a pending pick
-      // refused, another tab's save, the route no longer authorized), its
-      // rows stay mounted but disabled and send nothing: a pick there would
-      // switch the setting to the group's model. The next opening shows the
-      // new model's group.
-      const effortsLive = efforts !== null && current.key === efforts.key && authorized.includes(efforts.key)
+      const listed = routes !== null && routes !== undefined
       const chooseEffort = (effort, close) => {
         if (effortsLive) choose({ key: efforts.key, effort }, close)
         else close.current(cellRef.current ?? undefined)
       }
-      const effortTitle = efforts === null ? null : effortHeading(t, efforts.key)
+      const effortTitle = efforts === null ? null : effortLabel(t, efforts.key)
       const value = current.key === INHERIT
         ? t('model.inherit')
         : showStale ? t('model.staleOption') : current.key.slice(current.key.indexOf('/') + 1).split('/').pop()
       const valueEffort = current.key === INHERIT || showStale ? undefined : current.effort
       const flyoutId = `${anchor.slice(2)}-menu`
+      // The current model's Effort group, right after that model's row: radio
+      // rows in a group of their own, which the flyout's key handler covers.
+      const effortGroup = (close) => h('div', { key: 'effort', className: 'adv-efforts', role: 'group', 'aria-label': effortTitle },
+        efforts.rows.map((row) => h(ModelRow, {
+          key: row.effort === undefined ? 'default' : `effort:${row.effort}`,
+          effort: true,
+          label: row.effort === undefined ? defaultLabel(t, row.defaultName) : row.name,
+          title: row.effort,
+          note: row.recommended ? t('effort.recommended') : undefined,
+          warning: row.warning,
+          checked: current.key === efforts.key && current.effort === row.effort,
+          disabled: locked || !effortsLive,
+          onSelect: () => chooseEffort(row.effort, close),
+        })))
       return h(React.Fragment, null,
         h('style', null, styles),
         h('button', {
@@ -766,31 +806,24 @@ window.__ModuleLoader__.load({
             key: 'inherit', label: t('model.inherit'), checked: current.key === INHERIT, disabled: locked,
             onSelect: () => choose({ key: INHERIT, effort: undefined }, close),
           }),
-          routes === null || routes === undefined ? null : h('div', { key: 'separator', className: 'adv-separator', role: 'separator' }),
-          ...(routes === null || routes === undefined
-            ? [h('div', { key: 'none', className: 'adv-note' }, t('model.unavailable'))]
-            : groups.map((group) => h('div', { key: group.provider, className: 'adv-group', role: 'group', 'aria-label': group.provider },
-              h('div', { className: 'adv-heading', 'aria-hidden': 'true' }, group.provider),
-              group.keys.map((key) => h(ModelRow, {
-                key, label: key.slice(key.indexOf('/') + 1), title: key, checked: current.key === key, disabled: locked,
-                onSelect: () => chooseModel(key, close),
-              }))))),
-          // Radio rows in their own group: the flyout's key handler covers them.
-          ...(efforts === null ? [] : [
-            h('div', { key: 'effort-separator', className: 'adv-separator', role: 'separator' }),
-            h('div', { key: 'effort', className: 'adv-group', role: 'group', 'aria-label': effortTitle },
-              h('div', { className: 'adv-heading', 'aria-hidden': 'true' }, effortTitle),
-              efforts.rows.map((row) => h(ModelRow, {
-                key: row.effort === undefined ? 'default' : `effort:${row.effort}`,
-                label: row.effort === undefined ? defaultLabel(t, row.defaultName) : row.name,
-                title: row.effort,
-                note: row.recommended ? t('effort.recommended') : undefined,
-                warning: row.warning,
-                checked: current.key === efforts.key && current.effort === row.effort,
-                disabled: locked || !effortsLive,
-                onSelect: () => chooseEffort(row.effort, close),
-              }))),
-          ]),
+          listed || groups.length > 0 ? h('div', { key: 'separator', className: 'adv-separator', role: 'separator' }) : null,
+          ...groups.map((group) => h('div', { key: group.provider, className: 'adv-group', role: 'group', 'aria-label': group.provider },
+            h('div', { className: 'adv-heading', 'aria-hidden': 'true' }, group.provider),
+            group.keys.flatMap((key) => {
+              // Only the group's model can be shown without being authorized
+              // (keepInPlace): disabled and in the warning colour.
+              const gone = !authorized.includes(key)
+              return [
+                h(ModelRow, {
+                  key, label: key.slice(key.indexOf('/') + 1), title: key, checked: current.key === key,
+                  disabled: locked || gone, warning: gone,
+                  onSelect: () => chooseModel(key, close),
+                }),
+                // Right after the model it belongs to; none for any other.
+                efforts !== null && efforts.key === key ? effortGroup(close) : null,
+              ]
+            }))),
+          listed ? null : h('div', { key: 'none', className: 'adv-note' }, t('model.unavailable')),
         ]) : null,
       )
     }
