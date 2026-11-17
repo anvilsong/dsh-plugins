@@ -669,6 +669,7 @@ window.__ModuleLoader__.load({
       const desiredText = desired === null ? null : valueText(desired.keys, desired.efforts)
       const pending = freshPending(view)
       const open = props.open === true
+      const locked = props.locked === true
 
       // Edits are a draft while the flyout is open and are committed as one
       // command when it closes; levels share one lock so only one router
@@ -683,6 +684,16 @@ window.__ModuleLoader__.load({
       // still running LOCK_EXPIRY_MS after it started has lost its turn in the
       // lock, so it no longer holds back this cell's next draft.
       const started = React.useRef(null)
+      // The automatic effort of this mount (see its effect below): the saved
+      // level at the first render with a view, whether its one attempt was
+      // made, and the automatic draft until a choice replaces it, as its text
+      // and the saved level it was made from.
+      const auto = React.useRef({ baseline: null, done: false, draft: null })
+      const isAuto = (text) => auto.current.draft !== null && text === auto.current.draft.text
+      // An automatic draft is sent only while what it was made for still
+      // holds: the same saved level, Router on, the menu not locked.
+      // Otherwise it is dropped and never sent (the one attempt is spent).
+      const staleAuto = (text, from, mode, isLocked) => isAuto(text) && (from !== auto.current.draft.from || mode !== 'manual' || isLocked)
       const stalled = busy && started.current !== null && Date.now() - started.current.startedAt > LOCK_EXPIRY_MS
       // A sent draft that the session neither confirms nor rejects within
       // LOCK_EXPIRY_MS of the command's start (a call that never returns, or
@@ -748,6 +759,13 @@ window.__ModuleLoader__.load({
           }
           return
         }
+        if (staleAuto(desiredText, confirmedText, view?.mode, locked)) {
+          setDesired(null)
+          return
+        }
+        // A draft that the unmount commit sent while the cell stayed mounted
+        // (its effects cleaned up and run again) is not sent a second time.
+        if (desiredText === sentDraft.current && awaiting === null) return
         // An overdue call is settled by the deadline first; the render that
         // follows sends, so the deadline never clears a send it did not see.
         if (open || (busy && !stalled) || pending || overdue) return
@@ -762,7 +780,7 @@ window.__ModuleLoader__.load({
           if (ok || sentFrom.current !== record || !mounted.current) return
           snapBack(desiredText)
         })
-      }, [desiredText, confirmedText, busy, stalled, pending, awaiting, open, overdue, props.lockTick])
+      }, [desiredText, confirmedText, busy, stalled, pending, awaiting, open, overdue, props.lockTick, view?.mode, locked])
       React.useEffect(() => {
         if (desired === null && awaiting !== null && awaiting === confirmedText) clearAwaiting()
       }, [confirmedText, desired, awaiting])
@@ -778,7 +796,7 @@ window.__ModuleLoader__.load({
       // own session and lock: cells are keyed by session, so a session switch
       // unmounts the old cell rather than handing it the new session.
       const latest = React.useRef(null)
-      latest.current = { desired, desiredText, confirmedText, send }
+      latest.current = { desired, desiredText, confirmedText, mode: view?.mode, locked, send }
       React.useEffect(() => () => {
         const state = latest.current
         if (state === null || state.desired === null) return
@@ -788,12 +806,24 @@ window.__ModuleLoader__.load({
         // still in flight to replace it.
         const inFlightNow = sentFrom.current
         if (state.desiredText === state.confirmedText && (inFlightNow === null || inFlightNow.text === state.desiredText)) return
-        // Nor when this draft was sent already, or is the commit in flight.
+        // Nor when this draft was sent already, or is the commit in flight,
+        // or is an automatic draft whose conditions no longer hold.
         if (state.desiredText === sentDraft.current || (inFlightNow !== null && inFlightNow.text === state.desiredText)) return
-        void state.send(state.desired, true)
+        if (staleAuto(state.desiredText, state.confirmedText, state.mode, state.locked)) return
+        const commit = () => {
+          void state.send(state.desired, true)
+          // A cell that stays mounted (its effects cleaned up and run again)
+          // counts the draft as sent, so its send effect does not send it again.
+          sentDraft.current = state.desiredText
+        }
+        // The automatic draft is made by the mount's own effects, and
+        // StrictMode's practice unmount follows them at once: commit it here
+        // only if the cell really unmounted. A cell mounted again sends it
+        // through its send effect, which checks it first.
+        if (isAuto(state.desiredText)) void Promise.resolve().then(() => { if (!mounted.current) commit() })
+        else commit()
       }, [])
 
-      const locked = props.locked === true
       const live = current.filter((key) => authorizedSet.has(key))
       const stale = confirmed.filter((key) => !authorizedSet.has(key))
       const atCap = live.length >= MAX_MODELS
@@ -803,8 +833,8 @@ window.__ModuleLoader__.load({
       // Hard judgment recommends one) as one whole-level draft, which the send
       // effect, the lock, the deadline, the snap-back and the unmount commit
       // handle like any other. Fail-closed: every condition holds in one
-      // render, the marker is claimed, and a mount makes one attempt at most.
-      const auto = React.useRef({ baseline: null, done: false })
+      // render, the marker is claimed, a mount makes one attempt at most, and
+      // the draft is dropped if its conditions stop holding before it is sent.
       React.useEffect(() => {
         const state = auto.current
         const sessionId = props.sessionId
@@ -838,9 +868,11 @@ window.__ModuleLoader__.load({
         if (!claimAutoEffort(autoEffortKey(sessionId, level))) return
         // The saved entries in order, their efforts kept, the recommendations added.
         const draft = { keys: confirmed, efforts: { ...confirmedEfforts, ...added } }
+        const text = valueText(draft.keys, draft.efforts)
+        state.draft = { text, from: confirmedText }
         sentDraft.current = null
         // A menu that closes before the next render still commits the draft.
-        latest.current = { ...latest.current, desired: draft, desiredText: valueText(draft.keys, draft.efforts) }
+        latest.current = { ...latest.current, desired: draft, desiredText: text }
         setDesired(draft)
       })
 
@@ -872,6 +904,8 @@ window.__ModuleLoader__.load({
       // undoes it (such as a Default picked after it was applied).
       const edit = (change) => {
         if (hasSessionId(props.sessionId)) markAutoEffortChoice(autoEffortKey(props.sessionId, level))
+        // The new draft is the user's, never the automatic one, whatever its text.
+        auto.current.draft = null
         sentDraft.current = null
         const keys = change.keys ?? live
         const source = change.efforts ?? currentEfforts

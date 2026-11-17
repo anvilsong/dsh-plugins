@@ -22,6 +22,11 @@ const ticks = async (count = 16) => { for (let index = 0; index < count; index++
 // A tiny hook runtime: one persistent hook list per instance, effects run
 // when their dependencies change, cleanups run on unmount. Each render
 // records the kinds of the hooks it called, in order (instance.trace).
+// mount(component, { strict: true }) does what React's StrictMode does in
+// development after the first commit: every effect cleanup, in order, then
+// every effect of that render again, with the same closures. cycle() does
+// the same at any later time, with each effect's latest closure, while the
+// instance stays mounted (as for a subtree hidden and shown again).
 function createRuntime() {
   let current = null
   const deps = (a, b) => a === undefined || b === undefined || a.length !== b.length || a.some((value, index) => !Object.is(value, b[index]))
@@ -48,6 +53,7 @@ function createRuntime() {
     useEffect(effect, list) {
       current.trace.push('effect')
       const index = current.index++
+      current.creates[index] = { effect, list }
       const hook = current.hooks[index]
       if (hook === undefined || deps(hook.deps, list)) {
         current.pending.push(() => {
@@ -55,28 +61,47 @@ function createRuntime() {
           const cleanup = effect()
           current.hooks[index] = { deps: list, cleanup: typeof cleanup === 'function' ? cleanup : undefined }
         })
+        current.ran.push({ index, effect, list })
         if (hook === undefined) current.hooks[index] = { deps: undefined }
       }
     },
   }
-  const mount = (component) => {
-    const instance = { hooks: [], index: 0, pending: [], dirty: false, props: null, trace: [] }
+  const mount = (component, options = {}) => {
+    const instance = { hooks: [], index: 0, pending: [], ran: [], creates: [], dirty: false, props: null, trace: [], committed: false }
     const render = (props) => {
       if (props !== undefined) instance.props = props
       current = instance
       instance.index = 0
       instance.pending = []
+      instance.ran = []
       instance.dirty = false
       instance.trace = []
       const output = component(instance.props)
       const effects = instance.pending
       for (const effect of effects) { current = instance; effect() }
+      if (options.strict === true && !instance.committed) {
+        for (const { index } of instance.ran) instance.hooks[index]?.cleanup?.()
+        for (const { index, effect, list } of instance.ran) {
+          current = instance
+          const cleanup = effect()
+          instance.hooks[index] = { deps: list, cleanup: typeof cleanup === 'function' ? cleanup : undefined }
+        }
+      }
+      instance.committed = true
       return output
     }
     const unmount = () => {
       for (const hook of instance.hooks) hook?.cleanup?.()
     }
-    return { instance, render, unmount }
+    const cycle = () => {
+      for (const hook of instance.hooks) hook?.cleanup?.()
+      instance.creates.forEach(({ effect, list }, index) => {
+        current = instance
+        const cleanup = effect()
+        instance.hooks[index] = { deps: list, cleanup: typeof cleanup === 'function' ? cleanup : undefined }
+      })
+    }
+    return { instance, render, unmount, cycle }
   }
   return { React, mount }
 }
@@ -2369,6 +2394,251 @@ test('automatic effort: the cell calls the same hooks in the same order on every
   }
   assert.deepEqual([...traces.values()], ['claimed and drafted'], 'one hook order on every path')
   assert.equal([...traces.keys()][0],
-    'ref,ref,state,state,ref,effect,state,state,ref,ref,ref,ref,effect,effect,effect,effect,ref,effect,ref,effect,ref,ref,ref,ref,state,effect',
-    'the automatic effort adds one ref and one effect after the unmount commit')
+    'ref,ref,state,state,ref,effect,state,state,ref,ref,ref,ref,ref,effect,effect,effect,effect,ref,effect,effect,ref,ref,ref,ref,state,effect',
+    'the automatic effort adds one ref after the send bookkeeping and one effect after the unmount commit')
+})
+
+// 12. The automatic draft under StrictMode, and while it waits to be sent.
+// The Hard judgment cell of SESSION, saved as Haiku without an effort: its
+// first render makes the automatic draft.
+const pendingView = (hard, level = 'hard') => manualView({ hard }, { pending: true, pendingTarget: 'level', pendingLevel: level, pendingSince: Date.now() })
+
+test("automatic effort: StrictMode's practice unmount (mount effects, cleanup, effects again) sends the automatic command once", async () => {
+  const storage = fakeStorage()
+  const env = load({ getService: directoryService(fakeDirectory()), globals: { localStorage: storage } })
+  const calls = recordingExecute(env)
+  const menu = levels(env, manualView({ hard: [haiku] }), routes, { sessionId: SESSION })
+  const element = menu.cells[2]
+  const cell = env.runtime.mount(element.type, { strict: true })
+  const props = { ...element.props, open: false }
+  cell.render(props)
+  // The practice unmount committed the draft; the cell, still mounted, must not send it again.
+  for (let index = 0; index < 3; index++) cell.render()
+  await ticks()
+  for (let index = 0; index < 3; index++) cell.render()
+  await ticks()
+  assert.deepEqual(calls, [AUTO_LINE])
+  assert.equal(storage.items.get(MARKER), 'auto')
+  // The session confirms it and the cell settles.
+  cell.render({ ...props, view: manualView({ hard: [{ ...haiku, effort: 'xhigh' }] }) })
+  const output = cell.render()
+  assert.equal(cellButton(output).props['aria-busy'], false)
+  assert.equal(effortSpan(output), '· xhigh')
+  await ticks()
+  assert.deepEqual(calls, [AUTO_LINE])
+})
+
+// The Hard judgment cell of SESSION, saved as Haiku without an effort, mounted
+// under StrictMode; outcome answers each call.
+function strictCell(outcome = () => ({ kind: 'success' })) {
+  const storage = fakeStorage()
+  const reports = []
+  const env = load({ getService: directoryService(fakeDirectory()), globals: { localStorage: storage } })
+  const calls = []
+  env.harness.commandUi = { execute: async (_target, line) => { calls.push(line); return outcome(line) } }
+  const menu = levels(env, manualView({ hard: [haiku] }), routes, { sessionId: SESSION, reportFailure: (message) => reports.push(message) })
+  const element = menu.cells[2]
+  const cell = env.runtime.mount(element.type, { strict: true })
+  let props = { ...element.props, open: false }
+  cell.render(props)
+  const render = (changes = {}) => {
+    props = { ...props, ...changes }
+    return cell.render(props)
+  }
+  return { calls, reports, storage, cell, render }
+}
+
+test("automatic effort: under StrictMode the draft is still checked when it is sent: a level changed in the next render drops it", async () => {
+  const strict = strictCell()
+  strict.render({ view: manualView({ hard: [selected[0]] }) })
+  const output = strict.render()
+  await ticks()
+  strict.render()
+  await ticks()
+  assert.deepEqual(strict.calls, [], "the practice unmount does not send it ahead of the cell's own checks")
+  assert.equal(effortSpan(output), undefined)
+})
+
+test('automatic effort: under StrictMode a refused automatic command snaps back like any other, reported once', async () => {
+  const strict = strictCell((line) => ({ kind: 'error', text: `unknown or malformed command: ${line}` }))
+  strict.render()
+  await ticks()
+  const output = strict.render()
+  await ticks()
+  assert.deepEqual(strict.calls, [AUTO_LINE])
+  assert.deepEqual(strict.reports, [`unknown or malformed command: ${AUTO_LINE}`])
+  assert.equal(effortSpan(output), undefined, 'the saved entry again, not the refused draft')
+  assert.equal(cellButton(output).props['aria-busy'], false)
+})
+
+test('a draft committed by a cleanup while the cell stays mounted (effects cleaned up and run again) is not sent a second time', async () => {
+  const harness = cellHarness({ view: manualView({ hard: [haiku] }) })
+  pickEffort(harness.open(), HAIKU, 'Low')
+  harness.render()
+  // The effects are cleaned up and run again while the flyout is still open.
+  harness.cell.cycle()
+  await ticks()
+  assert.deepEqual(harness.calls, [levelLine('hard', `${HAIKU} effort=low`)], 'the cleanup committed the draft')
+  harness.close()
+  await ticks()
+  harness.render()
+  await ticks()
+  assert.deepEqual(harness.calls, [levelLine('hard', `${HAIKU} effort=low`)], 'the cell does not send it again')
+})
+
+test('automatic effort: R1: a draft waiting on another command is dropped, not sent, when that command changes the level', async () => {
+  const harness = autoHarness()
+  assert.equal(harness.cell.instance.dirty, true)
+  // The next render: another tab's command on this level is pending.
+  harness.render({ view: pendingView([haiku]) })
+  await ticks()
+  assert.deepEqual(harness.calls, [], 'the draft waits while a router command is pending')
+  // That command lands: Hard judgment is now Flash.
+  harness.render({ view: manualView({ hard: [selected[0]] }) })
+  const output = harness.render()
+  await ticks()
+  assert.deepEqual(harness.calls, [], 'the Haiku line would overwrite Flash')
+  assert.equal(valueSpan(output), 'deepseek-flash-latest')
+  assert.equal(effortSpan(output), undefined)
+  assert.equal(cellButton(output).props['aria-busy'], false)
+  for (let index = 0; index < 3; index++) harness.render()
+  await ticks()
+  assert.deepEqual(harness.calls, [], 'and it is not tried again')
+})
+
+test('automatic effort: R1b: a draft whose level changes in the very next render is dropped', async () => {
+  const harness = autoHarness()
+  harness.render({ view: manualView({ hard: [selected[0]] }) })
+  const output = harness.render()
+  await ticks()
+  assert.deepEqual(harness.calls, [])
+  assert.equal(effortSpan(output), undefined)
+  assert.deepEqual(harness.reports, [])
+})
+
+test('automatic effort: R1c: a menu closing while the draft waits on a pending command and the level has changed sends nothing', async () => {
+  const harness = autoHarness()
+  harness.render({ view: pendingView([haiku]) })
+  await ticks()
+  // The level changes while that command is still pending, and the host menu closes before the next render.
+  harness.render({ view: pendingView([selected[0]]) })
+  harness.cell.unmount()
+  harness.menu.parent.unmount()
+  await ticks()
+  assert.deepEqual(harness.calls, [])
+})
+
+test('automatic effort: R2: the router turned off, or the menu locked, before the draft is sent drops it', async () => {
+  const harness = autoHarness({ execute: 'deferred' })
+  // The switch is pressed before the next render.
+  pressSwitch(harness.env, false, { sessionId: SESSION })
+  harness.render()
+  await ticks()
+  assert.deepEqual(harness.calls, ['/router off'], 'the draft waits behind the switch')
+  harness.settle[0]()
+  await ticks()
+  // The session shows the router off when the released lock wakes the cell.
+  harness.render({ view: { ...manualView({ hard: [haiku] }), mode: 'off' }, lockTick: 1 })
+  const output = harness.render()
+  await ticks()
+  assert.deepEqual(harness.calls, ['/router off'], 'no level command after the router was turned off')
+  assert.equal(effortSpan(output), undefined)
+  // A session that shows the router off while the switch still holds the lock drops it at once.
+  const early = autoHarness({ execute: 'deferred' })
+  pressSwitch(early.env, false, { sessionId: SESSION })
+  early.render()
+  await ticks()
+  early.render({ view: { ...manualView({ hard: [haiku] }), mode: 'off' } })
+  assert.equal(effortSpan(early.render()), undefined, 'dropped before the lock is free')
+  early.settle[0]()
+  await ticks()
+  early.render({ lockTick: 1 })
+  early.render()
+  await ticks()
+  assert.deepEqual(early.calls, ['/router off'])
+  // The unmount commit drops it too.
+  const closing = autoHarness({ execute: 'deferred' })
+  pressSwitch(closing.env, false, { sessionId: SESSION })
+  closing.render({ view: { ...manualView({ hard: [haiku] }), mode: 'off' } })
+  closing.cell.unmount()
+  closing.menu.parent.unmount()
+  await ticks()
+  closing.settle[0]()
+  await ticks()
+  assert.deepEqual(closing.calls, ['/router off'])
+  // A menu that becomes locked before the send drops it.
+  const locked = autoHarness()
+  locked.render({ locked: true })
+  locked.render({ locked: false })
+  await ticks()
+  assert.deepEqual(locked.calls, [])
+})
+
+test('automatic effort: a draft waiting on a command that leaves its level alone is still sent, and a hand-made draft of the same text is never dropped', async () => {
+  const harness = autoHarness()
+  harness.render({ view: pendingView([haiku], 'ordinary') })
+  await ticks()
+  assert.deepEqual(harness.calls, [])
+  assert.deepEqual(await settleRender(harness, { view: manualView({ hard: [haiku], ordinary: [selected[0]] }) }), [AUTO_LINE])
+  // The automatic draft is dropped; the user then makes the same value by hand.
+  const manual = autoHarness()
+  manual.render({ view: manualView({ hard: [selected[0]] }) })
+  manual.render()
+  await ticks()
+  assert.deepEqual(manual.calls, [])
+  pick(manual.open(), HAIKU)
+  pick(manual.render(), FLASH)
+  manual.close()
+  await ticks()
+  assert.deepEqual(manual.calls, [AUTO_LINE], 'the same text, made by hand, is the user\'s choice')
+})
+
+test("automatic effort: a previous menu's commit of the same level still in flight holds it back, and the level it lands drops a draft made after it", async () => {
+  const storage = fakeStorage({ [MARKER]: 'user' })
+  const first = autoHarness({ storage, execute: 'deferred' })
+  assert.equal(first.cell.instance.dirty, false, 'the marker is set: nothing automatic in the first menu')
+  pick(first.open(), FLASH)
+  first.render()
+  first.cell.unmount()
+  first.menu.parent.unmount()
+  await ticks()
+  const userLine = levelLine('hard', `${HAIKU},${FLASH} effort=high`)
+  assert.deepEqual(first.calls, [userLine], 'the closed menu commits its draft')
+  // The storage is cleared and the menu opens again while that commit runs.
+  storage.items.clear()
+  const menu = levels(first.env, manualView({ hard: [haiku] }), routes, { sessionId: SESSION })
+  const element = menu.cells[2]
+  const cell = first.env.runtime.mount(element.type)
+  cell.render({ ...element.props, open: false })
+  cell.render()
+  await ticks()
+  assert.equal(cell.instance.dirty, false, "no automatic draft while this level's commit runs")
+  assert.equal(storage.items.size, 0, 'and no marker')
+  assert.deepEqual(first.calls, [userLine])
+  // The commit settles before the session shows its result: a draft made then is dropped when it does.
+  first.settle[0]()
+  await ticks()
+  assert.equal(flush(menu, cell, 'hard'), true)
+  cell.render({ ...element.props, open: false, view: manualView({ hard: [haiku, { ...selected[0], effort: 'high' }] }) })
+  cell.render()
+  await ticks()
+  assert.deepEqual(first.calls, [userLine], 'the earlier choice is not overwritten')
+})
+
+test('an effort row of a model that is not checked does nothing, even when its handler is called directly', async () => {
+  const storage = fakeStorage()
+  const harness = autoHarness({ storage, level: 'ordinary', view: manualView({ ordinary: [haiku] }) })
+  const output = harness.open()
+  const rows = effortRowsOf(output, FLASH)
+  assert.equal(rows.length > 0 && rows.every((row) => row.props.disabled === true), true)
+  for (const row of rows) row.type(row.props).props.onClick()
+  for (const row of rows) row.props.onSelect()
+  assert.equal(harness.cell.instance.dirty, false, 'no draft')
+  assert.deepEqual(storage.log, [], 'not a choice: no marker')
+  const after = harness.render()
+  assert.equal(rowFor(after, FLASH).props.checked, false)
+  assert.equal(effortGroupOf(after, FLASH).props.hidden, true)
+  harness.close()
+  await ticks()
+  assert.deepEqual(harness.calls, [])
 })

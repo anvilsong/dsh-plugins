@@ -179,9 +179,11 @@ is sent as:
 The command is sent only when all of these hold at the same time:
 
 - Router is on and the menu is not locked.
-- No router command is pending in the session, and none is queued or running
-  from this page, including the cell's own (as for any change, a command that
-  has run for 30 seconds no longer counts).
+- No router command is pending in the session.
+- The cell has no change of its own waiting, unconfirmed or still running; its
+  own call holds the effort back for as long as it runs.
+- No other router command from this page is queued or running. As for any
+  change, another command no longer counts once it has run for 30 seconds.
 - The level's flyout is closed.
 - Every saved entry is authorized: a level with an **Unavailable** entry is
   left alone.
@@ -192,21 +194,26 @@ The command is sent only when all of these hold at the same time:
 - The level has not changed since the menu opened. A change from another tab
   or a typed command stops it until the menu opens again.
 
-Each opening of the menu makes one attempt at most. The command takes the same
-path as a change made in the flyout: one command entry in the chat, the cell's
-effort and spinner while it is saved, the same 30-second deadline, and a
-failure reported once in the composer's toast and never retried. There is no
-other notice and no setting to turn it off. To undo it, pick **Default** in the
-level's flyout; the marker keeps that choice.
+Each opening of the menu makes one attempt at most. The command is checked
+again just before it is sent, and when the menu closes first: if the level has
+changed meanwhile, Router is off, or the menu is locked, the command is dropped,
+not sent. While it waits for another router command, it waits like any change.
+It takes the same path as a change made in the flyout: one command entry in the
+chat, the cell's effort and spinner while it is saved, the same 30-second
+deadline, and a failure reported once in the composer's toast and never
+retried. There is no other notice and no setting to turn it off. To undo it,
+pick **Default** in the level's flyout; the marker keeps that choice.
 
 **Marker.** The browser's localStorage records that it has happened, in one
 key per session and level, never one per model:
 `dsh.autoEffort.v1:router:<sessionId>:<level>`. The key is written just before
 the automatic command and on every choice made in that level's flyout
 (checking or unchecking a model, an effort row, Inherit, removing an
-unavailable entry), so a Default picked later is never undone. Keys are never
-removed. When localStorage is unavailable or throws (for example, blocked site
-storage), nothing is sent automatically; nothing in memory stands in for it.
+unavailable entry), so a Default picked later is never undone. A command that
+is dropped or fails keeps its key, so it is not tried again in this browser.
+Keys are never removed. When localStorage is unavailable or throws (for
+example, blocked site storage), nothing is sent automatically; nothing in
+memory stands in for it.
 
 Caveats:
 
