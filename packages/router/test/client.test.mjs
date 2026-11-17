@@ -260,7 +260,7 @@ test('the open flyout lists the level hint, Inherit, provider groups, checks, an
   const flyout = find(cell.output, (node) => typeof node.type === 'function' && node.props?.cellRef)
   assert.equal(flyout.props.label, 'Mechanical models')
   assert.match(text(flyout.children), /Fully specified, no judgment/)
-  // Route rows (checkboxes); each model's effort chips (single-choice) follow its row.
+  // Route rows (checkboxes); each model's effort rows (single-choice) follow its row.
   const rows = findAll(flyout.children, (node) => typeof node.props?.onSelect === 'function' && node.props.role !== 'menuitemradio')
   assert.equal(rows[0].props.label, 'Inherit (session default)')
   assert.equal(rows[0].props.checked, false)
@@ -272,13 +272,13 @@ test('the open flyout lists the level hint, Inherit, provider groups, checks, an
   const groups = findAll(flyout.children, (node) => node.props?.role === 'group')
   assert.deepEqual(groups.filter((group) => group.props.className === 'router-group').map((group) => group.props['aria-label']),
     ['openrouter', 'openai-codex', 'anthropic'])
-  // No model directory here: every model's efforts are unknown, so its chip row offers Default only.
-  assert.deepEqual(groups.filter((group) => group.props.className === 'router-chips').map((group) => [group.props['aria-label'], group.props.hidden]), [
+  // No model directory here: every model's efforts are unknown, so its effort group offers Default only.
+  assert.deepEqual(groups.filter((group) => group.props.className === 'router-efforts').map((group) => [group.props['aria-label'], group.props.hidden]), [
     ['Effort for ~deepseek/deepseek-flash-latest', false],
     ['Effort for ~deepseek/deepseek-flash-latest', false],
     ['Effort for claude-haiku-5-5', true],
   ])
-  assert.equal(findAll(flyout.children, (node) => node.props?.role === 'separator').length, 1, 'one separator, after Inherit; chip rows add none')
+  assert.equal(findAll(flyout.children, (node) => node.props?.role === 'separator').length, 1, 'one separator, after Inherit; effort groups add none')
 
   const four = [...routes, { provider: 'kimi-coding', model: 'k3.1-pro' }]
   const capped = levels(env, manualView({ mechanical: four }), [...four, { provider: 'openai-codex', model: 'gpt-6-sol' }])
@@ -930,7 +930,7 @@ test('a second switch press while the first is still queued sends no second comm
 })
 
 // 10. Per-model efforts: under each authorized model row, a row of effort
-// chips from the session's model directory, part of the same draft.
+// rows from the session's model directory, part of the same draft.
 const LEVEL_NAMES = ['mechanical', 'ordinary', 'hard']
 const CODEX = 'openai-codex/~deepseek/deepseek-flash-latest'
 const SESSION = 'session-1'
@@ -943,7 +943,7 @@ const CATALOG = [
   { id: 'openai-codex', name: 'Codex', models: [{ id: '~deepseek/deepseek-flash-latest', name: 'Flash' }] },
   { id: 'anthropic', name: 'Anthropic', models: [{ id: 'claude-haiku-5-5', name: 'Haiku', reasoning: { efforts: efforts('low', 'medium', 'high', 'xhigh', 'max'), defaultEffort: 'medium' } }] },
 ]
-const HAIKU_CHIPS = ['Default (Medium)', 'Low', 'Medium', 'High', 'Extra high', 'Max']
+const HAIKU_EFFORTS = ['Default (Medium)', 'Low', 'Medium', 'High', 'Extra high', 'Max']
 
 // ctx.modelDirectories: directoryFor(sessionId).store with getSnapshot/subscribe.
 function fakeDirectory(groups = CATALOG) {
@@ -1001,119 +1001,128 @@ function cellHarness({ level = 'hard', view = manualView({}), routeList = routes
   }
 }
 
-const chipRowOf = (output, key) => find(output, (node) => node.props?.key === `chips:${key}`)
-const chipsOf = (output, key) => {
-  const row = chipRowOf(output, key)
+const effortGroupOf = (output, key) => find(output, (node) => node.props?.key === `efforts:${key}`)
+const effortRowsOf = (output, key) => {
+  const row = effortGroupOf(output, key)
   return row === undefined ? undefined : findAll(row, (node) => node.props?.role === 'menuitemradio' && typeof node.props.onSelect === 'function')
 }
-// `<label>[ (<note>)][ [warning]]=<checked>` per chip; undefined without a chip row.
-const chipSummary = (output, key) => chipsOf(output, key)?.map((chip) =>
-  `${chip.props.label}${chip.props.note ? ` (${chip.props.note})` : ''}${chip.props.warning ? ' [warning]' : ''}=${chip.props.checked}`)
-const pickChip = (output, key, label) => {
-  const chip = chipsOf(output, key)?.find((candidate) => candidate.props.label === label)
-  assert.ok(chip, `${key}: chip ${label}`)
-  chip.props.onSelect()
+// `<label>[ (<note>)][ [warning]]=<checked>` per effort row; undefined without an effort group.
+const effortSummary = (output, key) => effortRowsOf(output, key)?.map((row) =>
+  `${row.props.label}${row.props.note ? ` (${row.props.note})` : ''}${row.props.warning ? ' [warning]' : ''}=${row.props.checked}`)
+const pickEffort = (output, key, label) => {
+  const row = effortRowsOf(output, key)?.find((candidate) => candidate.props.label === label)
+  assert.ok(row, `${key}: effort row ${label}`)
+  row.props.onSelect()
 }
-const allChips = (output) => findAll(output, (node) => node.props?.role === 'menuitemradio' && typeof node.props.onSelect === 'function')
+const allEffortRows = (output) => findAll(output, (node) => node.props?.role === 'menuitemradio' && typeof node.props.onSelect === 'function')
 const pickInherit = (output) => findAll(output, (node) => node.props?.label === 'Inherit (session default)')[0].props.onSelect()
 const valueSpan = (output) => find(output, (node) => node.props?.className === 'router-cell-value').children.join('')
 const effortSpan = (output) => find(output, (node) => node.props?.className === 'router-cell-effort')?.children.join('')
 const moreSpan = (output) => find(output, (node) => node.props?.className === 'router-cell-more')?.children.join('')
 
-test('each authorized model row is followed by a row of its effort chips, hidden until the model is checked', () => {
+test('each authorized model row is followed by its effort group of native rows, hidden until the model is checked', () => {
   const harness = cellHarness({ level: 'ordinary', view: manualView({ ordinary: [haiku] }) })
   const output = harness.open()
-  assert.deepEqual(chipSummary(output, HAIKU), ['Default (Medium) (recommended)=true', 'Low=false', 'Medium=false', 'High=false', 'Extra high=false', 'Max=false'])
-  assert.equal(chipRowOf(output, HAIKU).props.hidden, false)
-  assert.deepEqual(chipSummary(output, FLASH), ['Default (High) (recommended)=false', 'Off=false', 'Low=false', 'High=false'])
-  assert.equal(chipRowOf(output, FLASH).props.hidden, true, 'hidden until its model is checked')
-  assert.equal(chipRowOf(output, CODEX), undefined, 'a model listed without efforts has no chip row')
-  // The chip row follows its model row inside the provider group and is labelled with its model.
+  assert.deepEqual(effortSummary(output, HAIKU), ['Default (Medium) (recommended)=true', 'Low=false', 'Medium=false', 'High=false', 'Extra high=false', 'Max=false'])
+  assert.equal(effortGroupOf(output, HAIKU).props.hidden, false)
+  assert.deepEqual(effortSummary(output, FLASH), ['Default (High) (recommended)=false', 'Off=false', 'Low=false', 'High=false'])
+  assert.equal(effortGroupOf(output, FLASH).props.hidden, true, 'hidden until its model is checked')
+  assert.equal(effortGroupOf(output, CODEX), undefined, 'a model listed without efforts has no effort group')
+  // The group follows its model row inside the provider group, with no heading row of its own.
   const group = find(output, (node) => node.props?.className === 'router-group' && node.props['aria-label'] === 'anthropic')
   const members = group.children.flat(Infinity).filter((node) => node !== null && typeof node === 'object')
-  assert.deepEqual(members.map((node) => node.props.className ?? node.props.title), ['router-heading', HAIKU, 'router-chips'])
-  const row = chipRowOf(output, HAIKU)
-  assert.deepEqual([row.type, row.props.role, row.props['aria-label']], ['div', 'group', 'Effort for claude-haiku-5-5'])
-  // Chips are menuitemradio buttons in the advertised order; Default carries no effort id.
-  const chips = chipsOf(output, HAIKU)
-  assert.deepEqual(chips.map((chip) => chip.props.label), HAIKU_CHIPS)
-  assert.deepEqual(chips.map((chip) => chip.props.title ?? '-'), ['-', 'low', 'medium', 'high', 'xhigh', 'max'])
-  const marked = chips[0].type(chips[0].props)
-  assert.deepEqual([marked.type, marked.props.role, marked.props.className, marked.props['aria-checked']], ['button', 'menuitemradio', 'router-chip', true])
-  assert.equal(find(marked, (node) => node.props?.className === 'router-chip-label').children.join(''), 'Default (Medium)')
-  assert.equal(find(marked, (node) => node.props?.className === 'router-chip-note').children.join(''), 'recommended')
-  assert.equal(find(marked, (node) => node.props?.className === 'router-check'), undefined, 'chips carry no check mark')
-  const plainChip = chips[1].type(chips[1].props)
-  assert.equal(find(plainChip, (node) => node.props?.className === 'router-chip-note'), undefined)
-  assert.equal(plainChip.props['aria-checked'], false)
-  // Model rows stay checkboxes with their check mark; chip rows add no separator.
+  assert.deepEqual(members.map((node) => node.props.className ?? node.props.title), ['router-heading', HAIKU, 'router-efforts'])
+  const row = effortGroupOf(output, HAIKU)
+  assert.deepEqual([row.type, row.props.role, row.props.className, row.props['aria-label']], ['div', 'group', 'router-efforts', 'Effort for claude-haiku-5-5'])
+  assert.equal(findAll(row, (node) => node.props?.className === 'router-heading').length, 0, 'no heading row per model')
+  // Rows are menuitemradio buttons in the advertised order; Default carries no effort id.
+  const rows = effortRowsOf(output, HAIKU)
+  assert.deepEqual(rows.map((entry) => entry.props.label), HAIKU_EFFORTS)
+  assert.deepEqual(rows.map((entry) => entry.props.title ?? '-'), ['-', 'low', 'medium', 'high', 'xhigh', 'max'])
+  const rendered = rows.map((entry) => entry.type(entry.props))
+  // The same row look as a model row, indented, with the model rows' own check glyph on the checked row only.
+  assert.deepEqual(rendered.map((button) => [button.type, button.props.role, button.props.className]),
+    rows.map(() => ['button', 'menuitemradio', 'router-option router-option-effort']), 'indentation class on every effort row')
+  assert.deepEqual(rendered.map((button) => button.props['aria-checked']), [true, false, false, false, false, false])
+  const checkOf = (button) => find(button, (node) => node.props?.className === 'router-check')
+  assert.deepEqual(rendered.map((button) => checkOf(button).children.filter((node) => node !== null).length), [1, 0, 0, 0, 0, 0], 'a check mark on the checked row only')
   const modelRow = rowFor(output, HAIKU)
-  const renderedRow = modelRow.type(modelRow.props)
-  assert.deepEqual([renderedRow.props.role, renderedRow.props.className], ['menuitemcheckbox', 'router-option'])
-  assert.ok(find(renderedRow, (node) => node.props?.className === 'router-check'))
+  const renderedModel = modelRow.type(modelRow.props)
+  assert.deepEqual([renderedModel.props.role, renderedModel.props.className], ['menuitemcheckbox', 'router-option'])
+  assert.deepEqual(checkOf(rendered[0]).children, checkOf(renderedModel).children, 'the same check glyph as the model rows')
+  // The caption of the recommended row is right-aligned before the check; other rows have none.
+  const noteOf = (button) => find(button, (node) => node.props?.className === 'router-option-note')
+  assert.equal(noteOf(rendered[0]).children.join(''), 'recommended')
+  assert.deepEqual(rendered.slice(1).map(noteOf), [undefined, undefined, undefined, undefined, undefined])
+  assert.deepEqual(rendered[0].children.map((node) => node.props.className), ['router-option-label', 'router-option-note', 'router-check'])
+  assert.equal(find(rendered[0], (node) => node.props?.className === 'router-option-label').children.join(''), 'Default (Medium)')
   assert.equal(findAll(output, (node) => node.props?.role === 'separator').length, 1)
   const css = find(harness.menu.output, (node) => node.type === 'style').children.join('')
-  assert.match(css, /\.router-chips\[hidden\]\{display:none\}/, 'the author display rule must not show a hidden chip row')
-  assert.match(css, /\.router-chip\[aria-disabled=true\]\{opacity:\.4;/)
-  assert.match(css, /\.router-chip\[data-warning\] \.router-chip-label\{color:var\(--dsw-alias-state-warn-label\)\}/)
+  assert.match(css, /\.router-efforts\[hidden\]\{display:none\}/, 'the author display rule must not show a hidden effort group')
+  assert.match(css, /\.router-option-effort\{padding-inline-start:23px\}/)
+  assert.match(css, /\.router-option-effort \.router-option-label\{color:var\(--dsw-alias-label-secondary\)\}/)
+  assert.match(css, /\.router-option-note\{flex:none;color:var\(--dsw-alias-label-tertiary\)/)
+  assert.match(css, /\.router-option\[aria-disabled=true\]\{opacity:\.4;/)
+  assert.match(css, /\.router-option\[data-warning\] \.router-option-label\{color:var\(--dsw-alias-state-warn-label\)\}/)
+  assert.doesNotMatch(css, /router-chip/, 'no effort row or pill styles remain')
 })
 
-test('checking a model reveals its chips in place; no row or chip is added or removed while the flyout is open', () => {
+test('checking a model reveals its effort rows in place; no row or effort row is added or removed while the flyout is open', () => {
   const harness = cellHarness({ view: manualView({ hard: [haiku] }) })
   let output = harness.open()
-  const count = allChips(output).length
-  assert.equal(count, HAIKU_CHIPS.length + 4)
+  const count = allEffortRows(output).length
+  assert.equal(count, HAIKU_EFFORTS.length + 4)
   pick(output, FLASH)
   output = harness.render()
-  assert.equal(chipRowOf(output, FLASH).props.hidden, false)
-  assert.equal(allChips(output).length, count)
+  assert.equal(effortGroupOf(output, FLASH).props.hidden, false)
+  assert.equal(allEffortRows(output).length, count)
   pick(output, FLASH)
   output = harness.render()
-  assert.equal(chipRowOf(output, FLASH).props.hidden, true, 'unchecked: hidden again')
+  assert.equal(effortGroupOf(output, FLASH).props.hidden, true, 'unchecked: hidden again')
   pick(output, HAIKU)
   output = harness.render()
-  assert.equal(chipRowOf(output, HAIKU).props.hidden, true)
+  assert.equal(effortGroupOf(output, HAIKU).props.hidden, true)
   pickInherit(output)
   output = harness.render()
-  assert.equal(allChips(output).length, count, 'no chip comes or goes')
-  assert.equal(chipsOf(output, FLASH).every((chip) => chip.props.disabled === true), true, 'chips of a model that is not checked are disabled')
-  assert.equal(chipsOf(output, FLASH).some((chip) => chip.props.checked), false)
+  assert.equal(allEffortRows(output).length, count, 'no effort row comes or goes')
+  assert.equal(effortRowsOf(output, FLASH).every((row) => row.props.disabled === true), true, 'effort rows of a model that is not checked are disabled')
+  assert.equal(effortRowsOf(output, FLASH).some((row) => row.props.checked), false)
 })
 
-test('chips come from the directory snapshot frozen when the flyout opens', () => {
+test('effort rows come from the directory snapshot frozen when the flyout opens', () => {
   const directory = fakeDirectory([])
   const harness = cellHarness({ view: manualView({ hard: [haiku] }), getService: directoryService(directory) })
   let output = harness.open()
-  assert.deepEqual(chipSummary(output, HAIKU), ['Default=true'], 'loading: efforts unknown, Default only, no recommendation')
+  assert.deepEqual(effortSummary(output, HAIKU), ['Default=true'], 'loading: efforts unknown, Default only, no recommendation')
   directory.publish(CATALOG)
   assert.equal(harness.menu.parent.instance.dirty, true, 'a directory update re-renders the level menu')
   output = harness.render()
-  assert.deepEqual(chipSummary(output, HAIKU), ['Default=true'], 'no chip appears while open')
-  assert.deepEqual(chipSummary(output, CODEX), ['Default=false'])
+  assert.deepEqual(effortSummary(output, HAIKU), ['Default=true'], 'no effort row appears while open')
+  assert.deepEqual(effortSummary(output, CODEX), ['Default=false'])
   harness.close()
   output = harness.open()
-  assert.deepEqual(chipSummary(output, HAIKU), ['Default (Medium)=true', 'Low=false', 'Medium=false', 'High=false', 'Extra high (recommended)=false', 'Max=false'])
-  assert.equal(chipRowOf(output, CODEX), undefined)
-  const count = allChips(output).length
+  assert.deepEqual(effortSummary(output, HAIKU), ['Default (Medium)=true', 'Low=false', 'Medium=false', 'High=false', 'Extra high (recommended)=false', 'Max=false'])
+  assert.equal(effortGroupOf(output, CODEX), undefined)
+  const count = allEffortRows(output).length
   directory.publish(haikuCatalog({ efforts: efforts('max'), defaultEffort: 'max' }))
   output = harness.render()
-  assert.equal(allChips(output).length, count, 'no chip disappears while open')
-  assert.equal(chipSummary(output, HAIKU)[0], 'Default (Medium)=true', 'nor is renamed')
+  assert.equal(allEffortRows(output).length, count, 'no effort row disappears while open')
+  assert.equal(effortSummary(output, HAIKU)[0], 'Default (Medium)=true', 'nor is renamed')
   directory.publish([])
   harness.close()
-  assert.deepEqual(chipSummary(harness.open(), HAIKU), ['Default=true'], 'the next opening reads the directory again')
+  assert.deepEqual(effortSummary(harness.open(), HAIKU), ['Default=true'], 'the next opening reads the directory again')
 })
 
-// Check the haiku row on a level without saved routes: the marked chip, the
-// checked chip, and the line sent when the flyout closes.
+// Check the haiku row on a level without saved routes: the marked effort row, the
+// checked effort row, and the line sent when the flyout closes.
 async function firstCheck(level, groups) {
   const harness = cellHarness({ level, getService: directoryService(fakeDirectory(groups)) })
   pick(harness.open(), HAIKU)
   const output = harness.render()
-  const chips = chipsOf(output, HAIKU) ?? []
+  const rows = effortRowsOf(output, HAIKU) ?? []
   const result = {
-    marked: chips.filter((chip) => chip.props.note === 'recommended').map((chip) => chip.props.title ?? 'default'),
-    checked: chips.filter((chip) => chip.props.checked).map((chip) => chip.props.title ?? 'default'),
+    marked: rows.filter((row) => row.props.note === 'recommended').map((row) => row.props.title ?? 'default'),
+    checked: rows.filter((row) => row.props.checked).map((row) => row.props.title ?? 'default'),
   }
   harness.close()
   await ticks()
@@ -1121,21 +1130,27 @@ async function firstCheck(level, groups) {
 }
 const lineWith = (level, effort) => levelLine(level, effort === undefined ? HAIKU : `${HAIKU} effort=${effort}`)
 
-test('recommended default: Mechanical lowers effort only below the model default and never picks off', async () => {
-  for (const [reasoning, effort, why] of [
-    [{ efforts: efforts('low', 'medium', 'high'), defaultEffort: 'medium' }, 'low', 'the lowest advertised, below the default'],
-    [{ efforts: efforts('off', 'low', 'high'), defaultEffort: 'high' }, 'low', 'off is skipped'],
-    [{ efforts: efforts('minimal', 'low', 'medium'), defaultEffort: 'low' }, 'minimal', 'the lowest, not the literal low'],
-    [{ efforts: efforts('off', 'low', 'high'), defaultEffort: 'off' }, undefined, 'never above the default'],
-    [{ efforts: efforts('low', 'medium', 'high'), defaultEffort: 'low' }, undefined, 'the default is already the lowest'],
-    [{ efforts: efforts('xhigh', 'max'), defaultEffort: 'xhigh' }, undefined, 'only high efforts: nothing is raised'],
-    [{ efforts: efforts('minimal', 'low', 'high') }, 'low', 'default unknown: low when advertised'],
-    [{ efforts: efforts('xhigh', 'max') }, undefined, 'default unknown and no low: Default'],
-    [{ efforts: efforts('low', 'high'), defaultEffort: 'turbo' }, 'low', 'a default that is not advertised is unknown'],
-    [{ efforts: efforts('off'), defaultEffort: 'off' }, undefined, 'only off'],
+test('recommended default: Mechanical never recommends an effort, for any list, and checking sends no effort token', async () => {
+  for (const [reasoning, why] of [
+    [{ efforts: efforts('low', 'medium', 'high'), defaultEffort: 'medium' }, 'low is no longer recommended below the default'],
+    [{ efforts: efforts('off', 'low', 'high'), defaultEffort: 'high' }, 'a list with off and low'],
+    [{ efforts: efforts('minimal', 'low', 'medium'), defaultEffort: 'low' }, 'the lowest is the default'],
+    [{ efforts: efforts('off', 'low', 'high'), defaultEffort: 'off' }, 'default off'],
+    [{ efforts: efforts('xhigh', 'max'), defaultEffort: 'xhigh' }, 'only high efforts'],
+    [{ efforts: efforts('minimal', 'low', 'high') }, 'default unknown, low advertised'],
+    [{ efforts: efforts('low', 'high'), defaultEffort: 'turbo' }, 'a default that is not advertised'],
+    [{ efforts: efforts('off'), defaultEffort: 'off' }, 'only off'],
   ]) {
     const result = await firstCheck('mechanical', haikuCatalog(reasoning))
-    assert.deepEqual(result, { marked: [effort ?? 'default'], checked: [effort ?? 'default'], line: lineWith('mechanical', effort) }, why)
+    assert.deepEqual(result, { marked: ['default'], checked: ['default'], line: lineWith('mechanical') }, why)
+  }
+})
+
+test('recommended default: the Default row carries the recommended caption for Mechanical and Ordinary', () => {
+  for (const level of ['mechanical', 'ordinary']) {
+    const output = cellHarness({ level, view: manualView({ [level]: [haiku] }) }).open()
+    assert.deepEqual(effortSummary(output, HAIKU), ['Default (Medium) (recommended)=true', 'Low=false', 'Medium=false', 'High=false', 'Extra high=false', 'Max=false'], level)
+    assert.deepEqual(effortSummary(output, FLASH), ['Default (High) (recommended)=false', 'Off=false', 'Low=false', 'High=false'], level)
   }
 })
 
@@ -1164,7 +1179,7 @@ test('recommended default: unknown or absent efforts give Default without a mark
       ['every entry unusable', haikuCatalog({ efforts: [{ id: 'two words' }, { id: '' }, { id: 7 }, null, { id: 'a,b' }, { id: 'x'.repeat(33) }] })],
     ]) assert.deepEqual(await firstCheck(level, groups), { marked: [], checked: ['default'], line: lineWith(level) }, `${level}: ${name}`)
     for (const [name, groups] of [['listed without efforts', haikuCatalog(undefined)], ['empty list', haikuCatalog({ efforts: [], defaultEffort: 'low' })]]) {
-      assert.deepEqual(await firstCheck(level, groups), { marked: [], checked: [], line: lineWith(level) }, `${level}: ${name}: no chip row`)
+      assert.deepEqual(await firstCheck(level, groups), { marked: [], checked: [], line: lineWith(level) }, `${level}: ${name}: no effort group`)
     }
   }
   const torn = { getSnapshot() { throw new Error('torn down') }, subscribe() { throw new Error('torn down') } }
@@ -1177,7 +1192,7 @@ test('recommended default: unknown or absent efforts give Default without a mark
   ]) {
     const harness = cellHarness({ getService })
     pick(harness.open(), HAIKU)
-    assert.deepEqual(chipSummary(harness.render(), HAIKU), ['Default=true'], name)
+    assert.deepEqual(effortSummary(harness.render(), HAIKU), ['Default=true'], name)
     harness.close()
     await ticks()
     assert.deepEqual(harness.calls, [lineWith('hard')], name)
@@ -1187,7 +1202,7 @@ test('recommended default: unknown or absent efforts give Default without a mark
 test('a saved model keeps its saved effort; re-checking in the same open restores the earlier pick', async () => {
   const harness = cellHarness({ view: manualView({ hard: [haiku] }) })
   let output = harness.open()
-  assert.deepEqual(chipSummary(output, HAIKU), ['Default (Medium)=true', 'Low=false', 'Medium=false', 'High=false', 'Extra high (recommended)=false', 'Max=false'],
+  assert.deepEqual(effortSummary(output, HAIKU), ['Default (Medium)=true', 'Low=false', 'Medium=false', 'High=false', 'Extra high (recommended)=false', 'Max=false'],
     'the saved Default is shown, not the recommendation')
   harness.close()
   await ticks()
@@ -1195,19 +1210,19 @@ test('a saved model keeps its saved effort; re-checking in the same open restore
   // Unchecking and re-checking the saved model restores its saved effort.
   pick(harness.open(), HAIKU)
   pick(harness.render(), HAIKU)
-  assert.equal(chipSummary(harness.render(), HAIKU)[0], 'Default (Medium)=true')
-  // A chip pick, then uncheck and re-check in the same open: the pick comes back.
-  pickChip(harness.render(), HAIKU, 'Low')
+  assert.equal(effortSummary(harness.render(), HAIKU)[0], 'Default (Medium)=true')
+  // An effort row pick, then uncheck and re-check in the same open: the pick comes back.
+  pickEffort(harness.render(), HAIKU, 'Low')
   pick(harness.render(), HAIKU)
   pick(harness.render(), HAIKU)
-  assert.equal(chipSummary(harness.render(), HAIKU)[1], 'Low=true')
+  assert.equal(effortSummary(harness.render(), HAIKU)[1], 'Low=true')
   // A model that is not saved: its first check brings the recommendation, a re-check the pick.
   pick(harness.render(), FLASH)
-  assert.deepEqual(chipSummary(harness.render(), FLASH), ['Default (High)=false', 'Off=false', 'Low=false', 'High (recommended)=true'])
-  pickChip(harness.render(), FLASH, 'Off')
+  assert.deepEqual(effortSummary(harness.render(), FLASH), ['Default (High)=false', 'Off=false', 'Low=false', 'High (recommended)=true'])
+  pickEffort(harness.render(), FLASH, 'Off')
   pick(harness.render(), FLASH)
   pick(harness.render(), FLASH)
-  assert.equal(chipSummary(harness.render(), FLASH)[1], 'Off=true', 'a hand-picked off stays')
+  assert.equal(effortSummary(harness.render(), FLASH)[1], 'Off=true', 'a hand-picked off stays')
   harness.close()
   await ticks()
   assert.deepEqual(harness.calls, [levelLine('hard', `${HAIKU} effort=low,${FLASH} effort=off`)])
@@ -1215,29 +1230,29 @@ test('a saved model keeps its saved effort; re-checking in the same open restore
   const savedMax = cellHarness({ view: manualView({ hard: [{ ...haiku, effort: 'max' }] }) })
   pick(savedMax.open(), HAIKU)
   pick(savedMax.render(), HAIKU)
-  assert.equal(chipSummary(savedMax.render(), HAIKU)[5], 'Max=true')
+  assert.equal(effortSummary(savedMax.render(), HAIKU)[5], 'Max=true')
   savedMax.close()
   await ticks()
   assert.deepEqual(savedMax.calls, [])
   // A new opening forgets the picks: the next first check brings the recommendation again.
   const forget = cellHarness({ view: manualView({ hard: [haiku] }) })
   pick(forget.open(), FLASH)
-  pickChip(forget.render(), FLASH, 'Low')
+  pickEffort(forget.render(), FLASH, 'Low')
   pick(forget.render(), FLASH)
   forget.close()
   await ticks()
   assert.deepEqual(forget.calls, [], 'back to the saved value: nothing to send')
   pick(forget.open(), FLASH)
-  assert.equal(chipSummary(forget.render(), FLASH)[3], 'High (recommended)=true')
+  assert.equal(effortSummary(forget.render(), FLASH)[3], 'High (recommended)=true')
 })
 
-test('chip picks and model checks commit one command for the whole level when the flyout closes', async () => {
+test('effort row picks and model checks commit one command for the whole level when the flyout closes', async () => {
   const harness = cellHarness({ view: manualView({ hard: [{ ...haiku, effort: 'xhigh' }] }) })
   pick(harness.open(), FLASH)
-  pickChip(harness.render(), HAIKU, 'Max')
-  pickChip(harness.render(), HAIKU, 'Low')
+  pickEffort(harness.render(), HAIKU, 'Max')
+  pickEffort(harness.render(), HAIKU, 'Low')
   const output = harness.render()
-  assert.deepEqual(chipSummary(output, HAIKU), ['Default (Medium)=false', 'Low=true', 'Medium=false', 'High=false', 'Extra high (recommended)=false', 'Max=false'])
+  assert.deepEqual(effortSummary(output, HAIKU), ['Default (Medium)=false', 'Low=true', 'Medium=false', 'High=false', 'Extra high (recommended)=false', 'Max=false'])
   await ticks()
   assert.deepEqual(harness.calls, [], 'nothing is sent while the flyout is open')
   harness.close()
@@ -1258,8 +1273,8 @@ test('Inherit sends inherit without efforts; unchecking a model drops its effort
   const inherit = cellHarness({ view: saved })
   pickInherit(inherit.open())
   const output = inherit.render()
-  assert.equal(chipRowOf(output, HAIKU).props.hidden, true)
-  assert.equal(chipRowOf(output, FLASH).props.hidden, true)
+  assert.equal(effortGroupOf(output, HAIKU).props.hidden, true)
+  assert.equal(effortGroupOf(output, FLASH).props.hidden, true)
   inherit.close()
   await ticks()
   assert.deepEqual(inherit.calls, [levelLine('hard', 'inherit')])
@@ -1271,7 +1286,7 @@ test('Inherit sends inherit without efforts; unchecking a model drops its effort
   const back = cellHarness({ view: saved })
   pickInherit(back.open())
   pick(back.render(), HAIKU)
-  assert.equal(chipSummary(back.render(), HAIKU).find((line) => line.endsWith('=true')), 'Extra high (recommended)=true')
+  assert.equal(effortSummary(back.render(), HAIKU).find((line) => line.endsWith('=true')), 'Extra high (recommended)=true')
   back.close()
   await ticks()
   assert.deepEqual(back.calls, [levelLine('hard', `${HAIKU} effort=xhigh`)])
@@ -1280,14 +1295,14 @@ test('Inherit sends inherit without efforts; unchecking a model drops its effort
 test('unknown efforts show Default plus a saved id unmarked; an id a listed model does not advertise is appended with a warning', () => {
   const unknown = cellHarness({ view: manualView({ hard: [{ ...haiku, effort: 'turbo' }] }), getService: () => undefined })
   let output = unknown.open()
-  assert.deepEqual(chipSummary(output, HAIKU), ['Default=false', 'turbo=true'])
-  assert.deepEqual(chipSummary(output, FLASH), ['Default=false'])
-  assert.deepEqual(chipSummary(output, CODEX), ['Default=false'])
+  assert.deepEqual(effortSummary(output, HAIKU), ['Default=false', 'turbo=true'])
+  assert.deepEqual(effortSummary(output, FLASH), ['Default=false'])
+  assert.deepEqual(effortSummary(output, CODEX), ['Default=false'])
   const listed = cellHarness({ view: manualView({ hard: [{ ...haiku, effort: 'turbo' }, { ...selected[1], effort: 'high' }] }) })
   output = listed.open()
-  assert.deepEqual(chipSummary(output, HAIKU), ['Default (Medium)=false', 'Low=false', 'Medium=false', 'High=false', 'Extra high (recommended)=false', 'Max=false', 'turbo [warning]=true'])
-  assert.deepEqual(chipSummary(output, CODEX), ['Default=false', 'high [warning]=true'], 'a saved effort on a model without efforts can still be cleared')
-  const warned = chipsOf(output, HAIKU).at(-1)
+  assert.deepEqual(effortSummary(output, HAIKU), ['Default (Medium)=false', 'Low=false', 'Medium=false', 'High=false', 'Extra high (recommended)=false', 'Max=false', 'turbo [warning]=true'])
+  assert.deepEqual(effortSummary(output, CODEX), ['Default=false', 'high [warning]=true'], 'a saved effort on a model without efforts can still be cleared')
+  const warned = effortRowsOf(output, HAIKU).at(-1)
   assert.equal(warned.props.title, 'turbo')
   assert.equal(warned.type(warned.props).props['data-warning'], '')
   // Ids a command cannot carry, and repeats, are skipped; a missing name shows the id.
@@ -1299,13 +1314,13 @@ test('unknown efforts show Default plus a saved id unmarked; an id a listed mode
       defaultEffort: 'high',
     }))),
   })
-  assert.deepEqual(chipSummary(messy.open(), HAIKU), ['Default (High)=true', 'low=false', 'High (recommended)=false', 'max=false'])
+  assert.deepEqual(effortSummary(messy.open(), HAIKU), ['Default (High)=true', 'low=false', 'High (recommended)=false', 'max=false'])
 })
 
-test('the Default chip names the model\'s real default only when the directory advertises it', () => {
+test('the Default effort row names the model\'s real default only when the directory advertises it', () => {
   const label = (reasoning) => {
     const harness = cellHarness({ view: manualView({ hard: [haiku] }), getService: directoryService(fakeDirectory(haikuCatalog(reasoning))) })
-    return chipsOf(harness.open(), HAIKU)[0].props.label
+    return effortRowsOf(harness.open(), HAIKU)[0].props.label
   }
   assert.equal(label({ efforts: efforts('low', 'high'), defaultEffort: 'high' }), 'Default (High)')
   assert.equal(label({ efforts: [{ id: 'low' }, { id: 'high', name: ' ' }], defaultEffort: 'high' }), 'Default (high)', 'the id when the name is missing')
@@ -1318,66 +1333,66 @@ test('the Default chip names the model\'s real default only when the directory a
   ]) assert.equal(label(reasoning), 'Default', JSON.stringify(reasoning))
 })
 
-test('chips are disabled while the menu is locked and send nothing', async () => {
+test('effort rows are disabled while the menu is locked and send nothing', async () => {
   const harness = cellHarness({ view: manualView({ hard: [haiku] }), extra: { locked: true } })
   let output = harness.open()
-  assert.equal(allChips(output).length, HAIKU_CHIPS.length + 4)
-  assert.equal(allChips(output).every((chip) => chip.props.disabled === true), true)
-  const chip = chipsOf(output, HAIKU)[5]
-  assert.equal(chip.type(chip.props).props['aria-disabled'], 'true')
-  pickChip(output, HAIKU, 'Max')
+  assert.equal(allEffortRows(output).length, HAIKU_EFFORTS.length + 4)
+  assert.equal(allEffortRows(output).every((row) => row.props.disabled === true), true)
+  const row = effortRowsOf(output, HAIKU)[5]
+  assert.equal(row.type(row.props).props['aria-disabled'], 'true')
+  pickEffort(output, HAIKU, 'Max')
   output = harness.render()
-  assert.equal(chipSummary(output, HAIKU)[0], 'Default (Medium)=true', 'a disabled chip does not change the draft')
+  assert.equal(effortSummary(output, HAIKU)[0], 'Default (Medium)=true', 'a disabled effort row does not change the draft')
   harness.close()
   await ticks()
   assert.deepEqual(harness.calls, [])
 })
 
-test('a chip row about to be hidden while it holds focus hands focus to its model row first', () => {
+test('an effort group about to be hidden while it holds focus hands focus to its model row first', () => {
   const doc = { activeElement: null, addEventListener() {}, removeEventListener() {} }
   const harness = cellHarness({ view: manualView({ hard: [haiku] }), globals: { document: doc } })
   let output = harness.open()
-  // The elements React attaches to the model row and to its chip row.
+  // The elements React attaches to the model row and to its effort group.
   const modelRow = { focus() { doc.activeElement = this } }
-  const chip = {}
+  const row = {}
   rowFor(output, HAIKU).props.elementRef(modelRow)
-  chipRowOf(output, HAIKU).props.ref({ contains: (element) => element === chip })
-  doc.activeElement = chip
-  // Another tab resets the level while a chip of this flyout has focus.
+  effortGroupOf(output, HAIKU).props.ref({ contains: (element) => element === row })
+  doc.activeElement = row
+  // Another tab resets the level while an effort row of this flyout has focus.
   output = harness.render({ view: manualView({}) })
-  assert.equal(chipRowOf(output, HAIKU).props.hidden, false, 'kept while it holds focus')
+  assert.equal(effortGroupOf(output, HAIKU).props.hidden, false, 'kept while it holds focus')
   assert.equal(doc.activeElement, modelRow, 'focus moved to the model row first')
   output = harness.render()
-  assert.equal(chipRowOf(output, HAIKU).props.hidden, true, 'then hidden')
+  assert.equal(effortGroupOf(output, HAIKU).props.hidden, true, 'then hidden')
   assert.equal(harness.cell.instance.dirty, false, 'and nothing more to do')
-  // Unchecking from the model row itself hides the chips at once.
+  // Unchecking from the model row itself hides the effort rows at once.
   pick(output, FLASH)
   output = harness.render()
   rowFor(output, FLASH).props.elementRef({ focus() { doc.activeElement = this } })
-  chipRowOf(output, FLASH).props.ref({ contains: () => false })
+  effortGroupOf(output, FLASH).props.ref({ contains: () => false })
   doc.activeElement = { name: 'the FLASH model row' }
   pick(output, FLASH)
   output = harness.render()
-  assert.equal(chipRowOf(output, FLASH).props.hidden, true)
-  // A model row that cannot take focus does not keep its chips shown: they hide on the next render.
+  assert.equal(effortGroupOf(output, FLASH).props.hidden, true)
+  // A model row that cannot take focus does not keep its effort rows shown: they hide on the next render.
   const stuck = cellHarness({ view: manualView({ hard: [haiku] }), globals: { document: doc } })
   output = stuck.open()
   const stuckChip = {}
-  chipRowOf(output, HAIKU).props.ref({ contains: (element) => element === stuckChip })
+  effortGroupOf(output, HAIKU).props.ref({ contains: (element) => element === stuckChip })
   doc.activeElement = stuckChip
   output = stuck.render({ view: manualView({}) })
-  assert.equal(chipRowOf(output, HAIKU).props.hidden, false)
+  assert.equal(effortGroupOf(output, HAIKU).props.hidden, false)
   output = stuck.render()
-  assert.equal(chipRowOf(output, HAIKU).props.hidden, true, 'no loop')
+  assert.equal(effortGroupOf(output, HAIKU).props.hidden, true, 'no loop')
   assert.equal(stuck.cell.instance.dirty, false)
 })
 
-test('the arrow keys move through model rows and the chips of checked models; Escape, Tab and ArrowLeft close from a chip', () => {
+test('the arrow keys move through model rows and the effort rows of checked models; Escape, Tab and ArrowLeft close from an effort row', () => {
   const doc = { activeElement: null, addEventListener() {}, removeEventListener() {} }
   const harness = cellHarness({ view: manualView({ hard: [haiku] }), globals: { document: doc } })
   const flyout = find(harness.open(), (node) => typeof node.type === 'function' && node.props?.cellRef)
   // The rows as the browser lays them out, in document order, each knowing
-  // whether its chip row is hidden.
+  // whether its effort group is hidden.
   const rows = []
   const walk = (node, context) => {
     if (Array.isArray(node)) {
@@ -1395,7 +1410,7 @@ test('the arrow keys move through model rows and the chips of checked models; Es
       })
       return
     }
-    const key = typeof node.props?.key === 'string' && node.props.key.startsWith('chips:') ? node.props.key.slice('chips:'.length) : context.key
+    const key = typeof node.props?.key === 'string' && node.props.key.startsWith('efforts:') ? node.props.key.slice('efforts:'.length) : context.key
     for (const child of node.children ?? []) walk(child, { key, hidden: context.hidden || node.props?.hidden === true })
   }
   walk(flyout.children, { key: null, hidden: false })
@@ -1403,7 +1418,7 @@ test('the arrow keys move through model rows and the chips of checked models; Es
     'Inherit (session default)',
     FLASH, ...['Default (High)', 'Off', 'Low', 'High'].map((label) => `${FLASH}:${label}`),
     CODEX,
-    HAIKU, ...HAIKU_CHIPS.map((label) => `${HAIKU}:${label}`),
+    HAIKU, ...HAIKU_EFFORTS.map((label) => `${HAIKU}:${label}`),
   ])
   const matches = (row, selector) => selector.split(',').some((part) => {
     const wanted = [...part.matchAll(/\[([a-z-]+)="([^"]*)"\]/g)]
@@ -1428,12 +1443,12 @@ test('the arrow keys move through model rows and the chips of checked models; Es
     assert.equal(prevented, true, key)
     return doc.activeElement === cell ? 'cell' : doc.activeElement.name
   }
-  assert.equal(press('ArrowDown'), `${HAIKU}:Default (Medium)`, 'from the model row into its chips')
+  assert.equal(press('ArrowDown'), `${HAIKU}:Default (Medium)`, 'from the model row into its effort rows')
   assert.equal(press('ArrowDown'), `${HAIKU}:Low`)
   assert.equal(press('End'), `${HAIKU}:Max`)
   assert.equal(press('ArrowDown'), 'Inherit (session default)', 'and wraps around')
   assert.equal(press('ArrowDown'), FLASH)
-  assert.equal(press('ArrowDown'), CODEX, 'the chips of an unchecked model are skipped')
+  assert.equal(press('ArrowDown'), CODEX, 'the effort rows of an unchecked model are skipped')
   assert.equal(press('ArrowUp'), FLASH)
   assert.equal(press('Home'), 'Inherit (session default)')
   assert.equal(press('ArrowUp'), `${HAIKU}:Max`)
@@ -1482,12 +1497,12 @@ test('the cell shows the first model with its effort in a non-shrinking span and
 
 test('a revert to the saved value while an earlier commit was in flight sends no redundant line on unmount', async () => {
   const harness = cellHarness({ view: manualView({ hard: [haiku] }), execute: 'deferred' })
-  pickChip(harness.open(), HAIKU, 'High')
+  pickEffort(harness.open(), HAIKU, 'High')
   harness.close()
   await ticks()
   assert.deepEqual(harness.calls, [levelLine('hard', `${HAIKU} effort=high`)])
   // The user reopens and picks Default again, the saved value, while that commit runs.
-  pickChip(harness.open(), HAIKU, 'Default (Medium)')
+  pickEffort(harness.open(), HAIKU, 'Default (Medium)')
   harness.render()
   // The commit in flight fails, and the host menu closes before the cell renders again.
   harness.resolveWith[0]({ kind: 'error', text: 'unknown or malformed command: x' })
@@ -1501,12 +1516,12 @@ test('a revert to the saved value while an earlier commit was in flight sends no
 
 test('an effort changed back while its commit is in flight is still committed when the host menu closes', async () => {
   const harness = cellHarness({ view: manualView({ hard: [haiku] }), execute: 'deferred' })
-  pickChip(harness.open(), HAIKU, 'High')
+  pickEffort(harness.open(), HAIKU, 'High')
   harness.close()
   await ticks()
   assert.deepEqual(harness.calls, [levelLine('hard', `${HAIKU} effort=high`)])
   // While it runs, the user picks Default (the session's value) and the menu closes.
-  pickChip(harness.open(), HAIKU, 'Default (Medium)')
+  pickEffort(harness.open(), HAIKU, 'Default (Medium)')
   harness.render()
   harness.cell.unmount()
   await ticks()
@@ -1521,12 +1536,12 @@ test('an effort-only edit sends the whole level and drops unavailable entries wi
   const harness = cellHarness({ view: manualView({ hard: [{ ...haiku, effort: 'low' }, gone] }) })
   let output = harness.open()
   assert.match(text(output), /Unavailable — removed on next change/)
-  assert.equal(chipRowOf(output, 'gone/retired'), undefined, 'an unavailable entry has no chip row')
+  assert.equal(effortGroupOf(output, 'gone/retired'), undefined, 'an unavailable entry has no effort group')
   assert.equal(rowFor(output, 'gone/retired').props.checked, true)
   harness.close()
   await ticks()
   assert.deepEqual(harness.calls, [], 'nothing is sent without an edit')
-  pickChip(harness.open(), HAIKU, 'High')
+  pickEffort(harness.open(), HAIKU, 'High')
   output = harness.render()
   assert.equal(rowFor(output, 'gone/retired').props.checked, false, 'dropped by the change, still listed')
   harness.close()
@@ -1534,11 +1549,11 @@ test('an effort-only edit sends the whole level and drops unavailable entries wi
   assert.deepEqual(harness.calls, [levelLine('hard', `${HAIKU} effort=high`)])
 })
 
-test('a chip draft waiting behind the switch commits with its efforts when the switch settles', async () => {
+test('an effort row draft waiting behind the switch commits with its efforts when the switch settles', async () => {
   const harness = cellHarness({ view: manualView({ hard: [haiku] }), execute: 'deferred' })
   pressSwitch(harness.env, false, { sessionId: SESSION })
   await ticks()
-  pickChip(harness.open(), HAIKU, 'Low')
+  pickEffort(harness.open(), HAIKU, 'Low')
   harness.close()
   await ticks()
   assert.deepEqual(harness.calls, ['/router off'], 'the draft waits while the switch holds the lock')
@@ -1549,10 +1564,10 @@ test('a chip draft waiting behind the switch commits with its efforts when the s
   assert.deepEqual(harness.calls, ['/router off', levelLine('hard', `${HAIKU} effort=low`)])
 })
 
-test('a chip commit the session never confirms snaps back the entries and their efforts after the deadline, with one report', async () => {
+test('an effort row commit the session never confirms snaps back the entries and their efforts after the deadline, with one report', async () => {
   const harness = cellHarness({ view: manualView({ hard: [haiku] }) })
   pick(harness.open(), FLASH)
-  pickChip(harness.render(), HAIKU, 'Max')
+  pickEffort(harness.render(), HAIKU, 'Max')
   harness.close()
   await ticks()
   assert.deepEqual(harness.calls, [levelLine('hard', `${HAIKU} effort=max,${FLASH} effort=high`)])
@@ -1569,7 +1584,7 @@ test('a chip commit the session never confirms snaps back the entries and their 
   assert.equal(moreSpan(output), undefined)
   assert.deepEqual(harness.reports, [FAILED])
   output = harness.open()
-  assert.equal(chipSummary(output, HAIKU)[0], 'Default (Medium)=true')
+  assert.equal(effortSummary(output, HAIKU)[0], 'Default (Medium)=true')
   assert.equal(rowFor(output, FLASH).props.checked, false)
   assert.equal(harness.reports.length, 1)
   assert.equal(harness.calls.length, 1, 'the draft is not sent again')
@@ -1578,7 +1593,7 @@ test('a chip commit the session never confirms snaps back the entries and their 
 test('a rejection recorded in the projection snaps back the entries and their efforts', async () => {
   const harness = cellHarness({ view: manualView({ hard: [haiku] }) })
   pick(harness.open(), FLASH)
-  pickChip(harness.render(), HAIKU, 'Low')
+  pickEffort(harness.render(), HAIKU, 'Low')
   harness.close()
   await ticks()
   const failure = { count: 1, text: 'Route x is not authorized for this session.', target: 'level', level: 'hard' }
@@ -1589,26 +1604,26 @@ test('a rejection recorded in the projection snaps back the entries and their ef
   assert.equal(effortSpan(output), undefined)
 })
 
-test('a rejected chip commit snaps back without discarding a newer chip pick', async () => {
+test('a rejected effort row commit snaps back without discarding a newer effort row pick', async () => {
   const harness = cellHarness({ view: manualView({ hard: [haiku] }), execute: 'deferred' })
-  pickChip(harness.open(), HAIKU, 'High')
+  pickEffort(harness.open(), HAIKU, 'High')
   harness.close()
   await ticks()
   assert.deepEqual(harness.calls, [levelLine('hard', `${HAIKU} effort=high`)])
-  pickChip(harness.open(), HAIKU, 'Low')
+  pickEffort(harness.open(), HAIKU, 'Low')
   harness.render()
   harness.resolveWith[0]({ kind: 'error', text: 'unknown or malformed command: x' })
   await ticks()
   assert.deepEqual(harness.reports, ['unknown or malformed command: x'])
-  assert.equal(chipSummary(harness.render(), HAIKU)[1], 'Low=true', 'the newer pick survives the failed commit')
+  assert.equal(effortSummary(harness.render(), HAIKU)[1], 'Low=true', 'the newer pick survives the failed commit')
   harness.close()
   await ticks()
   assert.deepEqual(harness.calls, [levelLine('hard', `${HAIKU} effort=high`), levelLine('hard', `${HAIKU} effort=low`)])
 })
 
-test('a chip draft left open when the host menu closes is committed once on unmount', async () => {
+test('an effort row draft left open when the host menu closes is committed once on unmount', async () => {
   const harness = cellHarness({ view: manualView({ hard: [haiku], mechanical: [haiku] }) })
-  pickChip(harness.open(), HAIKU, 'Max')
+  pickEffort(harness.open(), HAIKU, 'Max')
   harness.render()
   harness.cell.unmount()
   await ticks()
@@ -1616,23 +1631,23 @@ test('a chip draft left open when the host menu closes is committed once on unmo
   // Closing the flyout and then the menu before a re-render also sends once.
   const mechanical = harness.menu.cells[0]
   const closing = harness.env.runtime.mount(mechanical.type)
-  pickChip(closing.render({ ...mechanical.props, open: true }), HAIKU, 'Low')
+  pickEffort(closing.render({ ...mechanical.props, open: true }), HAIKU, 'Low')
   closing.render({ ...mechanical.props, open: false })
   closing.unmount()
   await ticks()
   assert.deepEqual(harness.calls, [levelLine('hard', `${HAIKU} effort=max`), levelLine('mechanical', `${HAIKU} effort=low`)])
 })
 
-test('a model checked while a chip commit runs is sent with the whole level once that commit lands', async () => {
+test('a model checked while an effort row commit runs is sent with the whole level once that commit lands', async () => {
   const harness = cellHarness({ view: manualView({ hard: [haiku] }), execute: 'deferred' })
-  pickChip(harness.open(), HAIKU, 'High')
+  pickEffort(harness.open(), HAIKU, 'High')
   harness.close()
   await ticks()
   let output = harness.open()
-  assert.equal(chipSummary(output, HAIKU)[3], 'High=true', 'the reopened flyout shows the commit in flight')
+  assert.equal(effortSummary(output, HAIKU)[3], 'High=true', 'the reopened flyout shows the commit in flight')
   pick(output, FLASH)
   output = harness.render()
-  assert.equal(chipSummary(output, HAIKU)[3], 'High=true', 'checking a model keeps the other entries\' efforts')
+  assert.equal(effortSummary(output, HAIKU)[3], 'High=true', 'checking a model keeps the other entries\' efforts')
   harness.close()
   await ticks()
   assert.equal(harness.calls.length, 1, 'the new draft waits for the commit in flight')
@@ -1669,8 +1684,8 @@ test('locale: the effort strings are in both tables with their literal wording a
     assert.deepEqual(Object.keys(tables[lang]).filter((key) => key.startsWith('effort.')).sort(), Object.keys(expected[lang]).sort(), `${lang}: no ordinal strings remain`)
   }
   const output = harness.open()
-  assert.equal(chipRowOf(output, HAIKU).props['aria-label'], 'claude-haiku-5-5 的推理等级')
-  assert.deepEqual(chipSummary(output, HAIKU), ['Default（Medium）=false', 'Low=false', 'Medium=false', 'High=false', 'Extra high (推荐)=true', 'Max=false'])
+  assert.equal(effortGroupOf(output, HAIKU).props['aria-label'], 'claude-haiku-5-5 的推理等级')
+  assert.deepEqual(effortSummary(output, HAIKU), ['Default（Medium）=false', 'Low=false', 'Medium=false', 'High=false', 'Extra high (推荐)=true', 'Max=false'])
   assert.equal(cellButton(output).props['aria-label'], '高难度判断: claude-haiku-5-5, 推理等级 xhigh')
   assert.equal(effortSpan(output), '· xhigh', 'the id, as typed in commands')
 })
@@ -1734,13 +1749,13 @@ test('the client injects only slots and reads the model directory lazily, only w
   const unnamed = levels(env, manualView({ hard: [haiku] }), routes)
   const unnamedOutput = mountCell(env, { ...unnamed.cells[2], props: { ...unnamed.cells[2].props, open: true } }).output
   assert.deepEqual(asked, [], 'never asks for a directory without a session id')
-  assert.deepEqual(chipSummary(unnamedOutput, HAIKU), ['Default=true'])
+  assert.deepEqual(effortSummary(unnamedOutput, HAIKU), ['Default=true'])
   const named = levels(env, manualView({ hard: [haiku] }), routes, { sessionId: SESSION })
   const output = mountCell(env, { ...named.cells[2], props: { ...named.cells[2].props, open: true } }).output
   assert.equal(asked.every((name) => name === 'modelDirectories'), true)
   assert.ok(asked.length > 0)
   assert.equal(directory.sessions.every((id) => id === SESSION), true)
-  assert.equal(chipSummary(output, HAIKU)[0], 'Default (Medium)=true')
+  assert.equal(effortSummary(output, HAIKU)[0], 'Default (Medium)=true')
 })
 
 test('a saved model unchecked in an earlier opening and checked again gets its saved effort, not the recommendation', async () => {
@@ -1754,7 +1769,7 @@ test('a saved model unchecked in an earlier opening and checked again gets its s
   assert.equal(rowFor(output, HAIKU).props.checked, false)
   pick(output, HAIKU)
   output = harness.render()
-  assert.equal(chipSummary(output, HAIKU)[5], 'Max=true', 'the saved effort, not Extra high')
+  assert.equal(effortSummary(output, HAIKU)[5], 'Max=true', 'the saved effort, not Extra high')
   harness.close()
   await ticks()
   harness.settle[0]()
@@ -1768,12 +1783,12 @@ test('a saved model unchecked in an earlier opening and checked again gets its s
 
 test('Inherit remembers the shown efforts: a re-check in the same opening restores the pick, not the saved effort or the recommendation', async () => {
   const harness = cellHarness({ view: manualView({ hard: [{ ...haiku, effort: 'xhigh' }] }) })
-  pickChip(harness.open(), HAIKU, 'Low')
+  pickEffort(harness.open(), HAIKU, 'Low')
   pickInherit(harness.render())
-  assert.equal(chipRowOf(harness.render(), HAIKU).props.hidden, true)
+  assert.equal(effortGroupOf(harness.render(), HAIKU).props.hidden, true)
   pick(harness.output(), HAIKU)
   const output = harness.render()
-  assert.deepEqual(chipSummary(output, HAIKU).filter((line) => line.endsWith('=true')), ['Low=true'],
+  assert.deepEqual(effortSummary(output, HAIKU).filter((line) => line.endsWith('=true')), ['Low=true'],
     'the pick made before Inherit, not the saved Extra high that is also the recommendation')
   harness.close()
   await ticks()
@@ -1782,13 +1797,13 @@ test('Inherit remembers the shown efforts: a re-check in the same opening restor
 
 test('a draft equal to the commit still in flight is not sent again on unmount', async () => {
   const harness = cellHarness({ view: manualView({ hard: [{ ...haiku, effort: 'low' }] }), execute: 'deferred' })
-  pickChip(harness.open(), HAIKU, 'Max')
+  pickEffort(harness.open(), HAIKU, 'Max')
   harness.close()
   await ticks()
   assert.deepEqual(harness.calls, [levelLine('hard', `${HAIKU} effort=max`)])
   // While it runs, the user reopens, picks High and then Max again, and the menu closes.
-  pickChip(harness.open(), HAIKU, 'High')
-  pickChip(harness.render(), HAIKU, 'Max')
+  pickEffort(harness.open(), HAIKU, 'High')
+  pickEffort(harness.render(), HAIKU, 'Max')
   harness.render()
   harness.cell.unmount()
   await ticks()
@@ -1823,21 +1838,21 @@ test('a directory change between the render and the subscription still refreshes
   assert.equal(menu.parent.instance.dirty, false, 'the refreshed render asks for nothing more')
   assert.equal(subscriptions, 1, 'the same store keeps its one subscription')
   const cell = cellIn(output, 'hard')
-  assert.equal(chipSummary(env.runtime.mount(cell.type).render({ ...cell.props, open: true }), HAIKU)[0], 'Default (Medium)=true')
+  assert.equal(effortSummary(env.runtime.mount(cell.type).render({ ...cell.props, open: true }), HAIKU)[0], 'Default (Medium)=true')
   // A store that does not change meanwhile asks for no render.
   const steady = { getSnapshot: () => loaded, subscribe: () => () => {} }
   const quiet = levels(load({ getService: serviceOf(steady) }), manualView({}), routes, { sessionId: SESSION })
   assert.equal(quiet.parent.instance.dirty, false)
 })
 
-test('an unadvertised effort saved by another tab while the flyout is open shows in the cell, and gets a chip at the next opening', () => {
+test('an unadvertised effort saved by another tab while the flyout is open shows in the cell, and gets an effort row at the next opening', () => {
   const harness = cellHarness({ view: manualView({ hard: [{ ...haiku, effort: 'low' }] }) })
   let output = harness.open()
-  const count = allChips(output).length
+  const count = allEffortRows(output).length
   output = harness.render({ view: manualView({ hard: [{ ...haiku, effort: 'turbo' }] }) })
   assert.equal(effortSpan(output), '· turbo', 'the cell shows the saved effort')
-  assert.deepEqual(chipSummary(output, HAIKU).filter((line) => line.endsWith('=true')), [], 'no chip is checked while open')
-  assert.equal(allChips(output).length, count, 'and no chip is added')
+  assert.deepEqual(effortSummary(output, HAIKU).filter((line) => line.endsWith('=true')), [], 'no effort row is checked while open')
+  assert.equal(allEffortRows(output).length, count, 'and no effort row is added')
   harness.close()
-  assert.deepEqual(chipSummary(harness.open(), HAIKU).slice(-2), ['Max=false', 'turbo [warning]=true'])
+  assert.deepEqual(effortSummary(harness.open(), HAIKU).slice(-2), ['Max=false', 'turbo [warning]=true'])
 })

@@ -36,8 +36,8 @@ shift and levels can be prepared in advance. The cell's tooltip lists every
 entry with its effort. Selecting a cell, or pressing ArrowRight on it, opens a
 side flyout drawn with the host menu material: a one-line description of the
 level, **Inherit (session default)**, then the authorized models grouped by
-provider with a trailing check on each selected model and, under each model, a
-row of effort chips (see [Effort per entry](#effort-per-entry)). Edits are a
+provider with a trailing check on each selected model and, under each selected
+model, its effort rows, indented native menu rows (see [Effort per entry](#effort-per-entry)). Edits are a
 draft while the flyout is open and are committed as one `/router level`
 command when it closes (or when the menu closes), so each edit session adds
 one command entry to the chat. The cell shows a spinner until the session
@@ -53,7 +53,7 @@ toward the 30 seconds; a command that has not returned 30 seconds after it
 started no longer holds up the queue. Up to four models per level; further
 rows are disabled. Saved routes that are no longer authorized appear under
 **Unavailable** and are dropped, with their efforts, by the next change. Arrow
-keys move through the model rows and the chips of checked models; Escape, Tab,
+keys move through the model rows and the effort rows of checked models; Escape, Tab,
 or ArrowLeft closes the flyout and returns focus to its cell. Rejections
 recorded in the session log (for example "Router is already updating") appear
 in the composer's toast.
@@ -81,34 +81,37 @@ Each shortlist entry is a model plus, optionally, the effort to pass with it.
   stores the id `default`, which the lead passes as `reasoning_effort`
   "default" although it reads like the model default (`effort: default`) in
   the `router:` line, and replaying a state version 4 log can produce it.
-- **Chips.** Under each authorized model row the flyout has a row of chips:
-  **Default** (named after the model's real default effort, for example
-  `Default (High)`, when the session's model directory advertises it), then
-  the efforts the model advertises, in the directory's order, by name. A
-  `defaultEffort` that is missing from the advertised list counts as unknown
-  (Default stays unnamed, and Mechanical then recommends `low` if advertised).
-  Advertised ids outside `[A-Za-z0-9._-]{1,32}`, which a command could not
-  carry, and repeated ids are not shown as chips; a list with no usable id
-  counts as unknown. The chips are built from the directory snapshot taken
-  when the flyout opens and do not change while it is open, so an effort that
-  another tab saves meanwhile and that the model does not advertise shows in
-  the cell but has no checked chip until the next opening. A chip row is
-  hidden until its model is checked, and chips are disabled while the menu is
-  locked. A model listed without efforts has no chip row (unless its entry
-  carries an effort: then Default and that effort, so it can be cleared). When
-  the directory is not available yet (or does not list the model), the row
-  offers **Default** only, plus the entry's saved effort, unmarked. A saved
-  effort that a listed model does not advertise is appended last in the
-  warning colour.
-- **Recommended defaults.** For a model whose efforts are listed, one chip is
-  marked *recommended*, and the recommendation is applied only when a model
-  that is not in the saved level is checked in the flyout; re-checking a model
-  in the same opening restores the effort it had. Saved entries, typed
-  commands, and loading the menu never get a default. Per level:
+- **Effort rows.** Under each checked model row the flyout shows that model's
+  effort rows, indented under it, as a group labelled `Effort for <model>`.
+  They are native menu rows like the model rows and the Advisor's Effort group
+  (single-choice, a check on the chosen row, a right-aligned *recommended*
+  caption on the recommended row), not pills: **Default** (named after the
+  model's real default effort, for example `Default (High)`, when the session's
+  model directory advertises it), then the efforts the model advertises, in
+  the directory's order, by name. A `defaultEffort` that is missing from the
+  advertised list counts as unknown (Default stays unnamed). Advertised ids
+  outside `[A-Za-z0-9._-]{1,32}`, which a command could not carry, and repeated
+  ids are not shown; a list with no usable id counts as unknown. The rows are
+  built from the directory snapshot taken when the flyout opens and do not
+  change while it is open, so an effort that another tab saves meanwhile and
+  that the model does not advertise shows in the cell but has no checked row
+  until the next opening. A model's effort rows are hidden until it is checked,
+  and are disabled while the menu is locked. A model listed without efforts has
+  no effort rows (unless its entry carries an effort: then Default and that
+  effort, so it can be cleared). When the directory is not available yet (or
+  does not list the model), the group offers **Default** only, plus the entry's
+  saved effort, unmarked. A saved effort that a listed model does not advertise
+  is appended last in the warning colour.
+- **Recommended defaults.** For a model whose efforts are listed, one row is
+  marked *recommended* (Default, when the level recommends Default), and the
+  recommendation is applied only when a model that is not in the saved level is
+  checked in the flyout; re-checking a model in the same opening restores the
+  effort it had. Saved entries, typed commands, and loading the menu never get
+  a default. Per level:
 
   | Level | Recommended effort |
   |---|---|
-  | Mechanical | The lowest advertised effort other than `off`, only if it comes before the model's default effort (effort is never raised); with the default unknown, `low` when advertised; otherwise Default. |
+  | Mechanical | Default (no effort token: the model's own default). |
   | Ordinary | Default. |
   | Hard judgment | The highest advertised effort other than `max` (and `off`), so `max` stays a deliberate pick; otherwise Default. |
 

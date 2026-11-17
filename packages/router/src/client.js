@@ -127,18 +127,12 @@ window.__ModuleLoader__.load({
       .router-option[aria-disabled=true]{opacity:.4;cursor:not-allowed}
       .router-option-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .router-check{display:grid;place-items:center;flex:0 0 14px;color:var(--dsw-alias-label-primary)}
-      .router-chips{display:flex;flex:none;flex-wrap:wrap;gap:4px;padding:0 7px 5px 15px}
-      .router-chips[hidden]{display:none}
-      .router-chip{box-sizing:border-box;display:inline-flex;align-items:center;gap:4px;max-width:100%;min-height:24px;
-        padding:2px 8px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);outline:none;
-        background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:16px;
-        text-align:left;cursor:pointer}
-      .router-chip:focus-visible,.router-chip:focus{background:var(--dsw-alias-interactive-bg-hover)}
-      .router-chip[aria-checked=true]{border-color:var(--dsw-alias-label-primary);color:var(--dsw-alias-label-primary)}
-      .router-chip[aria-disabled=true]{opacity:.4;cursor:not-allowed}
-      .router-chip-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .router-chip[data-warning] .router-chip-label{color:var(--dsw-alias-state-warn-label)}
-      .router-chip-note{flex:none;color:var(--dsw-alias-label-tertiary);font-size:11px}
+      .router-option[data-warning] .router-option-label{color:var(--dsw-alias-state-warn-label)}
+      .router-option-note{flex:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}
+      .router-efforts{display:flex;flex:none;flex-direction:column}
+      .router-efforts[hidden]{display:none}
+      .router-option-effort{padding-inline-start:23px}
+      .router-option-effort .router-option-label{color:var(--dsw-alias-label-secondary)}
       .router-group+.router-group{margin-top:3px}
       .router-heading{padding:4px 7px 2px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;font-weight:500}
       .router-separator{flex:none;height:.5px;margin:3px 8px;background:var(--dsw-alias-border-l2)}
@@ -186,9 +180,9 @@ window.__ModuleLoader__.load({
     // every entry with its own effort token. It also identifies a value in
     // the draft bookkeeping.
     const valueText = (keys, efforts) => keys.length === 0 ? 'inherit' : keys.map((key) => entryText(key, effortFor(efforts, key))).join(',')
-    // Model rows are checkboxes and effort chips single-choice radios; focus
-    // and the arrow keys cover both, in document order, except the chips of a
-    // hidden chip row.
+    // Model rows are checkboxes and effort rows single-choice radios; focus
+    // and the arrow keys cover both, in document order, except the rows of a
+    // hidden effort group.
     const ROW_SELECTOR = '[role="menuitemcheckbox"],[role="menuitemradio"]'
     const CHECKED_ROW_SELECTOR = '[role="menuitemcheckbox"][aria-checked="true"],[role="menuitemradio"][aria-checked="true"]'
     const shown = (element) => typeof element?.closest !== 'function' || element.closest('[hidden]') === null
@@ -322,61 +316,52 @@ window.__ModuleLoader__.load({
 
     /**
      * The effort a level recommends for a model, applied only when a model
-     * that is not saved is checked in the flyout; undefined is Default.
-     * Mechanical only lowers effort: the lowest advertised effort other than
-     * `off`, when it comes before the model's own default (default unknown:
-     * `low` when advertised). Ordinary keeps Default. Hard judgment takes the
-     * highest advertised effort other than `max` (a deliberate pick) and
-     * `off`. Unknown or absent efforts recommend nothing.
+     * that is not saved is checked in the flyout; undefined is Default (no
+     * effort token, the model's own default). Mechanical and Ordinary keep
+     * Default. Hard judgment takes the highest advertised effort other than
+     * `max` (a deliberate pick) and `off`. Unknown or absent efforts
+     * recommend nothing.
      */
     function recommendedEffort(level, advertised) {
-      if (advertised.state !== 'list') return undefined
+      if (advertised.state !== 'list' || level !== 'hard') return undefined
       const ids = advertised.efforts.map((effort) => effort.id)
-      if (level === 'mechanical') {
-        const defaultId = advertised.defaultEffort?.id
-        if (defaultId === undefined) return ids.includes('low') ? 'low' : undefined
-        const lowest = ids.find((id) => id !== 'off')
-        return lowest !== undefined && ids.indexOf(lowest) < ids.indexOf(defaultId) ? lowest : undefined
-      }
-      if (level === 'hard') {
-        for (let index = ids.length - 1; index >= 0; index--) {
-          if (ids[index] !== 'max' && ids[index] !== 'off') return ids[index]
-        }
+      for (let index = ids.length - 1; index >= 0; index--) {
+        if (ids[index] !== 'max' && ids[index] !== 'off') return ids[index]
       }
       return undefined
     }
 
     /**
-     * One model's chips: Default (carrying the name of the model's real
+     * One model's effort rows: Default (carrying the name of the model's real
      * default when advertised), the advertised efforts in order, then the
      * entry's own ids the model does not advertise, with a warning unless the
      * efforts are unknown. Unknown efforts give Default and those ids only,
-     * unmarked. The recommended chip is marked only for a listed model. Null
-     * (no chip row) for a model listed without efforts and without an id.
+     * unmarked. The recommended row is marked only for a listed model. Null
+     * (no effort rows) for a model listed without efforts and without an id.
      */
-    function chipsFor(advertised, own, recommended) {
+    function effortRowsFor(advertised, own, recommended) {
       const extra = []
       for (const id of own) {
         if (id !== undefined && !extra.includes(id) && !advertised.efforts.some((effort) => effort.id === id)) extra.push(id)
       }
       if (advertised.state === 'none' && extra.length === 0) return null
       const marked = advertised.state === 'list'
-      const chips = [{ effort: undefined, name: advertised.defaultEffort?.name, warning: false, recommended: marked && recommended === undefined }]
+      const rows = [{ effort: undefined, name: advertised.defaultEffort?.name, warning: false, recommended: marked && recommended === undefined }]
       for (const effort of advertised.efforts) {
-        chips.push({ effort: effort.id, name: effort.name, warning: false, recommended: marked && effort.id === recommended })
+        rows.push({ effort: effort.id, name: effort.name, warning: false, recommended: marked && effort.id === recommended })
       }
-      for (const id of extra) chips.push({ effort: id, name: id, warning: advertised.state !== 'unknown', recommended: false })
-      return chips
+      for (const id of extra) rows.push({ effort: id, name: id, warning: advertised.state !== 'unknown', recommended: false })
+      return rows
     }
 
-    /** The Default chip's text: `Default (<effort name>)` when the name is known. */
+    /** The Default row's text: `Default (<effort name>)` when the name is known. */
     function defaultLabel(t, name) {
       if (name === undefined) return t('effort.default')
       const pattern = t('effort.defaultNamed')
       return pattern.includes('%EFFORT%') ? pattern.replace('%EFFORT%', () => name) : `${t('effort.default')} (${name})`
     }
 
-    /** A chip row's label, naming its model as its row shows it. */
+    /** An effort group's label, naming its model as its row shows it. */
     function effortLabel(t, key) {
       const pattern = t('effort.labelFor')
       return pattern.includes('%MODEL%') ? pattern.replace('%MODEL%', () => modelOf(key)) : `${pattern} ${modelOf(key)}`
@@ -529,14 +514,14 @@ window.__ModuleLoader__.load({
       )
     }
 
-    // A model row (a checkbox with a trailing check), or with `chip` an
-    // effort chip (a radio that shows its state by its outline, with an
-    // optional note such as "recommended").
+    // A model row (a checkbox with a trailing check), or with `effort` an
+    // indented effort row (a radio, same look; an optional right-aligned
+    // note such as "recommended" comes before the check).
     function OptionRow(props) {
       return h('button', {
         type: 'button',
         role: props.role ?? 'menuitemcheckbox',
-        className: props.chip ? 'router-chip' : 'router-option',
+        className: props.effort ? 'router-option router-option-effort' : 'router-option',
         'aria-checked': props.checked,
         'aria-disabled': props.disabled ? 'true' : undefined,
         'data-warning': props.warning ? '' : undefined,
@@ -545,9 +530,9 @@ window.__ModuleLoader__.load({
         onMouseMove: (event) => { if (activeElement() !== event.currentTarget) event.currentTarget.focus() },
         onClick: () => { if (!props.disabled) props.onSelect() },
       },
-        h('span', { className: props.chip ? 'router-chip-label' : 'router-option-label' }, props.label),
-        props.note ? h('span', { className: 'router-chip-note' }, props.note) : null,
-        props.chip ? null : h('span', { className: 'router-check' }, props.checked ? checkIcon : null),
+        h('span', { className: 'router-option-label' }, props.label),
+        props.note ? h('span', { className: 'router-option-note' }, props.note) : null,
+        h('span', { className: 'router-check' }, props.checked ? checkIcon : null),
       )
     }
 
@@ -594,7 +579,7 @@ window.__ModuleLoader__.load({
       }, [])
       const onKeyDown = (event) => {
         if (event.nativeEvent?.isComposing) return
-        // Every chip is a stop of its own; a hidden chip row is skipped.
+        // Every effort row is a stop of its own; a hidden group is skipped.
         const items = rowsIn(ref.current, ROW_SELECTOR)
         const index = items.indexOf(activeElement())
         const focusAt = (at) => { items[(at + items.length) % items.length]?.focus() }
@@ -781,26 +766,26 @@ window.__ModuleLoader__.load({
       const live = current.filter((key) => authorizedSet.has(key))
       const stale = confirmed.filter((key) => !authorizedSet.has(key))
       const atCap = live.length >= MAX_MODELS
-      // The chip rows are built once per opening, for every authorized model,
-      // from the directory snapshot of that moment (null: no chip row), with
-      // the efforts this level recommends; rows and chips are never added or
+      // The effort rows are built once per opening, for every authorized model,
+      // from the directory snapshot of that moment (null: no effort rows), with
+      // the effort this level recommends; groups and rows are never added or
       // removed while the flyout is open, only shown or hidden.
-      const openChips = React.useRef(null)
+      const openEfforts = React.useRef(null)
       // Per opening: the effort each model had when it was unchecked, which a
       // check in the same opening restores.
       const picks = React.useRef(null)
       if (!open) {
-        openChips.current = null
+        openEfforts.current = null
         picks.current = null
-      } else if (openChips.current === null) {
-        const chips = new Map()
+      } else if (openEfforts.current === null) {
+        const frozenRows = new Map()
         for (const key of authorizedSet) {
           const advertised = effortsFor(props.ctx, props.sessionId, keyRoute(key))
           const recommended = recommendedEffort(level, advertised)
           const own = [effortFor(currentEfforts, key), effortFor(confirmedEfforts, key)]
-          chips.set(key, { recommended, chips: chipsFor(advertised, own, recommended) })
+          frozenRows.set(key, { recommended, rows: effortRowsFor(advertised, own, recommended) })
         }
-        openChips.current = chips
+        openEfforts.current = frozenRows
         picks.current = new Map()
       }
       // Every edit makes a new draft from the one shown; it keeps efforts only
@@ -823,7 +808,7 @@ window.__ModuleLoader__.load({
       const checkedEffort = (key) => {
         if (picks.current?.has(key)) return picks.current.get(key)
         if (confirmed.includes(key)) return effortFor(confirmedEfforts, key)
-        return openChips.current?.get(key)?.recommended
+        return openEfforts.current?.get(key)?.recommended
       }
       const remember = (keys) => {
         for (const key of keys) picks.current?.set(key, effortFor(currentEfforts, key))
@@ -841,14 +826,14 @@ window.__ModuleLoader__.load({
         remember(live)
         edit({ keys: [] })
       }
-      // A chip of a model that is not checked is disabled and sends nothing.
+      // An effort row of a model that is not checked is disabled and sends nothing.
       const chooseEffort = (key, effort) => {
         if (locked || !live.includes(key)) return
         edit({ efforts: withEffort(currentEfforts, key, effort) })
       }
       const saving = awaiting !== null || (desired !== null && !open && desiredText !== confirmedText)
 
-      // The elements of the model rows and chip rows, for the focus hand-off.
+      // The elements of the model rows and effort groups, for the focus hand-off.
       const elements = React.useRef(null)
       if (elements.current === null) elements.current = { nodes: new Map(), refs: new Map() }
       const elementRef = (id) => {
@@ -856,7 +841,7 @@ window.__ModuleLoader__.load({
         if (!refs.has(id)) refs.set(id, (node) => { if (node) nodes.set(id, node); else nodes.delete(id) })
         return refs.get(id)
       }
-      // A chip row that holds focus when its model stops being checked (a
+      // An effort group that holds focus when its model stops being checked (a
       // snap-back, another tab's change) stays shown for one render: the
       // effect below first moves focus to its model row, then hides it, so
       // focus never falls to the document, which would close the host menu.
@@ -867,8 +852,8 @@ window.__ModuleLoader__.load({
       let holding = null
       if (focused !== null && focused !== undefined) {
         for (const [id, node] of elements.current.nodes) {
-          if (id.startsWith('chips:') && typeof node?.contains === 'function' && node.contains(focused)) {
-            holding = id.slice('chips:'.length)
+          if (id.startsWith('efforts:') && typeof node?.contains === 'function' && node.contains(focused)) {
+            holding = id.slice('efforts:'.length)
             break
           }
         }
@@ -905,31 +890,31 @@ window.__ModuleLoader__.load({
         : live.map((key) => entryText(key, effortFor(currentEfforts, key))).join(', ')}`
       const flyoutId = `${anchor.slice(2)}-menu`
 
-      // One model's chip row, right after its model row; hidden until the
+      // One model's effort group, right after its model row; hidden until the
       // model is checked.
-      const chipRow = (key) => {
-        const frozen = openChips.current?.get(key)
-        if (frozen === undefined || frozen.chips === null) return null
+      const effortGroup = (key) => {
+        const frozen = openEfforts.current?.get(key)
+        if (frozen === undefined || frozen.rows === null) return null
         const checked = live.includes(key)
         const effort = effortFor(currentEfforts, key)
         return h('div', {
-          key: `chips:${key}`,
-          ref: elementRef(`chips:${key}`),
-          className: 'router-chips',
+          key: `efforts:${key}`,
+          ref: elementRef(`efforts:${key}`),
+          className: 'router-efforts',
           role: 'group',
           'aria-label': effortLabel(t, key),
           hidden: !checked && key !== keep,
-        }, frozen.chips.map((chip) => h(OptionRow, {
-          key: chip.effort === undefined ? 'default' : `effort:${chip.effort}`,
-          chip: true,
+        }, frozen.rows.map((row) => h(OptionRow, {
+          key: row.effort === undefined ? 'default' : `effort:${row.effort}`,
+          effort: true,
           role: 'menuitemradio',
-          label: chip.effort === undefined ? defaultLabel(t, chip.name) : chip.name,
-          note: chip.recommended ? t('effort.recommended') : undefined,
-          warning: chip.warning,
-          title: chip.effort,
-          checked: checked && effort === chip.effort,
+          label: row.effort === undefined ? defaultLabel(t, row.name) : row.name,
+          note: row.recommended ? t('effort.recommended') : undefined,
+          warning: row.warning,
+          title: row.effort,
+          checked: checked && effort === row.effort,
           disabled: locked || !checked,
-          onSelect: () => chooseEffort(key, chip.effort),
+          onSelect: () => chooseEffort(key, row.effort),
         })))
       }
 
@@ -977,7 +962,7 @@ window.__ModuleLoader__.load({
                   elementRef: elementRef(`model:${key}`),
                   onSelect: () => toggle(key),
                 }),
-                chipRow(key),
+                effortGroup(key),
               ]),
             )),
           stale.length > 0
