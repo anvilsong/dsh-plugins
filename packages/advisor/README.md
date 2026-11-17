@@ -17,11 +17,13 @@ also makes the two easy to compare.
 /advisor status
 /advisor model
 /advisor model inherit
-/advisor model <provider>/<model>
+/advisor model <provider>/<model> [effort=<id>]
 /advisor verifier-model
 /advisor verifier-model inherit
-/advisor verifier-model <provider>/<model>
+/advisor verifier-model <provider>/<model> [effort=<id>]
 ```
+
+`effort=<id>` is optional and only for an explicit route; see [Effort](#effort).
 
 The model-options menu has one **Advisor** switch and two menu cells: **Advisor
 model** and **Verifier model**. Both cells are dimmed while Advisor is off.
@@ -38,8 +40,8 @@ models on **Inherit**.
 - 0.5.0 replaces skill consultations with in-process advisor children and adds
   `/advisor model`. Development builds used `/advisor planner`; that command now
   returns an error that points to `/advisor model`.
-- The projection moved to state version 6, so cached Advisor state is rebuilt
-  once from the session log.
+- The projection moved to state version 7 (a saved model can carry an
+  effort), so cached Advisor state is rebuilt once from the session log.
 - Advisor data moved into the DSH home (see [Data directory](#data-directory)).
   Runs recorded earlier stay in the advisor skill's folder
   (`~/.local/state/advisor`, or under `$XDG_STATE_HOME` or `$ADVISOR_LEDGER` if
@@ -60,16 +62,102 @@ shipped projection or the saved `allowedModels` setting.
 
 What the lead does with each choice:
 
-- **Inherit:** omits provider, model, effort, and preset, so configured child
-  defaults and compatible parent values apply.
+- **Inherit:** omits provider, model, effort, and preset, so the normal
+  subagent defaults apply: the configured child defaults, else the lead's own
+  model and effort.
 - **Explicit route:** passes exactly that provider and model and omits effort
-  and preset, so the model's default effort applies.
-- The Host refuses an advisor child whose route differs from the selection or
-  is no longer authorized. An explicit-route spawn failure is reported, with no
-  silent fallback.
+  and preset, so that model runs at its own default effort, not the lead's.
+  Choosing the lead's own model explicitly is therefore not Inherit: the effort
+  falls to the model's default.
+- **Explicit route with an effort:** passes that provider and model plus
+  `reasoning_effort "<id>"`, and omits preset.
+- The Host refuses an advisor child whose route or effort differs from the
+  selection, or whose route is no longer authorized. An explicit-route spawn
+  failure is reported, with no silent fallback.
 - Model router exempts all Advisor children (`advisor-planner-*`,
   `advisor-consult-*`, `advisor-verifier-*`) and leaves these choices to
   Advisor.
+
+### Effort
+
+```text
+/advisor model <provider>/<model> effort=<id>
+/advisor verifier-model <provider>/<model> effort=<id>
+```
+
+- `<id>` is the exact effort id the model advertises (for example in
+  `list_subagent_models`). It is stored as typed: case matters, and there are
+  no names, aliases, or nearest-effort fallback.
+- The effort is the last whitespace-separated token of the setting, so a model
+  id may contain spaces. The keyword `effort=` is lowercase and
+  case-sensitive: `EFFORT=high` is not a token but part of the model id. Text
+  after the token, or an earlier second `effort=` token, also stays part of
+  the model id; such a route is not authorized, so nothing is stored. A model
+  id that itself ends in ` effort=<x>` can only be addressed with an effort
+  token after it.
+- Without `effort=` the route runs at the model's own default effort (Default);
+  there is no `effort=default` keyword. An empty `effort=` and `effort=` with
+  Inherit are usage errors; only the second adds "Inherit takes no effort":
+  Inherit never carries an effort.
+- Setting an effort checks it first with the same preflight a spawn runs, for
+  at most 10 seconds. An id the model does not advertise is refused with the
+  advertised ones as `id (name)`. If the check cannot run (no llm service,
+  another error such as missing credentials, or the 10 s limit), the command
+  fails with `could not be checked: <reason>`. Either way nothing is stored.
+  While the check runs, `/advisor status` reports that Advisor is updating and
+  other changes are refused; when it ends, they work again. Setting a model
+  without an effort, or Inherit, never runs a check.
+- `/advisor status`, `/advisor model`, and `/advisor verifier-model` show a
+  stored effort as `<provider>/<model> effort=<id>`.
+- The delegation guards require `reasoning_effort` to be exactly the stored id,
+  and absent when there is none or on Inherit. With a stored effort, the
+  denial of a wrong or missing provider, model or `reasoning_effort` names the
+  required provider, model and `reasoning_effort` and the reset command.
+  Without one, the denial texts are
+  the old ones, with one change of order: the advisor-planner/advisor-consult
+  guard now checks `reasoning_effort` after its lead and Advisor-on checks, so
+  a teammate's call or a call while Advisor is off that carries one gets "Only
+  the lead can start an advisor child." or "Advisor is off for this session;
+  enable Advisor first." instead of "must omit reasoning_effort" (still a
+  denial).
+- An `agent_preset` is refused before those checks. Without a stored effort
+  the denial keeps the old text, which says to omit `reasoning_effort` and
+  `agent_preset`; with one it says to omit `agent_preset` and repeats the
+  required provider, model, `reasoning_effort` and the reset command.
+- The effort is checked at delegation only, not at child start or submit:
+  changing it mid-run keeps a finished run, while a model change still
+  discards it.
+- Drift: if the model stops offering a stored effort, the effort is never
+  cleared or lowered automatically. Spawns on it fail at the spawn preflight,
+  the lead reports that and does not retry without the effort, and
+  `/advisor status` adds a best-effort "no longer offered" note. Reset with
+  `/advisor model <provider>/<model>` (Default, the same model) or
+  `/advisor model inherit`, or the same with `verifier-model`.
+- The model menu does not show or send efforts yet. Picking another model or
+  Inherit there sends `/advisor model <provider>/<model>` (or `inherit`)
+  without an effort, so it resets a command-set effort to Default; picking the
+  model already saved sends nothing and keeps the effort. This lasts until the
+  menu gains an effort choice.
+- Advisor children record both values in the ledger: `effort_requested` is
+  the effort stored when the child first started (a child resumed after a
+  Host restart keeps the value of its `started` line, whatever the setting is
+  by then), `effort` what the child's own model selection reports (see
+  [What the Host records](#what-the-host-records)). The verifier's effort is
+  enforced at delegation only; verifiers write no ledger line.
+
+Live check, before the menu gains an effort choice:
+
+1. Restart DSH so the Host loads this code, open a fresh session, and turn
+   Advisor on.
+2. Pick a model `P/M` that advertises at least two efforts and an id `E` that
+   is not its default (`list_subagent_models`).
+3. Run `/advisor model P/M effort=E`, then let the lead start one
+   `advisor-consult`.
+4. Pass: the guard admits the spawn, and the `ok` ledger line has
+   `effort_requested: E`. Its `effort` value tells whether the child's
+   selection reports the effort: `E` means it does, `null` means it does not
+   (keep the effort out of the start check); anything else means stop and
+   investigate first.
 
 ## Advisor runs
 
@@ -139,6 +227,11 @@ fields:
 
 - `consult_id` = `<id>`, `kind` (`plan` or `advice`), `advisor: dsh`, and
   `backend: dsh:<provider>/<model>`
+- `model`; `effort`, the reasoning effort the child's own model selection
+  reports (`null` when it reports none); and `effort_requested`, the Advisor
+  model's stored effort when the child first started (`null` for none or
+  Inherit). The `started` line carries these as well; a child resumed after a
+  Host restart takes `effort_requested` from its `started` line.
 - `reply_file` and `reply_sha256`
 - `task_count` or `claim_count`
 - `submit_attempts`, `tool_calls`, and `duration_s`
@@ -330,7 +423,8 @@ node packages/advisor/scripts/compare.mjs [--ledger <file>]... [--topics <file>]
 
 Delegation:
 
-- Only `subagent` from the lead, with an exact name and no effort or preset.
+- Only `subagent` from the lead, with an exact name, no preset, and
+  `reasoning_effort` only as exactly the stored effort (none without one).
 - Advisor must be on, the selected route still authorized, and Agent Teams
   enabled.
 - The id must be unused, and only one advisor child may run per session.
@@ -342,7 +436,7 @@ Execution:
 - Default-deny. Only `read`, `grep`, `glob`, and the child's own scoped submit
   tool run, checked against the definitions captured at start.
 - At start and at submit, the child must be running on the selected Advisor
-  model.
+  model (provider and model; the effort is checked at delegation only).
 - Reads stay inside the lead's workspace after symlinks are resolved, and paths
   may not contain `..`.
 - `.git`, `.ssh`, `.env*` (except templates), keys, and credential files are
@@ -356,6 +450,8 @@ Limits of this iteration:
 - `cost_usd` is `null`, because the Host knows tokens but not prices. A
   comparison prices tokens itself.
 - `backend` is `dsh:unknown` if the child's model cannot be read.
+- `effort` is `null` when the child's selection does not report its effort;
+  `effort_requested` is then the only record of a requested effort.
 - The Host's hash pin lives in memory and is lost on restart; the lead's own
   hash check still applies.
 - `glob` can still list the names, but not the contents, of protected files.
@@ -465,7 +561,8 @@ The verifier boundary is default-deny:
   directory, a root of `/`, or a verifier working outside the root or in the
   data directory, the verifier is stopped and every tool is denied.
 - Reserved delegations with malformed names, a non-spawn backend, Advisor off,
-  or a route different from the stored selection are rejected.
+  a route different from the stored selection, or a `reasoning_effort` other
+  than its stored effort are rejected.
 - Guards belong to the child's lifetime, so switching Advisor off mid-run does
   not lift them.
 

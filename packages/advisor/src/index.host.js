@@ -8,7 +8,16 @@ import {
   dataDirUnusable,
   installPlannerBoundary,
 } from './planner.js'
-import { foldAdvisor, INITIAL_ADVISOR_STATE, parseModelSetting, pendingAdvisor, routeLabel, viewAdvisor } from './state.js'
+import {
+  effortReset,
+  foldAdvisor,
+  inheritWithEffort,
+  INITIAL_ADVISOR_STATE,
+  parseModelSetting,
+  pendingAdvisor,
+  routeLabel,
+  viewAdvisor,
+} from './state.js'
 import { installVerifierBoundary, VERIFIER_WORKFLOW, verifierModelPolicy } from './verifier.js'
 
 export const name = 'advisor'
@@ -28,7 +37,11 @@ export function unavailablePolicy(refusal) {
 /** Lead policy while Advisor is on but no data directory is configured. */
 export const UNCONFIGURED_POLICY = unavailablePolicy(DATA_DIR_NOT_CONFIGURED)
 
-const routeSchema = z.object({ provider: z.string().min(1), model: z.string().min(1) })
+const routeFields = { provider: z.string().min(1), model: z.string().min(1) }
+/** An authorized route, as the routes projection keeps it: provider and model only. */
+const routeSchema = z.object(routeFields)
+/** A saved Advisor or Verifier model: a route and its optional effort id (zod drops undeclared keys). */
+const settingRouteSchema = z.object({ ...routeFields, effort: z.string().min(1).optional() })
 const commandFields = { commandId: z.string(), startedAt: z.number() }
 const targetSchema = z.enum(['advisor', 'verifierModel', 'advisorModel'])
 const failureSchema = z.object({
@@ -38,20 +51,20 @@ const failureSchema = z.object({
 }).nullable()
 const stateSchema = z.object({
   active: z.boolean(),
-  verifierModel: routeSchema.nullable(),
-  advisorModel: routeSchema.nullable(),
+  verifierModel: settingRouteSchema.nullable(),
+  advisorModel: settingRouteSchema.nullable(),
   pending: z.discriminatedUnion('target', [
     z.object({ target: z.literal('advisor'), active: z.boolean(), ...commandFields }),
-    z.object({ target: z.literal('verifierModel'), route: routeSchema.nullable(), ...commandFields }),
-    z.object({ target: z.literal('advisorModel'), route: routeSchema.nullable(), ...commandFields }),
+    z.object({ target: z.literal('verifierModel'), route: settingRouteSchema.nullable(), ...commandFields }),
+    z.object({ target: z.literal('advisorModel'), route: settingRouteSchema.nullable(), ...commandFields }),
   ]).nullable(),
   lastRun: z.object({ commandId: z.string(), target: targetSchema }).nullable(),
   failure: failureSchema,
 })
 const viewSchema = z.object({
   active: z.boolean(),
-  verifierModel: routeSchema.nullable(),
-  advisorModel: routeSchema.nullable(),
+  verifierModel: settingRouteSchema.nullable(),
+  advisorModel: settingRouteSchema.nullable(),
   pending: z.boolean(),
   pendingTarget: targetSchema.nullable(),
   pendingSince: z.number().nullable(),
@@ -61,7 +74,99 @@ const routeListSchema = z.array(routeSchema).nullable()
 
 const modelLabel = routeLabel
 
-const describe = (error) => (error instanceof Error ? error.message : String(error))
+/** A message for any thrown value; never throws (getters, revoked proxies, null-prototype objects). */
+function describe(error) {
+  try {
+    return error instanceof Error ? String(error.message) : String(error)
+  } catch {
+    return 'an unreadable error'
+  }
+}
+
+/** Whether a thrown value is the llm's refusal of an effort the model does not advertise; never throws. */
+function isUnsupportedEffort(error) {
+  try {
+    return error?.code === 'UNSUPPORTED_REASONING_EFFORT'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Bound of an effort check: while `/advisor model … effort=<id>` waits for
+ * it, its pending marker refuses every other /advisor command.
+ */
+const EFFORT_CHECK_MS = 10_000
+const EFFORT_TIMEOUT = `the check timed out after ${EFFORT_CHECK_MS / 1000} s`
+
+/**
+ * One EFFORT_CHECK_MS deadline: the signal passed to the llm calls, a promise
+ * that rejects when the deadline passes, and clear(), which the caller runs
+ * in a finally block.
+ */
+function effortDeadline() {
+  const controller = new AbortController()
+  let timer
+  const expired = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(EFFORT_TIMEOUT)
+      // Reject before aborting: a call that rejects from its abort listener
+      // must not win the race with its own reason.
+      reject(error)
+      controller.abort(error)
+    }, EFFORT_CHECK_MS)
+  })
+  expired.catch(() => {}) // observed by the races below; never unhandled
+  return { signal: controller.signal, expired, clear: () => clearTimeout(timer) }
+}
+
+/**
+ * Check a stored or requested effort with the spawn's own preflight,
+ * llm.resolveCallConfig, before `deadline` passes. Never throws.
+ * @returns {Promise<{ ok: true } | { unsupported: true, efforts: object[] | undefined } | { reason: string }>}
+ *   `efforts`: what the model advertises, from a best-effort resolveModelInfo
+ *   under the same deadline (undefined when that list is unavailable);
+ *   `reason`: why the effort could not be checked.
+ */
+async function checkEffort(llm, route, deadline) {
+  const { provider, model, effort } = route
+  try {
+    await Promise.race([llm.resolveCallConfig({ provider, model, reasoningEffort: effort }, deadline.signal), deadline.expired])
+    return { ok: true }
+  } catch (error) {
+    // Once the deadline has passed, any rejection is the timeout.
+    if (deadline.signal.aborted) return { reason: EFFORT_TIMEOUT }
+    // Credentials, provider setup and other failures are not an unsupported effort.
+    if (!isUnsupportedEffort(error)) return { reason: describe(error) }
+  }
+  try {
+    const info = await Promise.race([llm.resolveModelInfo(provider, model, deadline.signal), deadline.expired])
+    if (info === null || typeof info !== 'object') return { unsupported: true, efforts: undefined }
+    // No reasoning entry: the model advertises no efforts at all.
+    const efforts = info.reasoning === undefined ? [] : info.reasoning?.efforts
+    return { unsupported: true, efforts: Array.isArray(efforts) ? efforts : undefined }
+  } catch {
+    return { unsupported: true, efforts: undefined }
+  }
+}
+
+/** The advertised efforts as `id (name)`, for a refused or no longer offered effort; never throws. */
+function advertisedEfforts(route, efforts) {
+  const unavailable = 'The list of advertised efforts is unavailable.'
+  if (efforts === undefined) return unavailable
+  try {
+    const listed = efforts.flatMap((effort) => {
+      const id = effort?.id
+      if (typeof id !== 'string' || id === '') return []
+      const name = effort.name
+      return [typeof name === 'string' && name !== '' ? `${id} (${name})` : id]
+    })
+    if (listed.length === 0) return `${route.provider}/${route.model} advertises no reasoning efforts.`
+    return `Advertised efforts: ${listed.join(', ')}.`
+  } catch {
+    return unavailable
+  }
+}
 
 /** The DSH home from the launcher's profile data; optional, so it is not injected. */
 function profileHome(ctx) {
@@ -109,7 +214,8 @@ export async function apply(ctx, config = {}) {
 
   const projection = await ctx.sessionProjections.register({
     key: 'advisor',
-    stateVersion: 6,
+    // 7: saved routes may carry an effort; older cached state is rebuilt from the log.
+    stateVersion: 7,
     stateSchema,
     init: () => ({ ...INITIAL_ADVISOR_STATE }),
     apply: foldAdvisor,
@@ -222,11 +328,78 @@ export async function apply(ctx, config = {}) {
     }), 'advisor: child boundary')
   })
 
+  /** The llm service, read at call time: optional, so neither injected nor cached. */
+  const llmService = () => {
+    try {
+      return ctx.get?.('llm')
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Notes for stored efforts that the spawn preflight no longer accepts, one
+   * line each; '' when none, or when that cannot be checked now (best effort:
+   * the llm is unavailable, fails, or misses the shared deadline). A stale
+   * effort is reported, never cleared. Never throws, so status always answers.
+   */
+  const effortNotes = async (state) => {
+    try {
+      const stored = [['Advisor model', 'model', state.advisorModel], ['Verifier model', 'verifier-model', state.verifierModel]]
+        .filter(([, , route]) => typeof route?.effort === 'string')
+      if (stored.length === 0) return ''
+      const llm = llmService()
+      if (typeof llm?.resolveCallConfig !== 'function') return ''
+      const deadline = effortDeadline()
+      try {
+        const results = await Promise.all(stored.map(async ([noun, command, route]) => ({ noun, command, route, result: await checkEffort(llm, route, deadline) })))
+        return results.filter(({ result }) => result.unsupported === true)
+          .map(({ noun, command, route, result }) => `${noun} effort ${route.effort} is no longer offered by ${route.provider}/${route.model}; spawns on it fail until you reset it with ${effortReset(command, route)}. ${advertisedEfforts(route, result.efforts)}\n`)
+          .join('')
+      } finally {
+        deadline.clear()
+      }
+    } catch {
+      return ''
+    }
+  }
+
   ctx.inject(['commands'], (commandCtx) => {
-    const USAGE = 'Usage: /advisor [on|off|status|model inherit|model <provider>/<model>|verifier-model inherit|verifier-model <provider>/<model>]'
-    const setRoute = (agent, raw, prefix, noun) => {
-      const route = parseModelSetting(raw.slice(prefix.length).trim())
-      if (route === undefined) return { kind: 'error', text: `Usage: /advisor ${prefix.trim()} inherit|<provider>/<model>` }
+    const USAGE = 'Usage: /advisor [on|off|status|model inherit|model <provider>/<model> [effort=<id>]|verifier-model inherit|verifier-model <provider>/<model> [effort=<id>]]'
+    /**
+     * Why a requested effort cannot be set now, or undefined when the spawn
+     * preflight accepts it. Only called with an effort, after the route is
+     * authorized; bounded by EFFORT_CHECK_MS so the pending marker is not
+     * left blocking. Never throws: whatever goes wrong refuses the setting.
+     */
+    const effortRefusal = async (route, noun) => {
+      const unchecked = (reason) => `${noun} effort ${route.effort} for ${route.provider}/${route.model} could not be checked: ${reason}; nothing was changed.`
+      try {
+        const llm = llmService()
+        if (typeof llm?.resolveCallConfig !== 'function') return unchecked('the llm service is unavailable')
+        const deadline = effortDeadline()
+        let result
+        try {
+          result = await checkEffort(llm, route, deadline)
+        } finally {
+          deadline.clear()
+        }
+        if (result.ok === true) return undefined
+        if (result.unsupported === true) {
+          return `${noun} effort ${route.effort} is not offered by ${route.provider}/${route.model}; nothing was changed. ${advertisedEfforts(route, result.efforts)}`
+        }
+        return unchecked(result.reason)
+      } catch (error) {
+        return unchecked(describe(error))
+      }
+    }
+    const setRoute = async (agent, raw, prefix, noun) => {
+      const setting = raw.slice(prefix.length).trim()
+      const route = parseModelSetting(setting)
+      if (route === undefined) {
+        const usage = `Usage: /advisor ${prefix.trim()} inherit|<provider>/<model> [effort=<id>]`
+        return { kind: 'error', text: inheritWithEffort(setting) ? `${usage}; Inherit takes no effort.` : usage }
+      }
       if (route !== null) {
         const routes = modelRoutes.stateOf(agent.session)
         const authorized = Array.isArray(routes)
@@ -237,19 +410,25 @@ export async function apply(ctx, config = {}) {
             text: `${noun} route ${route.provider}/${route.model} is not authorized for this session. Choose an available subagent model or Inherit.`,
           }
         }
+        // The fold stores exactly this parsed route on success, so the id is
+        // checked verbatim; a refusal stores nothing.
+        if (route.effort !== undefined) {
+          const refusal = await effortRefusal(route, noun)
+          if (refusal !== undefined) return { kind: 'error', text: refusal }
+        }
       }
       return {
         kind: 'success',
         text: route === null
           ? `${noun} set to Inherit for this session. Normal subagent defaults apply when Advisor is on.`
-          : `${noun} set to ${route.provider}/${route.model} for this session. It is used when Advisor is on.`,
+          : `${noun} set to ${routeLabel(route)} for this session. It is used when Advisor is on.`,
       }
     }
     commandCtx.commands.register({
       definitionId: 'dsh-plugin-advisor',
       name: 'advisor',
       description: 'Toggle the in-process advisor and read-only verification, and choose their models, for this session',
-      input: { hint: '[on|off|status|model inherit|provider/model|verifier-model inherit|provider/model]' },
+      input: { hint: '[on|off|status|model inherit|provider/model [effort=id]|verifier-model inherit|provider/model [effort=id]]' },
       handler: async ({ agent, rawInput, commandId }) => {
         const raw = rawInput.trim()
         const arg = raw.toLowerCase()
@@ -264,10 +443,12 @@ export async function apply(ctx, config = {}) {
             : `Data directory: ${ledger.dir}\n`
               + (unusable === undefined ? '' : `${dataDirUnusable(unusable)} Advisor runs are refused until then.\n`)
               + `Recent advisor runs:\n${runs}`
+          const notes = await effortNotes(state)
           return {
             kind: 'success',
             text: `${state.active ? 'Advisor is on; verification is automatic' : 'Advisor is off; verification is disabled'} for this session.\n`
               + `Advisor model: ${modelLabel(state.advisorModel ?? null)}. Verifier model: ${modelLabel(state.verifierModel)}. Both apply when Advisor is on.\n`
+              + notes
               + data,
           }
         }

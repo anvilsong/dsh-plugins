@@ -7,6 +7,7 @@ import path from 'node:path'
 import { apply, POLICY, UNCONFIGURED_POLICY, unavailablePolicy } from '../src/index.host.js'
 import { createLedger } from '../src/ledger.js'
 import { ADVISOR_WORKFLOW, DATA_DIR_NOT_CONFIGURED, dataDirUnusable } from '../src/planner.js'
+import { parseModelSetting, routeLabel } from '../src/state.js'
 import {
   EVIDENCE_TOOL,
   installVerifierBoundary,
@@ -18,14 +19,22 @@ import {
 
 const selected = { provider: 'openrouter', model: '~deepseek/deepseek-flash-latest' }
 
-// `profile`: what ctx.get('profileContext') returns (absent: no ctx.get at all).
-function harness({ profile } = {}) {
+// `profile`: what ctx.get('profileContext') returns; `llm`: what
+// ctx.get('llm') returns, or a function called on each read (so a read can
+// throw). Without either there is no ctx.get at all. `gets` lists every read.
+function harness({ profile, llm } = {}) {
   const definitions = {}
   const warnings = []
+  const gets = []
   let section
   let command
   let state = { active: false, verifierModel: null, pending: null }
   let routes = [selected, { provider: 'anthropic', model: 'claude-haiku-5-5' }]
+  const get = (name) => {
+    gets.push(name)
+    if (name === 'llm') return typeof llm === 'function' ? llm() : llm
+    return name === 'profileContext' ? profile : undefined
+  }
   const ctx = {
     sessionProjections: {
       async register(value) {
@@ -38,12 +47,13 @@ function harness({ profile } = {}) {
       if (names.includes('commands')) callback({ commands: { register(value) { command = value } } })
     },
     logger: { warn: (message) => warnings.push(message), info() {}, debug() {} },
-    ...(profile === undefined ? {} : { get: (name) => (name === 'profileContext' ? profile : undefined) }),
+    ...(profile === undefined && llm === undefined ? {} : { get }),
   }
   return {
     ctx,
     agent: { session: {} },
     warnings,
+    gets,
     get: () => ({
       definition: definitions.advisor,
       modelRoutesDefinition: definitions.advisorModelRoutes,
@@ -148,7 +158,7 @@ test('registers advisor and authorized-route projections, prompt, and command', 
   await apply(ctx)
   const { definition, modelRoutesDefinition, section, command } = get()
   assert.equal(definition.key, 'advisor')
-  assert.equal(definition.stateVersion, 6)
+  assert.equal(definition.stateVersion, 7, 'routes with an effort: cached state is rebuilt from the session log')
   assert.equal(modelRoutesDefinition.stateVersion, 1)
   assert.equal(section.name, 'advisor:policy')
   assert.equal(command.name, 'advisor')
@@ -537,4 +547,492 @@ test('a stale pending marker neither reports updating nor blocks a new command',
   get().state.pending = { target: 'advisor', active: true, commandId: 'old', startedAt: Date.now() - 60_000 }
   assert.match((await command.handler({ agent, rawInput: 'status' })).text, /updating/)
   assert.match((await command.handler({ agent, rawInput: 'off', commandId: 'new' })).text, /already updating/)
+})
+
+// ---------------------------------------------------------------------------
+// Effort: `/advisor model|verifier-model <provider>/<model> [effort=<id>]`
+
+const SELECTED = `${selected.provider}/${selected.model}`
+const HAIKU = Object.freeze({ provider: 'anthropic', model: 'claude-haiku-5-5' })
+const SPACED = Object.freeze({ provider: 'p', model: 'my model' })
+// What each route advertises; the fake llm accepts only these ids, exactly, as the spawn preflight does.
+const ADVERTISED = Object.freeze({
+  [SELECTED]: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High', description: 'Deeper reasoning' }],
+  'anthropic/claude-haiku-5-5': [],
+  'p/my model': [{ id: 'HiGh', name: 'Mixed case' }],
+})
+const unsupportedEffort = (effort) => Object.assign(new Error(`reasoning effort ${effort} is not supported`), { name: 'LlmError', code: 'UNSUPPORTED_REASONING_EFFORT' })
+const turn = () => new Promise((resolve) => setImmediate(resolve))
+
+/**
+ * A fake llm service. resolveCallConfig accepts only an advertised effort id;
+ * `callConfig` and `modelInfo` replace a method's behaviour. `calls` records
+ * every call with its arguments and signal.
+ */
+function fakeLlm({ callConfig, modelInfo } = {}) {
+  const calls = []
+  return {
+    calls,
+    async resolveCallConfig(config, signal) {
+      calls.push({ method: 'resolveCallConfig', config, signal })
+      if (callConfig !== undefined) return callConfig(config, signal)
+      const efforts = ADVERTISED[`${config.provider}/${config.model}`] ?? []
+      if (!efforts.some((effort) => effort.id === config.reasoningEffort)) throw unsupportedEffort(config.reasoningEffort)
+      return { ...config }
+    },
+    async resolveModelInfo(provider, model, signal) {
+      calls.push({ method: 'resolveModelInfo', provider, model, signal })
+      if (modelInfo !== undefined) return modelInfo(provider, model, signal)
+      const efforts = ADVERTISED[`${provider}/${model}`] ?? []
+      return efforts.length === 0 ? {} : { reasoning: { efforts, defaultEffort: efforts[0].id } }
+    },
+  }
+}
+
+/**
+ * Run /advisor commands the way the Host does, with the registered
+ * projection's own fold: command/run is folded before the handler starts, and
+ * command/done with its result after it returns. A slow handler therefore
+ * keeps its pending marker until it returns.
+ */
+async function commandDriver(options, config) {
+  const h = harness(options)
+  await apply(h.ctx, config)
+  const { definition, command } = h.get()
+  h.setState(definition.init())
+  h.setRoutes([selected, HAIKU, SPACED])
+  let counter = 0
+  const fold = (event) => h.setState(definition.apply(h.get().state, event))
+  const send = async (rawInput) => {
+    const commandId = `command-${++counter}`
+    fold({ type: 'command/run', time: Date.now(), data: { name: 'advisor', args: rawInput, commandId } })
+    const result = await command.handler({ agent: h.agent, rawInput, commandId })
+    fold({ type: 'command/done', time: Date.now(), data: { commandId, kind: result.kind, text: result.text } })
+    return result
+  }
+  return { ...h, definition, command, send, state: () => h.get().state }
+}
+
+test('schemas: saved routes keep their effort through the state, pending and view schemas; the routes list keeps provider and model only', async () => {
+  const { ctx, get } = harness()
+  await apply(ctx)
+  const { definition, modelRoutesDefinition } = get()
+  const advisorModel = { ...selected, effort: 'high' }
+  const verifierModel = { ...HAIKU, effort: 'low' }
+  const state = {
+    active: true,
+    verifierModel,
+    advisorModel,
+    pending: { target: 'verifierModel', route: verifierModel, commandId: 'c', startedAt: 1 },
+    lastRun: { commandId: 'c', target: 'verifierModel' },
+    failure: null,
+  }
+  assert.deepEqual(definition.stateSchema.parse(state), state)
+  assert.deepEqual(definition.wire.viewSchema.parse(definition.wire.view(state)), {
+    active: true, verifierModel, advisorModel, pending: true, pendingTarget: 'verifierModel', pendingSince: 1, failure: null,
+  })
+  const withoutEffort = { ...state, advisorModel: selected, verifierModel: null, pending: { target: 'advisorModel', route: selected, commandId: 'c', startedAt: 1 } }
+  assert.deepEqual(definition.stateSchema.parse(withoutEffort), withoutEffort, 'a route without an effort (the version 6 shape) still parses')
+  assert.equal(Object.hasOwn(definition.stateSchema.parse(withoutEffort).advisorModel, 'effort'), false, 'and gains no effort key')
+  for (const bad of [{ ...selected, effort: '' }, { ...selected, effort: 7 }, { ...selected, effort: null }]) {
+    assert.equal(definition.stateSchema.safeParse({ ...state, advisorModel: bad }).success, false, JSON.stringify(bad))
+    assert.equal(definition.stateSchema.safeParse({ ...state, pending: { ...state.pending, route: bad } }).success, false, JSON.stringify(bad))
+    assert.equal(definition.wire.viewSchema.safeParse({ ...definition.wire.view(state), verifierModel: bad }).success, false, JSON.stringify(bad))
+  }
+  // The authorized-routes projection is unchanged: provider and model only.
+  assert.notEqual(modelRoutesDefinition.stateSchema, definition.stateSchema)
+  assert.deepEqual(modelRoutesDefinition.stateSchema.parse([advisorModel, verifierModel]), [selected, HAIKU])
+  assert.deepEqual(modelRoutesDefinition.wire.viewSchema.parse([advisorModel]), [selected])
+  const policy = { type: 'subagent/model-selection-policy', data: { allowedModels: [{ ...selected, effort: 'high', reasoningEfforts: ['low', 'high'] }] } }
+  assert.deepEqual(modelRoutesDefinition.apply(null, policy), [selected])
+})
+
+test('effort: a supported effort is checked once against the exact route with an AbortSignal and stored as typed; reads and status show it', async () => {
+  const llm = fakeLlm()
+  const pendingDuringCheck = []
+  const check = llm.resolveCallConfig
+  llm.resolveCallConfig = (config, signal) => {
+    pendingDuringCheck.push(d.definition.stateSchema.parse(d.state()).pending)
+    return check(config, signal)
+  }
+  const d = await commandDriver({ llm })
+  const result = await d.send(`model ${SELECTED} effort=high`)
+  assert.deepEqual(result, { kind: 'success', text: `Advisor model set to ${SELECTED} effort=high for this session. It is used when Advisor is on.` })
+  assert.deepEqual(d.state().advisorModel, { ...selected, effort: 'high' })
+  assert.equal(llm.calls.length, 1, 'one check, no list read for an accepted effort')
+  const [{ config, signal }] = llm.calls
+  assert.deepEqual(config, { provider: selected.provider, model: selected.model, reasoningEffort: 'high' })
+  assert.ok(signal instanceof AbortSignal)
+  assert.equal(signal.aborted, false, 'the timer was cleared, not fired')
+  assert.equal(pendingDuringCheck.length, 1)
+  assert.deepEqual(pendingDuringCheck[0].route, { ...selected, effort: 'high' }, 'the pending marker keeps the effort through the state schema')
+
+  assert.equal((await d.send(`verifier-model ${SELECTED} effort=low`)).kind, 'success')
+  assert.deepEqual(d.state().verifierModel, { ...selected, effort: 'low' })
+  assert.equal((await d.send('model')).text, `Advisor model: ${SELECTED} effort=high for this session.`)
+  assert.equal((await d.send('verifier-model')).text, `Verifier model: ${SELECTED} effort=low for this session.`)
+  const status = await d.send('status')
+  assert.ok(status.text.includes(`Advisor model: ${SELECTED} effort=high. Verifier model: ${SELECTED} effort=low. Both apply when Advisor is on.\n`), status.text)
+  assert.doesNotMatch(status.text, /no longer offered/)
+
+  // Back to the model's own default effort: no check, and no effort key.
+  llm.calls.length = 0
+  assert.equal((await d.send(`model ${SELECTED}`)).text, `Advisor model set to ${SELECTED} for this session. It is used when Advisor is on.`)
+  assert.deepEqual(d.state().advisorModel, selected)
+  assert.equal(Object.hasOwn(d.state().advisorModel, 'effort'), false)
+  assert.equal(llm.calls.length, 0)
+})
+
+test('effort: for every accepted setting the fold stores exactly the route the handler validated, also after the schemas', async () => {
+  const llm = fakeLlm()
+  const d = await commandDriver({ llm })
+  const cases = [
+    [`model ${SELECTED}`, 'advisorModel'],
+    [`model ${SELECTED} effort=high`, 'advisorModel'],
+    [`  MODEL   ${SELECTED}\teffort=low  `, 'advisorModel'],
+    ['model p/my model', 'advisorModel'],
+    ['model p/my model effort=HiGh', 'advisorModel'],
+    ['model INHERIT', 'advisorModel'],
+    [`verifier-model ${SELECTED} effort=high`, 'verifierModel'],
+    ['verifier-model p/my model effort=HiGh', 'verifierModel'],
+    ['verifier-model anthropic/claude-haiku-5-5', 'verifierModel'],
+    ['verifier-model inherit', 'verifierModel'],
+  ]
+  for (const [input, field] of cases) {
+    llm.calls.length = 0
+    const result = await d.send(input)
+    assert.equal(result.kind, 'success', `${input}: ${result.text}`)
+    const label = /set to (.*) for this session\./.exec(result.text)[1]
+    const validated = label === 'Inherit' ? null : parseModelSetting(label)
+    assert.deepEqual(d.state()[field], validated, input)
+    const checked = llm.calls.filter((call) => call.method === 'resolveCallConfig')
+    if (validated?.effort === undefined) {
+      assert.deepEqual(checked, [], `${input}: no check without an effort`)
+    } else {
+      assert.equal(checked.length, 1, input)
+      const { provider, model, reasoningEffort } = checked[0].config
+      assert.deepEqual({ provider, model, effort: reasoningEffort }, d.state()[field], `${input}: the fold stored the checked route`)
+    }
+    assert.deepEqual(d.definition.stateSchema.parse(d.state())[field], validated, `${input}: state schema`)
+    assert.deepEqual(d.definition.wire.viewSchema.parse(d.definition.wire.view(d.state()))[field], validated, `${input}: view schema`)
+    assert.equal(routeLabel(validated), label)
+  }
+})
+
+test('effort: an effort the model does not advertise is refused with the advertised ids; nothing is stored and the next command works', async () => {
+  const llm = fakeLlm()
+  const d = await commandDriver({ llm })
+  for (const effort of ['HIGH', 'High', 'medium', 'xhigh']) {
+    llm.calls.length = 0
+    const result = await d.send(`model ${SELECTED} effort=${effort}`)
+    assert.deepEqual(result, {
+      kind: 'error',
+      text: `Advisor model effort ${effort} is not offered by ${SELECTED}; nothing was changed. Advertised efforts: low (Low), high (High).`,
+    }, effort)
+    assert.equal(d.state().advisorModel, null, `${effort}: nothing stored`)
+    assert.equal(d.state().pending, null, `${effort}: no pending marker left`)
+    assert.deepEqual(d.state().failure, { count: d.state().failure.count, text: result.text, target: 'advisorModel' })
+    assert.deepEqual(llm.calls.map((call) => call.method), ['resolveCallConfig', 'resolveModelInfo'])
+    assert.equal(llm.calls[1].signal, llm.calls[0].signal, 'the list is read under the same deadline')
+  }
+  const none = await d.send('verifier-model anthropic/claude-haiku-5-5 effort=low')
+  assert.equal(none.text, 'Verifier model effort low is not offered by anthropic/claude-haiku-5-5; nothing was changed. anthropic/claude-haiku-5-5 advertises no reasoning efforts.')
+  assert.equal(d.state().verifierModel, null)
+  assert.equal((await d.send(`model ${SELECTED} effort=high`)).kind, 'success', 'the next command works at once')
+  assert.deepEqual(d.state().advisorModel, { ...selected, effort: 'high' })
+
+  for (const modelInfo of [() => { throw new Error('catalog offline') }, () => ({ reasoning: { efforts: 'low' } })]) {
+    const unlisted = await commandDriver({ llm: fakeLlm({ modelInfo }) })
+    const refused = await unlisted.send(`model ${SELECTED} effort=max`)
+    assert.deepEqual(refused, {
+      kind: 'error',
+      text: `Advisor model effort max is not offered by ${SELECTED}; nothing was changed. The list of advertised efforts is unavailable.`,
+    })
+    assert.equal(unlisted.state().advisorModel, null)
+    assert.equal((await unlisted.send('on')).kind, 'success')
+    assert.equal(unlisted.state().active, true)
+  }
+})
+
+test('effort: without the llm service, when reading it throws, or when the check fails otherwise, it could not be checked and nothing is stored', async () => {
+  const offline = fakeLlm({ callConfig: () => { throw Object.assign(new Error('no credentials for openrouter'), { code: 'AUTH_REQUIRED' }) } })
+  const cases = [
+    ['no ctx.get', {}, 'the llm service is unavailable'],
+    ['no llm service', { profile: {} }, 'the llm service is unavailable'],
+    ['ctx.get throws', { llm: () => { throw new Error('service llm is not registered') } }, 'the llm service is unavailable'],
+    ['no resolveCallConfig', { llm: {} }, 'the llm service is unavailable'],
+    ['another failure', { llm: offline }, 'no credentials for openrouter'],
+    ['a synchronous throw', { llm: { resolveCallConfig() { throw new Error('boom') } } }, 'boom'],
+    ['a non-Error rejection', { llm: { resolveCallConfig: () => Promise.reject('down') } }, 'down'],
+  ]
+  for (const [label, options, reason] of cases) {
+    const d = await commandDriver(options)
+    for (const [input, noun, field] of [[`model ${SELECTED} effort=high`, 'Advisor model', 'advisorModel'], [`verifier-model ${SELECTED} effort=low`, 'Verifier model', 'verifierModel']]) {
+      const effort = input.slice(input.indexOf('effort=') + 'effort='.length)
+      const result = await d.send(input)
+      assert.deepEqual(result, { kind: 'error', text: `${noun} effort ${effort} for ${SELECTED} could not be checked: ${reason}; nothing was changed.` }, label)
+      assert.equal(d.state()[field], null, `${label}: nothing stored`)
+      assert.equal(d.state().pending, null, `${label}: no pending marker left`)
+    }
+    assert.equal((await d.send(`model ${SELECTED}`)).kind, 'success', `${label}: later commands work`)
+    assert.deepEqual(d.state().advisorModel, selected, label)
+    assert.equal((await d.send('on')).kind, 'success', label)
+  }
+  assert.equal(offline.calls.some((call) => call.method === 'resolveModelInfo'), false, 'another failure is not reported as an unsupported effort')
+})
+
+test('effort: a check that does not settle is cut off after 10 s; meanwhile other commands are refused, afterwards they work', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const llm = fakeLlm({ callConfig: () => new Promise(() => {}) })
+  const d = await commandDriver({ llm })
+  const slow = d.send(`model ${SELECTED} effort=high`)
+  let settled = false
+  slow.then(() => { settled = true })
+  await turn()
+  assert.equal(d.state().pending.target, 'advisorModel', 'the marker is pending while the check runs')
+  assert.deepEqual(await d.send('off'), { kind: 'error', text: 'Advisor is already updating. Try again after it finishes.' })
+  assert.match((await d.send('model inherit')).text, /already updating/)
+  assert.equal((await d.send('status')).text, 'Advisor is updating (advisorModel) for this session.')
+  t.mock.timers.tick(9_999)
+  await turn()
+  assert.equal(settled, false, 'still checking before 10 s')
+  assert.equal(llm.calls[0].signal.aborted, false)
+  t.mock.timers.tick(1)
+  assert.deepEqual(await slow, {
+    kind: 'error',
+    text: `Advisor model effort high for ${SELECTED} could not be checked: the check timed out after 10 s; nothing was changed.`,
+  })
+  assert.equal(llm.calls[0].signal.aborted, true, 'the check is asked to stop')
+  assert.equal(d.state().pending, null, 'the pending marker no longer blocks')
+  assert.equal(d.state().advisorModel, null, 'nothing stored')
+  assert.equal((await d.send('on')).kind, 'success', 'the next command works at once')
+  assert.equal(d.state().active, true)
+  assert.equal((await d.send(`model ${SELECTED}`)).kind, 'success')
+  assert.deepEqual(d.state().advisorModel, selected)
+})
+
+test('effort: when the advertised list does not arrive within the same 10 s, the refusal says the list is unavailable', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const llm = fakeLlm({ modelInfo: () => new Promise(() => {}) })
+  const d = await commandDriver({ llm })
+  const refused = d.send(`model ${SELECTED} effort=max`)
+  await turn()
+  assert.deepEqual(llm.calls.map((call) => call.method), ['resolveCallConfig', 'resolveModelInfo'])
+  t.mock.timers.tick(10_000)
+  assert.deepEqual(await refused, {
+    kind: 'error',
+    text: `Advisor model effort max is not offered by ${SELECTED}; nothing was changed. The list of advertised efforts is unavailable.`,
+  })
+  assert.equal(llm.calls[1].signal, llm.calls[0].signal, 'one deadline for both calls')
+  assert.equal(llm.calls[1].signal.aborted, true)
+  assert.equal(d.state().pending, null)
+  assert.equal((await d.send('off')).kind, 'success')
+})
+
+test('effort: the llm service is never read without effort=, for Inherit, a usage error, or an unauthorized route; usage names the grammar', async () => {
+  const llm = fakeLlm()
+  const d = await commandDriver({ llm })
+  const inputs = [
+    'on', `model ${SELECTED}`, 'model inherit', 'verifier-model anthropic/claude-haiku-5-5', 'verifier-model inherit', 'model',
+    'verifier-model', 'status', 'model inherit effort=high', 'verifier-model Inherit effort=low', `model ${SELECTED} effort=`,
+    'model effort=high', 'model anthropic/claude-fable-5-2 effort=high', 'verifier-model anthropic/claude-fable-5-2 effort=low', 'off',
+  ]
+  for (const input of inputs) await d.send(input)
+  assert.deepEqual(llm.calls, [])
+  assert.deepEqual(d.gets.filter((name) => name === 'llm'), [], 'not even read')
+
+  // The Inherit note only when an effort token came with Inherit.
+  for (const input of ['model inherit effort=high', 'model INHERIT  effort=', 'verifier-model Inherit effort=low']) {
+    const prefix = input.startsWith('model') ? 'model' : 'verifier-model'
+    assert.deepEqual(await d.send(input), { kind: 'error', text: `Usage: /advisor ${prefix} inherit|<provider>/<model> [effort=<id>]; Inherit takes no effort.` }, input)
+  }
+  for (const input of [`verifier-model ${SELECTED} effort=`, 'model effort=high', 'model broken', 'model /x effort=high', 'verifier-model inherit effort=x effort=y']) {
+    const prefix = input.startsWith('model') ? 'model' : 'verifier-model'
+    assert.deepEqual(await d.send(input), { kind: 'error', text: `Usage: /advisor ${prefix} inherit|<provider>/<model> [effort=<id>]` }, input)
+  }
+  assert.deepEqual(await d.send('model anthropic/claude-fable-5-2 effort=high'), {
+    kind: 'error',
+    text: 'Advisor model route anthropic/claude-fable-5-2 is not authorized for this session. Choose an available subagent model or Inherit.',
+  })
+  assert.deepEqual(await d.send('frobnicate'), {
+    kind: 'error',
+    text: 'Usage: /advisor [on|off|status|model inherit|model <provider>/<model> [effort=<id>]|verifier-model inherit|verifier-model <provider>/<model> [effort=<id>]]',
+  })
+  assert.equal(d.command.input.hint, '[on|off|status|model inherit|provider/model [effort=id]|verifier-model inherit|provider/model [effort=id]]')
+  assert.equal(d.state().advisorModel, null)
+  assert.equal(d.state().verifierModel, null)
+})
+
+test('status: a stored effort the model no longer advertises gets a best-effort note with the reset; it is never cleared', async () => {
+  const llm = fakeLlm()
+  const d = await commandDriver({ llm })
+  d.setState({ ...d.state(), advisorModel: { ...selected, effort: 'high' }, verifierModel: { ...HAIKU, effort: 'max' } })
+  let status = await d.send('status')
+  assert.equal(status.kind, 'success')
+  assert.ok(status.text.includes(`Advisor model: ${SELECTED} effort=high. Verifier model: anthropic/claude-haiku-5-5 effort=max. Both apply when Advisor is on.\n`
+    + 'Verifier model effort max is no longer offered by anthropic/claude-haiku-5-5; spawns on it fail until you reset it with /advisor verifier-model anthropic/claude-haiku-5-5. anthropic/claude-haiku-5-5 advertises no reasoning efforts.\n'), status.text)
+  assert.doesNotMatch(status.text, /Advisor model effort high/, 'an offered effort gets no note')
+  assert.deepEqual(d.state().verifierModel, { ...HAIKU, effort: 'max' }, 'the stale effort is kept')
+
+  d.setState({ ...d.state(), advisorModel: { ...selected, effort: 'xhigh' }, verifierModel: null })
+  status = await d.send('status')
+  assert.ok(status.text.includes(`\nAdvisor model effort xhigh is no longer offered by ${SELECTED}; spawns on it fail until you reset it with /advisor model ${SELECTED}. Advertised efforts: low (Low), high (High).\n`), status.text)
+
+  // Skipped silently when the llm is unavailable or the check fails for another reason.
+  const quiet = [{}, { profile: {} }, { llm: () => { throw new Error('gone') } }, { llm: fakeLlm({ callConfig: () => { throw new Error('offline') } }) }]
+  for (const options of quiet) {
+    const q = await commandDriver(options)
+    q.setState({ ...q.state(), verifierModel: { ...HAIKU, effort: 'max' } })
+    const text = (await q.send('status')).text
+    assert.match(text, /Verifier model: anthropic\/claude-haiku-5-5 effort=max\. Both apply when Advisor is on\.\n/)
+    assert.doesNotMatch(text, /no longer offered/)
+  }
+})
+
+test('status: the drift check of both models shares one 10 s timer and then reports without a note', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const llm = fakeLlm({ callConfig: () => new Promise(() => {}) })
+  const d = await commandDriver({ llm })
+  d.setState({ ...d.state(), advisorModel: { ...selected, effort: 'high' }, verifierModel: { ...HAIKU, effort: 'max' } })
+  const status = d.send('status')
+  await turn()
+  assert.equal(llm.calls.length, 2)
+  assert.equal(llm.calls[0].signal, llm.calls[1].signal, 'one timer for both checks')
+  t.mock.timers.tick(10_000)
+  const { kind, text } = await status
+  assert.equal(kind, 'success')
+  assert.match(text, /Advisor model: openrouter\/~deepseek\/deepseek-flash-latest effort=high\. Verifier model: anthropic\/claude-haiku-5-5 effort=max\./)
+  assert.doesNotMatch(text, /no longer offered/)
+  assert.equal(llm.calls[0].signal.aborted, true)
+})
+
+/** A revoked Proxy: every property read on it throws. */
+function revoked() {
+  const { proxy, revoke } = Proxy.revocable({}, {})
+  revoke()
+  return proxy
+}
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+test('effort: unreadable failures and hostile llm objects still give "could not be checked", store nothing, and leave status answering', async () => {
+  const unreadableMessage = Object.defineProperty(new Error('x'), 'message', { get() { throw new Error('no message') } })
+  const unreadableCode = Object.defineProperty(new Error('code unreadable'), 'code', { get() { throw new Error('no code') } })
+  const cases = [
+    ['an Object.create(null) rejection', { resolveCallConfig: () => Promise.reject(Object.create(null)) }, 'an unreadable error'],
+    ['an Error whose message getter throws', { resolveCallConfig: () => Promise.reject(unreadableMessage) }, 'an unreadable error'],
+    ['an Error whose code getter throws', { resolveCallConfig: () => Promise.reject(unreadableCode) }, 'code unreadable'],
+    ['a revoked proxy as the rejection', { resolveCallConfig: () => Promise.reject(revoked()) }, 'an unreadable error'],
+    ['a throwing resolveCallConfig getter', { get resolveCallConfig() { throw new Error('getter exploded') } }, 'getter exploded'],
+    ['a revoked proxy as the llm', revoked(), /revoked/],
+  ]
+  for (const [label, llm, reason] of cases) {
+    const d = await commandDriver({ llm })
+    const result = await d.send(`model ${SELECTED} effort=high`)
+    assert.equal(result.kind, 'error', label)
+    const prefix = `Advisor model effort high for ${SELECTED} could not be checked: `
+    if (typeof reason === 'string') {
+      assert.equal(result.text, `${prefix}${reason}; nothing was changed.`, label)
+    } else {
+      assert.match(result.text, new RegExp(`^${escapeRegExp(prefix)}.+; nothing was changed\\.$`), label)
+      assert.match(result.text, reason, label)
+    }
+    assert.equal(d.state().advisorModel, null, `${label}: nothing stored`)
+    assert.equal(d.state().pending, null, `${label}: no pending marker left`)
+    assert.equal((await d.send(`model ${SELECTED}`)).kind, 'success', `${label}: later commands work`)
+    d.setState({ ...d.state(), verifierModel: { ...HAIKU, effort: 'max' } })
+    const status = await d.send('status')
+    assert.equal(status.kind, 'success', `${label}: status answers`)
+    assert.doesNotMatch(status.text, /no longer offered/, label)
+  }
+  // A refused effort whose advertised list holds unreadable entries is still refused as not offered.
+  for (const modelInfo of [() => ({ reasoning: { efforts: [revoked()] } }), () => revoked(), () => ({ reasoning: revoked() })]) {
+    const odd = await commandDriver({ llm: fakeLlm({ modelInfo }) })
+    assert.deepEqual(await odd.send(`model ${SELECTED} effort=max`), {
+      kind: 'error',
+      text: `Advisor model effort max is not offered by ${SELECTED}; nothing was changed. The list of advertised efforts is unavailable.`,
+    })
+    odd.setState({ ...odd.state(), verifierModel: { ...selected, effort: 'max' } })
+    const status = await odd.send('status')
+    assert.ok(status.text.includes(`Verifier model effort max is no longer offered by ${SELECTED}; spawns on it fail until you reset it with /advisor verifier-model ${SELECTED}. The list of advertised efforts is unavailable.\n`), status.text)
+  }
+})
+
+test('effort: a timeout is reported as the timeout even when the llm rejects inside its abort listener', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const signals = []
+  // Not async: the promise the race sees is the one rejected inside the listener.
+  const llm = {
+    resolveCallConfig: (_config, signal) => {
+      signals.push(signal)
+      return new Promise((_resolve, reject) => { signal.addEventListener('abort', () => reject(new Error('aborted by the llm'))) })
+    },
+  }
+  const d = await commandDriver({ llm })
+  const slow = d.send(`model ${SELECTED} effort=high`)
+  await turn()
+  t.mock.timers.tick(10_000)
+  assert.deepEqual(await slow, {
+    kind: 'error',
+    text: `Advisor model effort high for ${SELECTED} could not be checked: the check timed out after 10 s; nothing was changed.`,
+  })
+  assert.equal(signals.length, 1)
+  assert.equal(signals[0].aborted, true)
+  assert.equal(d.state().advisorModel, null)
+})
+
+test('effort: the deadline timer is cleared once a set check ends, whatever its outcome', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const cases = [
+    ['accepted', {}, `model ${SELECTED} effort=high`, 'success'],
+    ['not advertised', {}, `model ${SELECTED} effort=max`, 'error'],
+    ['another failure', { callConfig: () => { throw new Error('offline') } }, `verifier-model ${SELECTED} effort=low`, 'error'],
+  ]
+  for (const [label, options, input, kind] of cases) {
+    const llm = fakeLlm(options)
+    const d = await commandDriver({ llm })
+    assert.equal((await d.send(input)).kind, kind, label)
+    assert.ok(llm.calls.length > 0, label)
+    // A timer still pending would fire now and abort the check's signal.
+    t.mock.timers.tick(10_000)
+    t.mock.timers.runAll()
+    for (const call of llm.calls) assert.equal(call.signal.aborted, false, `${label}: ${call.method} signal`)
+  }
+})
+
+test('status: the drift check clears its timer once both checks end', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const llm = fakeLlm()
+  const d = await commandDriver({ llm })
+  d.setState({ ...d.state(), advisorModel: { ...selected, effort: 'high' }, verifierModel: { ...HAIKU, effort: 'max' } })
+  const { kind, text } = await d.send('status')
+  assert.equal(kind, 'success')
+  assert.ok(text.includes('Verifier model effort max is no longer offered by anthropic/claude-haiku-5-5'), text)
+  assert.deepEqual(llm.calls.map((call) => call.method), ['resolveCallConfig', 'resolveCallConfig', 'resolveModelInfo'])
+  t.mock.timers.tick(10_000)
+  t.mock.timers.runAll()
+  for (const call of llm.calls) assert.equal(call.signal.aborted, false, call.method)
+})
+
+test('status: with a stored effort and no usable llm the text is exactly the plain status (a silent skip)', async (t) => {
+  const dataDir = path.join(await tempDir(t, 'advisor-effort-status-'), 'data')
+  const quiet = [
+    ['no ctx.get', {}],
+    ['no llm service', { profile: {} }],
+    ['ctx.get throws', { llm: () => { throw new Error('gone') } }],
+    ['a revoked proxy as the llm', { llm: revoked() }],
+    ['a throwing resolveCallConfig getter', { llm: { get resolveCallConfig() { throw new Error('getter exploded') } } }],
+    ['another failure', { llm: fakeLlm({ callConfig: () => { throw new Error('offline') } }) }],
+    ['an unreadable rejection', { llm: { resolveCallConfig: () => Promise.reject(Object.create(null)) } }],
+  ]
+  for (const [label, options] of quiet) {
+    const d = await commandDriver(options, { dataDir })
+    d.setState({ ...d.state(), advisorModel: { ...selected, effort: 'xhigh' }, verifierModel: { ...HAIKU, effort: 'max' } })
+    assert.deepEqual(await d.send('status'), {
+      kind: 'success',
+      text: 'Advisor is off; verification is disabled for this session.\n'
+        + `Advisor model: ${SELECTED} effort=xhigh. Verifier model: anthropic/claude-haiku-5-5 effort=max. Both apply when Advisor is on.\n`
+        + `Data directory: ${dataDir}\nRecent advisor runs:\nNo consults recorded.`,
+    }, label)
+    assert.deepEqual(d.state().verifierModel, { ...HAIKU, effort: 'max' }, `${label}: nothing is cleared`)
+  }
 })

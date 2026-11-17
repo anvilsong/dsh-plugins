@@ -49,6 +49,7 @@ import {
   validatePlan,
 } from '../src/planner.js'
 import { createLedger, fileSha256Sync, sha256 } from '../src/ledger.js'
+import { parseModelSetting, spawnArgs } from '../src/state.js'
 import { verifierDelegationDenial } from '../src/verifier.js'
 
 // ---------------------------------------------------------------------------
@@ -241,6 +242,11 @@ const CONSULT = `advisor-consult-${PLAN_ID}`
 const CONSULT_B = `advisor-consult-${PLAN_ID_B}`
 const ROUTE = Object.freeze({ provider: 'openrouter', model: '~deepseek/deepseek-flash-latest' })
 const OTHER_ROUTE = Object.freeze({ provider: 'anthropic', model: 'claude-haiku-5-5' })
+// A saved Advisor or Verifier model with an effort (the route plus its effort id).
+const ROUTE_EFFORT = Object.freeze({ ...ROUTE, effort: 'high' })
+// The denials used before efforts existed, byte for byte.
+const CHILD_MUST_OMIT = 'Advisor children must omit reasoning_effort and agent_preset so the selected model default applies.'
+const VERIFIER_MUST_OMIT = 'Advisor verifier must omit reasoning_effort and agent_preset so the selected model default applies.'
 const USAGE_ZERO = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0, model_requests: 0 }
 
 // Ledger modes: 'fake' (default) passes deps.ledger = createLedger(dir) plus
@@ -569,6 +575,16 @@ test('policy: Advisor model policy, workflow and child policies; the 0.5 aliases
   }
   assert.deepEqual(PLANNER_TOOLS, ['glob', 'grep', 'read', SUBMIT_TOOL])
   assert.deepEqual(CONSULT_TOOLS, ['glob', 'grep', 'read', ADVICE_TOOL])
+})
+
+test('policy: the Inherit and no-effort Advisor model texts are unchanged; a stored effort is named literally with its reset', () => {
+  // The texts from before efforts existed, byte for byte.
+  assert.equal(advisorModelPolicy(null),
+    'Advisor model: Inherit. For advisor-planner and advisor-consult children, omit provider, model, reasoning_effort, and agent_preset so configured child defaults and compatible parent values apply.')
+  assert.equal(advisorModelPolicy(ROUTE),
+    `Advisor model: ${ROUTE.provider}/${ROUTE.model}. Pass exactly this provider and model to subagent for advisor-planner and advisor-consult children, omit reasoning_effort and agent_preset so the selected model's default effort applies, and do not fall back to another route if spawning fails.`)
+  assert.equal(advisorModelPolicy({ ...ROUTE, effort: 'high' }),
+    `Advisor model: ${ROUTE.provider}/${ROUTE.model} effort=high. Pass exactly this provider and model to subagent for advisor-planner and advisor-consult children, pass reasoning_effort "high", omit agent_preset, and do not fall back to another route if spawning fails. If the spawn is rejected for the effort, report it and do not retry without it; the user can reset the effort with /advisor model ${ROUTE.provider}/${ROUTE.model}.`)
 })
 
 test('names: child name pattern and reserved prefixes cover planner and consult only', () => {
@@ -1129,7 +1145,7 @@ test('delegation: only a well-formed subagent call from the root lead passes, fo
   ]
   for (const name of malformed) assert.match(h.delegate({ name }), /must be advisor-planner-<id> or advisor-consult-<id> with a 12 lowercase hex id/, name)
   for (const args of [{ reasoning_effort: 'high' }, { reasoning_effort: null }, { agent_preset: 'planner' }, { name: CONSULT, agent_preset: 'x' }]) {
-    assert.match(h.delegate(args), /must omit reasoning_effort and agent_preset/, JSON.stringify(args))
+    assert.equal(h.delegate(args), CHILD_MUST_OMIT, JSON.stringify(args))
   }
   for (const name of [PLANNER, CONSULT]) {
     assert.match(h.delegate({ name }, { agent: h.mate }), /^Only the lead can start an advisor child\.$/)
@@ -1177,6 +1193,128 @@ test('delegation: a selected Advisor model needs the exact, currently authorized
     assert.match(inherit.delegate({ name, model: ROUTE.model }), /^Advisor model is Inherit/)
     assert.equal(inherit.delegate({ name }), undefined)
   }
+})
+
+/** The denial while an effort is stored and a delegation does not pass it with the exact route. */
+const advisorEffortDenial = (route) => `Advisor children must use the selected Advisor model ${route.provider}/${route.model} with reasoning_effort "${route.effort}". Do not omit or change the effort; the user can reset it with /advisor model ${route.provider}/${route.model}.`
+/** The agent_preset denial while an effort is stored: it must not say to omit reasoning_effort. */
+const advisorPresetDenial = (route) => `Advisor children must omit agent_preset and use the selected Advisor model ${route.provider}/${route.model} with reasoning_effort "${route.effort}". Do not omit or change the effort; the user can reset it with /advisor model ${route.provider}/${route.model}.`
+const ADVISOR_TEXTS = Object.freeze({
+  mustOmit: CHILD_MUST_OMIT,
+  inherit: 'Advisor model is Inherit; omit provider and model instead of overriding them.',
+  wrongRoute: (route) => `Advisor children must use the selected Advisor model ${route.provider}/${route.model}.`,
+  effortRequired: advisorEffortDenial,
+  presetRequired: advisorPresetDenial,
+})
+// Every state of a model setting, with a model id that contains a space and an effort id in mixed case.
+const SETTINGS = Object.freeze([null, ROUTE, ROUTE_EFFORT, Object.freeze({ provider: 'p', model: 'my model', effort: 'HiGh' })])
+const SETTING_ROUTES = Object.freeze([ROUTE, OTHER_ROUTE, Object.freeze({ provider: 'p', model: 'my model' })])
+
+/**
+ * The spawn arguments a lead takes from one model policy sentence: none for
+ * Inherit; else the provider and model of its label, plus reasoning_effort
+ * when it says pass reasoning_effort "<id>".
+ */
+function argsFromPolicy(policy, heading) {
+  const match = new RegExp(`^${heading}: (.+?)\\. (?:Pass exactly this provider and model|For advisor-planner|Omit provider)`).exec(policy)
+  assert.ok(match !== null, policy)
+  if (/omit provider, model, reasoning_effort, and agent_preset/i.test(policy)) return {}
+  const label = parseModelSetting(match[1])
+  const quoted = /pass reasoning_effort "([^"]*)"/.exec(policy)
+  assert.equal(quoted?.[1], label.effort, `the label and the instruction name the same effort: ${policy}`)
+  if (quoted === null) assert.match(policy, /omit reasoning_effort and agent_preset/)
+  return quoted === null
+    ? { provider: label.provider, model: label.model }
+    : { provider: label.provider, model: label.model, reasoning_effort: quoted[1] }
+}
+
+/** Single deviations from the spawn arguments a setting requires, each with the denial it must get. */
+function spawnDeviations(setting, { mustOmit, inherit, wrongRoute, effortRequired, presetRequired }) {
+  const expected = spawnArgs(setting) ?? {}
+  const stored = setting?.effort
+  const effortText = stored === undefined ? mustOmit : effortRequired(setting)
+  // The old agent_preset text says to omit reasoning_effort: only right without a stored effort.
+  const presetText = stored === undefined ? mustOmit : presetRequired(setting)
+  const cases = [
+    ['agent_preset added', { ...expected, agent_preset: 'planner' }, presetText],
+    ['agent_preset with another effort', { ...expected, agent_preset: 'planner', reasoning_effort: 'low' }, presetText],
+    ['agent_preset without the route', { agent_preset: 'planner' }, presetText],
+    ['reasoning_effort null', { ...expected, reasoning_effort: null }, effortText],
+    ['reasoning_effort empty', { ...expected, reasoning_effort: '' }, effortText],
+  ]
+  if (stored === undefined) {
+    cases.push(['reasoning_effort added', { ...expected, reasoning_effort: 'high' }, mustOmit])
+  } else {
+    cases.push(
+      ['reasoning_effort removed', omit(expected, 'reasoning_effort'), effortText],
+      ['reasoning_effort changed', { ...expected, reasoning_effort: 'low' }, effortText],
+      ['reasoning_effort case-changed', { ...expected, reasoning_effort: stored.toUpperCase() }, effortText],
+      ['reasoning_effort lower-cased', { ...expected, reasoning_effort: stored.toLowerCase() === stored ? `${stored}x` : stored.toLowerCase() }, effortText],
+      ['reasoning_effort padded', { ...expected, reasoning_effort: ` ${stored}` }, effortText],
+    )
+  }
+  if (setting === null) {
+    cases.push(
+      ['provider added', { provider: ROUTE.provider }, inherit],
+      ['model added', { model: ROUTE.model }, inherit],
+      ['route added', { ...ROUTE }, inherit],
+    )
+  } else {
+    const routeText = stored === undefined ? wrongRoute(setting) : effortRequired(setting)
+    cases.push(
+      ['provider changed', { ...expected, provider: OTHER_ROUTE.provider }, routeText],
+      ['model changed', { ...expected, model: 'other' }, routeText],
+      ['provider removed', omit(expected, 'provider'), routeText],
+      ['model removed', omit(expected, 'model'), routeText],
+      ['everything omitted', {}, routeText],
+    )
+  }
+  return cases
+}
+
+test('delegation: in every Advisor model state the policy\'s own spawn arguments pass and every single deviation is denied', (t) => {
+  for (const setting of SETTINGS) {
+    for (const name of [PLANNER, CONSULT]) {
+      const label = `${name} ${JSON.stringify(setting)}`
+      const h = harness()
+      t.after(h.dispose)
+      h.state.settings = { active: true, advisorModel: setting }
+      h.state.routes = [...SETTING_ROUTES]
+      const args = argsFromPolicy(advisorModelPolicy(setting), 'Advisor model')
+      assert.deepEqual(args, spawnArgs(setting) ?? {}, label)
+      for (const [deviation, changed, denial] of spawnDeviations(setting, ADVISOR_TEXTS)) {
+        assert.equal(h.delegate({ name, ...changed }), denial, `${label}: ${deviation}`)
+      }
+      assert.equal(h.delegate({ name, ...args }), undefined, `${label}: the policy's own arguments pass`)
+    }
+  }
+})
+
+test('delegation: agent_preset is refused first, with the old text only without a stored effort; an effort is checked after the lead and Advisor-on checks', (t) => {
+  const h = harness()
+  t.after(h.dispose)
+  h.state.settings = { active: true, advisorModel: ROUTE_EFFORT }
+  assert.equal(h.delegate({ ...spawnArgs(ROUTE_EFFORT), agent_preset: 'x' }, { agent: h.mate }), advisorPresetDenial(ROUTE_EFFORT), 'before the lead check')
+  assert.equal(h.delegate({ agent_preset: 'x' }), advisorPresetDenial(ROUTE_EFFORT))
+  assert.doesNotMatch(advisorPresetDenial(ROUTE_EFFORT), /omit reasoning_effort/)
+  assert.ok(advisorPresetDenial(ROUTE_EFFORT).includes(`${ROUTE.provider}/${ROUTE.model} with reasoning_effort "high"`))
+  assert.ok(advisorPresetDenial(ROUTE_EFFORT).includes(`/advisor model ${ROUTE.provider}/${ROUTE.model}.`))
+  for (const advisorModel of [null, ROUTE]) {
+    h.state.settings = { active: true, advisorModel }
+    assert.equal(h.delegate({ ...spawnArgs(advisorModel), agent_preset: 'x' }, { agent: h.mate }), CHILD_MUST_OMIT, `${JSON.stringify(advisorModel)}: the old text, byte for byte`)
+  }
+  h.state.settings = { active: true, advisorModel: ROUTE_EFFORT }
+  assert.equal(h.delegate({ ...ROUTE }, { agent: h.mate }), 'Only the lead can start an advisor child.')
+  h.state.settings = { active: false, advisorModel: ROUTE_EFFORT }
+  assert.equal(h.delegate({ ...ROUTE, reasoning_effort: 'low' }), 'Advisor is off for this session; enable Advisor first.')
+  h.state.settings = { active: true, advisorModel: ROUTE_EFFORT }
+  assert.equal(h.delegate({ ...ROUTE }), advisorEffortDenial(ROUTE_EFFORT))
+  assert.ok(advisorEffortDenial(ROUTE_EFFORT).includes('reasoning_effort "high"') && advisorEffortDenial(ROUTE_EFFORT).includes(`/advisor model ${ROUTE.provider}/${ROUTE.model}`))
+  // The authorization check still compares provider and model only.
+  h.state.routes = [OTHER_ROUTE]
+  assert.match(h.delegate({ ...spawnArgs(ROUTE_EFFORT) }), /is no longer authorized for this session; choose another with \/advisor model/)
+  h.state.routes = [ROUTE]
+  assert.equal(h.delegate({ ...spawnArgs(ROUTE_EFFORT) }), undefined)
 })
 
 test('delegation: used ids are refused; one advisor child of either kind per root, with a 60 s start reservation', async (t) => {
@@ -1344,7 +1482,7 @@ test('start: planner child: guard first, its own submit tool and confined grep, 
     consult_id: PLAN_ID, kind: 'plan', advisor: 'dsh', caller: 'advisor-plugin', topic: 'unset',
     session_id: h.lead.id, planner_session_id: c.agent.id, cwd: WS,
     briefing_sha256: null, briefing_chars: null,
-    backend: `dsh:${ROUTE.provider}/${ROUTE.model}`, model: ROUTE.model, effort: null,
+    backend: `dsh:${ROUTE.provider}/${ROUTE.model}`, model: ROUTE.model, effort: null, effort_requested: null,
     ts: Math.floor(h.state.clock / 1000), status: 'started',
   }])
 
@@ -1426,6 +1564,50 @@ test('start: a cold resume writes no second started line and never reopens a fin
       assert.deepEqual(h.state.ledger, prior, 'nothing is added')
     }
   }
+})
+
+test('start: a child resumed after a Host restart keeps the effort_requested of its started line, whatever the setting is now', async (t) => {
+  const before = harness()
+  t.after(before.dispose)
+  before.state.settings = { active: true, advisorModel: ROUTE_EFFORT }
+  startChild(before)
+  await settle()
+  const [started] = before.state.ledger
+  assert.deepEqual([started.status, started.effort_requested], ['started', 'high'])
+
+  // A Host restart: a new boundary with the same ledger, and the setting changed meanwhile.
+  for (const later of [{ ...ROUTE, effort: 'low' }, ROUTE, null]) {
+    const after = harness()
+    t.after(after.dispose)
+    after.state.ledger.push(structuredClone(started))
+    after.state.settings = { active: true, advisorModel: later }
+    const c = startChild(after)
+    assert.equal(c.agent.cancelled, 0, JSON.stringify(later))
+    assert.equal((await after.submit(c, plan())).plan_id, PLAN_ID)
+    await settle()
+    assert.deepEqual(after.lines().map((line) => [line.status, line.effort_requested]), [['started', 'high'], ['ok', 'high']], JSON.stringify(later))
+  }
+
+  // A resumed child refused at start records the same value on its failed line.
+  const moved = harness()
+  t.after(moved.dispose)
+  moved.state.ledger.push(structuredClone(started))
+  moved.state.settings = { active: true, advisorModel: { ...OTHER_ROUTE, effort: 'low' } }
+  const refused = startChild(moved)
+  assert.equal(refused.agent.cancelled, 1)
+  await settle()
+  assert.deepEqual(moved.terminal().map((line) => [line.status, line.failure_reason, line.effort_requested]),
+    [['failed', 'child started on a route other than the selected Advisor model', 'high']])
+
+  // A started line written before efforts existed has none: the resumed child records null.
+  const legacy = harness()
+  t.after(legacy.dispose)
+  legacy.state.ledger.push({ consult_id: PLAN_ID, kind: 'plan', status: 'started' })
+  legacy.state.settings = { active: true, advisorModel: ROUTE_EFFORT }
+  const c = startChild(legacy)
+  await legacy.submit(c, plan())
+  await settle()
+  assert.deepEqual(legacy.terminal().map((line) => [line.status, line.effort_requested]), [['ok', null]])
 })
 
 test('start: invalid reserved children are cancelled, fail closed and take no slot; only well-formed ids get a failed line', async (t) => {
@@ -1709,7 +1891,7 @@ test('submit: a valid plan is written once and recorded with a complete ok ledge
     consult_id: PLAN_ID, kind: 'plan', advisor: 'dsh', caller: 'advisor-plugin', topic: 'unset',
     session_id: h.lead.id, planner_session_id: c.agent.id, cwd: WS,
     briefing_sha256: hash('BRIEFING one'), briefing_chars: 'BRIEFING one'.length,
-    backend: `dsh:${ROUTE.provider}/${ROUTE.model}`, model: ROUTE.model, effort: 'high',
+    backend: `dsh:${ROUTE.provider}/${ROUTE.model}`, model: ROUTE.model, effort: 'high', effort_requested: null,
     ts: Math.floor(h.state.clock / 1000), status: 'ok',
     reply_file: result.reply_file, reply_sha256: result.reply_sha256, task_count: 2,
     submit_attempts: 1, tool_calls: 1, duration_s: 12.3, cost_usd: null,
@@ -1784,15 +1966,76 @@ test('submit: the first briefing topic is recorded on the ok line; started lines
   // Same key set as the exact ok line asserted in the complete-ok-line test.
   const expectedKeys = [
     'consult_id', 'kind', 'advisor', 'caller', 'topic', 'session_id', 'planner_session_id', 'cwd',
-    'briefing_sha256', 'briefing_chars', 'backend', 'model', 'effort', 'ts', 'status',
+    'briefing_sha256', 'briefing_chars', 'backend', 'model', 'effort', 'effort_requested', 'ts', 'status',
     'reply_file', 'reply_sha256', 'task_count', 'submit_attempts', 'tool_calls', 'duration_s', 'cost_usd',
     'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens', 'model_requests',
   ]
   assert.deepEqual(Object.keys(ok).sort(), [...expectedKeys].sort())
   assert.deepEqual(Object.keys(started).sort(), [
     'consult_id', 'kind', 'advisor', 'caller', 'topic', 'session_id', 'planner_session_id', 'cwd',
-    'briefing_sha256', 'briefing_chars', 'backend', 'model', 'effort', 'ts', 'status',
+    'briefing_sha256', 'briefing_chars', 'backend', 'model', 'effort', 'effort_requested', 'ts', 'status',
   ].sort())
+})
+
+test('ledger: effort is what the child reports; effort_requested is the Advisor model effort when the child started', async (t) => {
+  const cases = [
+    // [label, setting at start, the child's current() selection, effort, effort_requested]
+    ['stored effort, child reports another', ROUTE_EFFORT, { ...ROUTE, reasoningEffort: 'low' }, 'low', 'high'],
+    ['stored effort, child reports none', ROUTE_EFFORT, ROUTE, null, 'high'],
+    ['stored effort, child reports it', ROUTE_EFFORT, { ...ROUTE, reasoningEffort: 'high' }, 'high', 'high'],
+    ['no stored effort', ROUTE, { ...ROUTE, reasoningEffort: 'medium' }, 'medium', null],
+    ['Inherit', null, { ...OTHER_ROUTE, reasoningEffort: 'high' }, 'high', null],
+  ]
+  for (const self of [PLANNER, CONSULT]) {
+    for (const [label, setting, current, effort, requested] of cases) {
+      const h = harness()
+      t.after(h.dispose)
+      h.state.settings = { active: true, advisorModel: setting }
+      const c = startChild(h, { self, route: current })
+      assert.equal(c.agent.cancelled, 0, `${self} ${label}: the start check ignores the effort`)
+      await h.submit(c, self === PLANNER ? plan() : advice())
+      await settle()
+      assert.deepEqual(h.lines().map((line) => [line.status, line.effort, line.effort_requested]), [['started', effort, requested], ['ok', effort, requested]], `${self} ${label}`)
+    }
+  }
+
+  // Failed lines carry both too, also when the child's selection cannot be read.
+  const h = harness()
+  t.after(h.dispose)
+  h.state.settings = { active: true, advisorModel: ROUTE_EFFORT }
+  const c = startChild(h, { route: { ...ROUTE, reasoningEffort: 'high' } })
+  c.route = new Error('no selection')
+  h.state.settings = { active: false, advisorModel: ROUTE_EFFORT }
+  await assert.rejects(h.submit(c, plan()), /Advisor was turned off/)
+  await settle()
+  const [failed] = h.terminal()
+  assert.deepEqual(
+    [failed.status, failed.backend, failed.model, failed.effort, failed.effort_requested],
+    ['failed', `dsh:${ROUTE.provider}/${ROUTE.model}`, ROUTE.model, null, 'high'],
+    'the start snapshot gives the backend; the observed effort stays null',
+  )
+})
+
+test('submit: an effort change mid-run keeps the run and records the effort requested at start; a model change still fails it', async (t) => {
+  for (const later of [{ ...ROUTE, effort: 'low' }, ROUTE, { ...ROUTE, effort: 'HIGH' }]) {
+    const h = harness()
+    t.after(h.dispose)
+    h.state.settings = { active: true, advisorModel: ROUTE_EFFORT }
+    const c = startChild(h, { route: { ...ROUTE, reasoningEffort: 'high' } })
+    h.state.settings = { active: true, advisorModel: later }
+    assert.equal((await h.submit(c, plan())).plan_id, PLAN_ID, JSON.stringify(later))
+    await settle()
+    assert.deepEqual(h.terminal().map((line) => [line.status, line.effort, line.effort_requested]), [['ok', 'high', 'high']], JSON.stringify(later))
+  }
+  const moved = harness()
+  t.after(moved.dispose)
+  moved.state.settings = { active: true, advisorModel: ROUTE_EFFORT }
+  const c = startChild(moved)
+  moved.state.settings = { active: true, advisorModel: { ...OTHER_ROUTE, effort: 'high' } }
+  await assert.rejects(moved.submit(c, plan()), /not running on the selected Advisor model/)
+  await settle()
+  assert.deepEqual(moved.terminal().map((line) => [line.status, line.failure_reason, line.effort_requested]),
+    [['failed', 'advisor child model does not match the selected Advisor model', 'high']])
 })
 
 test('submit: a child without a valid topic line keeps topic unset', async (t) => {
@@ -2503,4 +2746,44 @@ test('fail closed through apply(): advisor-verifier delegations are refused whil
   assert.equal(h.delegate(), undefined)
   assert.ok(h.sections[0].text({ agent: h.lead }).includes(`the ledger \`${path.join(dataDir, 'sessions.jsonl')}\``))
   assert.match(h.call('subagent', { name: 'advisor-verifier-bad' }), /12-character/, 'the other verifier checks still apply')
+})
+
+/** The verifier's denial while an effort is stored and a delegation does not pass it with the exact route. */
+const verifierEffortDenial = (route) => `Advisor verifier must use the selected route ${route.provider}/${route.model} with reasoning_effort "${route.effort}". Do not omit or change the effort; the user can reset it with /advisor verifier-model ${route.provider}/${route.model}.`
+const VERIFIER_TEXTS = Object.freeze({
+  mustOmit: VERIFIER_MUST_OMIT,
+  inherit: 'Advisor verifier is set to Inherit; omit provider and model instead of overriding them.',
+  wrongRoute: (route) => `Advisor verifier must use the selected route ${route.provider}/${route.model}.`,
+  effortRequired: verifierEffortDenial,
+  presetRequired: (route) => `Advisor verifier must omit agent_preset and use the selected route ${route.provider}/${route.model} with reasoning_effort "${route.effort}". Do not omit or change the effort; the user can reset it with /advisor verifier-model ${route.provider}/${route.model}.`,
+})
+
+test('prompt and guards through apply(): in every state the lead policy\'s spawn arguments pass both delegation guards, and each deviation is denied', async (t) => {
+  for (const name of [PLANNER, CONSULT]) {
+    const dataDir = path.join(TMP, `prompt-guard-${name}`)
+    const h = await hostHarness({ dataDir }, { dataDir })
+    t.after(h.dispose)
+    h.state.routes = [...SETTING_ROUTES]
+    for (const advisorModel of SETTINGS) {
+      for (const verifierModel of SETTINGS) {
+        const label = `${name} advisor ${JSON.stringify(advisorModel)} verifier ${JSON.stringify(verifierModel)}`
+        h.state.settings = { active: true, advisorModel, verifierModel, pending: null }
+        const lines = h.sections[0].text({ agent: h.lead }).split('\n')
+        const advisorArgs = argsFromPolicy(lines.find((line) => line.startsWith('Advisor model: ')), 'Advisor model')
+        const verifierArgs = argsFromPolicy(lines.find((line) => line.startsWith('Verifier model: ')), 'Verifier model')
+        assert.deepEqual(advisorArgs, spawnArgs(advisorModel) ?? {}, label)
+        assert.deepEqual(verifierArgs, spawnArgs(verifierModel) ?? {}, label)
+        const verifier = `advisor-verifier-${PLAN_ID_B}`
+        for (const [deviation, changed, denial] of spawnDeviations(verifierModel, VERIFIER_TEXTS)) {
+          assert.equal(h.call('subagent', { name: verifier, ...changed }), denial, `${label}: verifier ${deviation}`)
+        }
+        assert.equal(h.call('subagent', { name: verifier, ...verifierArgs }), undefined, `${label}: the verifier policy's own arguments pass`)
+        for (const [deviation, changed, denial] of spawnDeviations(advisorModel, ADVISOR_TEXTS)) {
+          assert.equal(h.delegate({ name, ...changed }), denial, `${label}: advisor ${deviation}`)
+        }
+        // The same name each time: a retry of the reserved child stays allowed.
+        assert.equal(h.delegate({ name, ...advisorArgs }), undefined, `${label}: the advisor policy's own arguments pass`)
+      }
+    }
+  }
 })

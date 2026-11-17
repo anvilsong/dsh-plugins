@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 import { apply } from '../src/index.host.js'
 import { createLedger, fileSha256Sync, sha256 } from '../src/ledger.js'
 import { DATA_DIR_NOT_CONFIGURED, dataDirUnusable } from '../src/planner.js'
+import { parseModelSetting, spawnArgs } from '../src/state.js'
 import {
   EVIDENCE_PART_BYTES,
   EVIDENCE_TOOL,
@@ -24,6 +25,8 @@ import {
   VERIFIER_POLICY,
   VERIFIER_TOOLS,
   VERIFIER_WORKFLOW,
+  verifierDelegationDenial,
+  verifierModelPolicy,
   verifierToolDenial,
 } from '../src/verifier.js'
 
@@ -123,7 +126,8 @@ const okLine = (ledger, id = ID, extra = {}) => line({
 // register refuses duplicates in one scope, as the DSH registry does.
 
 function harness(options = {}) {
-  const { depsArg = 'default', ledger = freshLedger(), noGrep = false, dataDirProblem, workspace = WS } = options
+  // selectedRoute: () => the saved Verifier model (undefined: the boundary's default, Inherit).
+  const { depsArg = 'default', ledger = freshLedger(), noGrep = false, dataDirProblem, workspace = WS, selectedRoute } = options
   const state = { workspace, grepMatches: [], grepCalls: [] }
   const listeners = new Map()
   const hostGuards = []
@@ -188,8 +192,8 @@ function harness(options = {}) {
   const install = options.install ?? true
   const dispose = !install ? () => {}
     : depsArg === 'none'
-      ? installVerifierBoundary(ctx, undefined, undefined, dataDirProblem)
-      : installVerifierBoundary(ctx, undefined, undefined, dataDirProblem, deps)
+      ? installVerifierBoundary(ctx, undefined, selectedRoute, dataDirProblem)
+      : installVerifierBoundary(ctx, undefined, selectedRoute, dataDirProblem, deps)
 
   function child({ id = 'verifier-1', self = VERIFIER, parent = 'lead', refuse = [], guardThrows = false, ...extra } = {}) {
     const handle = { registered: new Map(), shadows: new Map(), guards: [], sections: [], sequence: [], refuse: new Set(refuse), guardThrows }
@@ -1624,4 +1628,103 @@ test('names: a 12-hex verifier name with a suffix, 13 hex digits or uppercase he
     assert.match(h.hostCall('subagent', { name }, h.lead), /^Advisor verifier name must be advisor-verifier-<full 12-character lowercase consult_id>\.$/, `${name}: delegation`)
     h.dispose()
   }
+})
+
+// ===========================================================================
+// Verifier model and effort: the lead policy and the delegation guard agree
+
+const ROUTE = Object.freeze({ provider: 'openrouter', model: '~deepseek/deepseek-flash-latest' })
+const OTHER_ROUTE = Object.freeze({ provider: 'anthropic', model: 'claude-haiku-5-5' })
+// The denials used before efforts existed, byte for byte.
+const VERIFIER_MUST_OMIT = 'Advisor verifier must omit reasoning_effort and agent_preset so the selected model default applies.'
+const VERIFIER_INHERIT = 'Advisor verifier is set to Inherit; omit provider and model instead of overriding them.'
+const wrongRoute = (route) => `Advisor verifier must use the selected route ${route.provider}/${route.model}.`
+const effortRequired = (route) => `Advisor verifier must use the selected route ${route.provider}/${route.model} with reasoning_effort "${route.effort}". Do not omit or change the effort; the user can reset it with /advisor verifier-model ${route.provider}/${route.model}.`
+// With a stored effort the agent_preset denial must not say to omit reasoning_effort.
+const presetRequired = (route) => `Advisor verifier must omit agent_preset and use the selected route ${route.provider}/${route.model} with reasoning_effort "${route.effort}". Do not omit or change the effort; the user can reset it with /advisor verifier-model ${route.provider}/${route.model}.`
+const VERIFIER_SETTINGS = Object.freeze([null, ROUTE, Object.freeze({ ...ROUTE, effort: 'low' }), Object.freeze({ provider: 'p', model: 'my model', effort: 'HiGh' })])
+
+test('text: the Inherit and no-effort Verifier model texts are unchanged; a stored effort is named literally with its reset', () => {
+  assert.equal(verifierModelPolicy(null),
+    'Verifier model: Inherit. Omit provider, model, reasoning_effort, and agent_preset so configured child defaults and compatible parent values apply.')
+  assert.equal(verifierModelPolicy(undefined), verifierModelPolicy(null))
+  assert.equal(verifierModelPolicy(ROUTE),
+    `Verifier model: ${ROUTE.provider}/${ROUTE.model}. Pass exactly this provider and model to subagent, omit reasoning_effort and agent_preset so the selected model's default effort applies, and do not fall back to another route if spawning fails.`)
+  assert.equal(verifierModelPolicy({ ...ROUTE, effort: 'low' }),
+    `Verifier model: ${ROUTE.provider}/${ROUTE.model} effort=low. Pass exactly this provider and model to subagent, pass reasoning_effort "low", omit agent_preset, and do not fall back to another route if spawning fails. If the spawn is rejected for the effort, report it and do not retry without it; the user can reset the effort with /advisor verifier-model ${ROUTE.provider}/${ROUTE.model}.`)
+})
+
+/** The spawn arguments a lead takes from the Verifier model policy: none for Inherit, else the label's route plus a quoted reasoning_effort. */
+function verifierArgsFromPolicy(policy) {
+  const match = /^Verifier model: (.+?)\. (?:Pass exactly this provider and model|Omit provider)/.exec(policy)
+  assert.ok(match !== null, policy)
+  if (match[1] === 'Inherit') {
+    assert.match(policy, /Omit provider, model, reasoning_effort, and agent_preset/)
+    return {}
+  }
+  const label = parseModelSetting(match[1])
+  const quoted = /pass reasoning_effort "([^"]*)"/.exec(policy)
+  assert.equal(quoted?.[1], label.effort, policy)
+  return quoted === null
+    ? { provider: label.provider, model: label.model }
+    : { provider: label.provider, model: label.model, reasoning_effort: quoted[1] }
+}
+
+test('delegation: in every Verifier model state the policy\'s own arguments pass the boundary and each deviation gets its denial', () => {
+  for (const setting of VERIFIER_SETTINGS) {
+    const label = JSON.stringify(setting)
+    const h = harness({ selectedRoute: () => setting })
+    const args = verifierArgsFromPolicy(verifierModelPolicy(setting))
+    const expected = spawnArgs(setting) ?? {}
+    assert.deepEqual(args, expected, label)
+    const effort = setting?.effort
+    const routeDenial = setting === null ? VERIFIER_INHERIT : effort === undefined ? wrongRoute(setting) : effortRequired(setting)
+    const effortDenial = effort === undefined ? VERIFIER_MUST_OMIT : effortRequired(setting)
+    const presetDenial = effort === undefined ? VERIFIER_MUST_OMIT : presetRequired(setting)
+    const withoutEffort = Object.fromEntries(Object.entries(expected).filter(([key]) => key !== 'reasoning_effort'))
+    const deviations = [
+      ['agent_preset added', { ...expected, agent_preset: 'reviewer' }, presetDenial],
+      ['agent_preset with another effort', { ...expected, agent_preset: 'reviewer', reasoning_effort: 'max' }, presetDenial],
+      ['agent_preset without the route', { agent_preset: 'reviewer' }, presetDenial],
+      ['reasoning_effort null', { ...expected, reasoning_effort: null }, effortDenial],
+      ['reasoning_effort empty', { ...expected, reasoning_effort: '' }, effortDenial],
+      ['reasoning_effort changed', { ...expected, reasoning_effort: 'max' }, effortDenial],
+      ...(effort === undefined ? [] : [
+        ['reasoning_effort removed', withoutEffort, effortDenial],
+        ['reasoning_effort case-changed', { ...expected, reasoning_effort: effort.toUpperCase() }, effortDenial],
+      ]),
+      ...(setting === null
+        ? [['provider added', { provider: ROUTE.provider }, routeDenial], ['model added', { model: ROUTE.model }, routeDenial]]
+        : [
+          ['provider changed', { ...expected, provider: OTHER_ROUTE.provider }, routeDenial],
+          ['model changed', { ...expected, model: OTHER_ROUTE.model }, routeDenial],
+          ['route omitted', {}, routeDenial],
+        ]),
+    ]
+    for (const [deviation, changed, denial] of deviations) {
+      assert.equal(h.hostCall('subagent', { name: VERIFIER, ...changed }, h.lead), denial, `${label}: ${deviation}`)
+      assert.equal(verifierDelegationDenial({ name: 'subagent', arguments: { name: VERIFIER, ...changed } }, () => true, () => setting), denial, `${label}: ${deviation} (pure)`)
+    }
+    assert.equal(h.hostCall('subagent', { name: VERIFIER, ...args }, h.lead), undefined, `${label}: the policy's own arguments pass`)
+    h.dispose()
+  }
+})
+
+test('delegation: the name and data-directory checks come first; agent_preset next, with the old text only without a stored effort; Advisor off after the route and effort; a throwing setting fails closed', () => {
+  const stored = { ...ROUTE, effort: 'low' }
+  const call = (args, enabled = () => true, dataDirProblem = () => undefined) => verifierDelegationDenial({ name: 'subagent', arguments: { name: VERIFIER, ...args } }, enabled, () => stored, dataDirProblem)
+  assert.match(verifierDelegationDenial({ name: 'subagent', arguments: { name: 'advisor-verifier-typo', ...ROUTE } }, () => true, () => stored), /12-character/)
+  assert.equal(call(ROUTE, () => true, () => DATA_DIR_NOT_CONFIGURED), DATA_DIR_NOT_CONFIGURED)
+  assert.equal(call(ROUTE, () => false), effortRequired(stored), 'a missing effort is reported before Advisor off')
+  assert.equal(call(spawnArgs(stored), () => false), 'Advisor verifier is off for this session; enable Advisor before starting a reserved verifier.')
+  assert.equal(call(spawnArgs(stored)), undefined)
+  assert.equal(call({ ...spawnArgs(stored), agent_preset: 'x' }, () => false), presetRequired(stored), 'agent_preset before Advisor off')
+  assert.doesNotMatch(presetRequired(stored), /omit reasoning_effort/)
+  for (const route of [null, ROUTE]) {
+    assert.equal(verifierDelegationDenial({ name: 'subagent', arguments: { name: VERIFIER, ...spawnArgs(route), agent_preset: 'x' } }, () => true, () => route), VERIFIER_MUST_OMIT,
+      `${JSON.stringify(route)}: the old text, byte for byte`)
+  }
+  const throwing = harness({ selectedRoute: () => { throw new Error('state gone') } })
+  assert.equal(throwing.hostCall('subagent', { name: VERIFIER, ...spawnArgs(stored) }, throwing.lead), 'Advisor verifier guard failed closed: state gone')
+  throwing.dispose()
 })

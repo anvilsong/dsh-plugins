@@ -2,6 +2,7 @@ import { realpathSync } from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
 import { fileSha256Sync as defaultFileHash, LEDGER_FILE, REPLIES_DIR, sha256 } from './ledger.js'
+import { effortReset, routeLabel, spawnArgs, spawnPolicy } from './state.js'
 
 export const PLANNER_NAME_PREFIX = 'advisor-planner'
 export const CONSULT_NAME_PREFIX = 'advisor-consult'
@@ -25,11 +26,47 @@ const LEVELS = ['mechanical', 'ordinary', 'hard']
 // ---------------------------------------------------------------------------
 // Lead and child policy text
 
+/**
+ * The lead's Advisor model instruction, from spawnArgs(route) like the
+ * delegation guard: Inherit, a route at its default effort, or a route with a
+ * stored effort the lead passes as reasoning_effort.
+ */
 export function advisorModelPolicy(route) {
-  if (route !== null && route !== undefined) {
-    return `Advisor model: ${route.provider}/${route.model}. Pass exactly this provider and model to subagent for advisor-planner and advisor-consult children, omit reasoning_effort and agent_preset so the selected model's default effort applies, and do not fall back to another route if spawning fails.`
+  return `Advisor model: ${routeLabel(route)}. ${spawnPolicy(route, { children: 'advisor-planner and advisor-consult children', command: 'model' })}`
+}
+
+// The refusal of agent_preset, and of reasoning_effort, while no effort is stored.
+const CHILD_MUST_OMIT = 'Advisor children must omit reasoning_effort and agent_preset so the selected model default applies.'
+
+/**
+ * The refusal of agent_preset: the text above without a stored effort; with
+ * one it must not say to omit reasoning_effort, so it repeats the required
+ * provider, model and effort and the reset command.
+ */
+function advisorPresetDenial(route) {
+  const required = spawnArgs(route)
+  if (required?.reasoning_effort === undefined) return CHILD_MUST_OMIT
+  return `Advisor children must omit agent_preset and use the selected Advisor model ${required.provider}/${required.model} with reasoning_effort "${required.reasoning_effort}". Do not omit or change the effort; the user can reset it with ${effortReset('model', route)}.`
+}
+
+/**
+ * Why a delegation's provider, model and reasoning_effort differ from
+ * spawnArgs(route), the arguments the lead's policy names; undefined when
+ * they are exactly those. Synchronous: a plain string comparison.
+ */
+function advisorRouteDenial(route, args) {
+  const expected = spawnArgs(route)
+  const required = expected ?? {}
+  const effortDiffers = args.reasoning_effort !== required.reasoning_effort
+  const routeDiffers = args.provider !== required.provider || args.model !== required.model
+  if (!effortDiffers && !routeDiffers) return undefined
+  if (required.reasoning_effort !== undefined) {
+    return `Advisor children must use the selected Advisor model ${required.provider}/${required.model} with reasoning_effort "${required.reasoning_effort}". Do not omit or change the effort; the user can reset it with ${effortReset('model', route)}.`
   }
-  return 'Advisor model: Inherit. For advisor-planner and advisor-consult children, omit provider, model, reasoning_effort, and agent_preset so configured child defaults and compatible parent values apply.'
+  if (effortDiffers) return CHILD_MUST_OMIT
+  return expected === undefined
+    ? 'Advisor model is Inherit; omit provider and model instead of overriding them.'
+    : `Advisor children must use the selected Advisor model ${required.provider}/${required.model}.`
 }
 
 /** Refusal while the plugin has no usable data directory for its ledger and replies. */
@@ -698,11 +735,14 @@ export function installPlannerBoundary(ctx, deps) {
     }
   }
 
+  // effort: what the child's own selection reports (observed, else null);
+  // effort_requested: the Advisor model's effort when the child first started.
   function routeFields(record) {
     const route = routeOf(record.agent) ?? record.route
+    const effortRequested = record.effortRequested ?? null
     return route === undefined
-      ? { backend: 'dsh:unknown', model: null, effort: null }
-      : { backend: `dsh:${route.provider}/${route.model}`, model: route.model, effort: route.reasoningEffort ?? null }
+      ? { backend: 'dsh:unknown', model: null, effort: null, effort_requested: effortRequested }
+      : { backend: `dsh:${route.provider}/${route.model}`, model: route.model, effort: route.reasoningEffort ?? null, effort_requested: effortRequested }
   }
 
   function terminalFields(record) {
@@ -795,24 +835,23 @@ export function installPlannerBoundary(ctx, deps) {
     const match = CHILD_NAME_PATTERN.exec(args.name)
     if (match === null) return 'Advisor child name must be advisor-planner-<id> or advisor-consult-<id> with a 12 lowercase hex id; generate it with openssl rand -hex 6.'
     const id = match[2]
-    if (args.reasoning_effort !== undefined || args.agent_preset !== undefined) {
-      return 'Advisor children must omit reasoning_effort and agent_preset so the selected model default applies.'
-    }
+    // First, before the lead check; the settings only choose its text.
+    if (args.agent_preset !== undefined) return advisorPresetDenial(settingsFor(exec.agent)?.advisorModel ?? null)
     const caller = exec.agent
     const root = caller === undefined ? undefined : rootOf(caller)
     if (caller === undefined || root === undefined || root !== caller) return 'Only the lead can start an advisor child.'
     const settings = settingsFor(caller)
     if (settings?.active !== true) return 'Advisor is off for this session; enable Advisor first.'
     const route = settings.advisorModel ?? null
+    // Exactly the arguments the policy names: the selected route, and
+    // reasoning_effort only as the stored effort. The effort is checked here
+    // only, never against the child's reported selection.
+    const routeDenial = advisorRouteDenial(route, args)
+    if (routeDenial !== undefined) return routeDenial
     if (route !== null) {
-      if (args.provider !== route.provider || args.model !== route.model) {
-        return `Advisor children must use the selected Advisor model ${route.provider}/${route.model}.`
-      }
       const routes = routesFor(caller)
       const authorized = Array.isArray(routes) && routes.some((candidate) => candidate.provider === route.provider && candidate.model === route.model)
       if (!authorized) return `Advisor model ${route.provider}/${route.model} is no longer authorized for this session; choose another with /advisor model.`
-    } else if (args.provider !== undefined || args.model !== undefined) {
-      return 'Advisor model is Inherit; omit provider and model instead of overriding them.'
     }
     if (!teamsEnabled(caller)) return 'Agent Teams must be enabled before starting an advisor child; verification and plans use the shared task board.'
     const rootId = caller.id
@@ -1021,7 +1060,12 @@ export function installPlannerBoundary(ctx, deps) {
       rootId: root?.id,
       root: rootReal,
       cwd: cwdReal,
+      // The requested route at start (the fallback for the backend fields)
+      // and the requested effort, recorded as effort_requested (a cold resume
+      // takes it from the started line instead). The effort is not part of
+      // the start or submit check (sameRoute).
       route: route === null ? undefined : { provider: route.provider, model: route.model },
+      effortRequested: route?.effort,
       startedAt: now(),
       attempts: 0,
       toolCalls: 0,
@@ -1057,6 +1101,10 @@ export function installPlannerBoundary(ctx, deps) {
       // Cold resume after a host restart: never write a second started line,
       // and never reopen a plan that already has a terminal line.
       const prior = ledgerEntriesFor(record.planId)
+      // The effort requested at the first start stays the child's, whatever
+      // the setting is now; a started line from before efforts has none.
+      const started = prior.find((entry) => entry.status === 'started')
+      if (started !== undefined) record.effortRequested = typeof started.effort_requested === 'string' ? started.effort_requested : undefined
       if (prior.some((entry) => entry.status !== 'started')) {
         record.closed = true
         record.submitted = prior.some((entry) => entry.status === 'ok')

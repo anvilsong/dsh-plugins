@@ -2,6 +2,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpat
 import path from 'node:path'
 import { REPLIES_DIR, sha256 } from './ledger.js'
 import { confinedGrep, plannerPathAllowed, plannerPathDenial } from './planner.js'
+import { effortReset, routeLabel, spawnArgs, spawnPolicy } from './state.js'
 
 export const VERIFIER_NAME_PREFIX = 'advisor-verifier'
 export const VERIFIER_NAME_PATTERN = /^advisor-verifier-[0-9a-f]{12}$/
@@ -42,12 +43,13 @@ CLAIM <one sentence> | STATUS confirmed|refuted|unverifiable | REPLY <reply_path
 If the ledger entry has kind plan, the reply is a JSON task plan. Check facts per task, never plan quality: each write_scopes path exists, or its parent directory does for a new file; files, symbols, and modules named in titles and criteria exist; every script, test file, or command entry point named in verify exists (you cannot run it); and report facts that contradict a mechanical level. Begin each such CLAIM with the plan task id. If the entry has kind advice, the reply is JSON advice: check every entry in claims against its cited evidence and the repository, and treat recommendation, options, risks, and do_not_build as opinion (unverifiable) unless they state a repository fact.
 Confirmed and refuted require repository file:line evidence. Unverifiable is the default for opinions, recommendations, and claims without repository evidence. Do not provide an aggregate tally, score, accept/reject conclusion, or overall verdict. Return the report as your final response only; the lead owns the shared task and all conclusions.`
 
+/** The lead's Verifier model instruction, from spawnArgs(route) like verifierDelegationDenial. */
 export function verifierModelPolicy(route) {
-  if (route === null || route === undefined) {
-    return 'Verifier model: Inherit. Omit provider, model, reasoning_effort, and agent_preset so configured child defaults and compatible parent values apply.'
-  }
-  return `Verifier model: ${route.provider}/${route.model}. Pass exactly this provider and model to subagent, omit reasoning_effort and agent_preset so the selected model's default effort applies, and do not fall back to another route if spawning fails.`
+  return `Verifier model: ${routeLabel(route)}. ${spawnPolicy(route, { command: 'verifier-model' })}`
 }
+
+// The refusal of agent_preset, and of reasoning_effort, while no effort is stored.
+const VERIFIER_MUST_OMIT = 'Advisor verifier must omit reasoning_effort and agent_preset so the selected model default applies.'
 
 function reservedName(name) {
   return typeof name === 'string'
@@ -71,15 +73,27 @@ export function verifierDelegationDenial(exec, enabled = () => true, selectedRou
   if (!VERIFIER_NAME_PATTERN.test(name)) {
     return 'Advisor verifier name must be advisor-verifier-<full 12-character lowercase consult_id>.'
   }
-  if (args.reasoning_effort !== undefined || args.agent_preset !== undefined) {
-    return 'Advisor verifier must omit reasoning_effort and agent_preset so the selected model default applies.'
-  }
   const route = selectedRoute()
-  if (route !== null && (args.provider !== route.provider || args.model !== route.model)) {
-    return `Advisor verifier must use the selected route ${route.provider}/${route.model}.`
+  const expected = spawnArgs(route)
+  const required = expected ?? {}
+  // agent_preset first. The old text says to omit reasoning_effort, so with a
+  // stored effort the denial repeats the required route, effort and reset.
+  if (args.agent_preset !== undefined) {
+    return required.reasoning_effort === undefined
+      ? VERIFIER_MUST_OMIT
+      : `Advisor verifier must omit agent_preset and use the selected route ${required.provider}/${required.model} with reasoning_effort "${required.reasoning_effort}". Do not omit or change the effort; the user can reset it with ${effortReset('verifier-model', route)}.`
   }
-  if (route === null && (args.provider !== undefined || args.model !== undefined)) {
-    return 'Advisor verifier is set to Inherit; omit provider and model instead of overriding them.'
+  // Exactly the arguments the policy names: the selected route, and
+  // reasoning_effort only as the stored effort (a plain string comparison).
+  const effortDiffers = args.reasoning_effort !== required.reasoning_effort
+  if (effortDiffers || args.provider !== required.provider || args.model !== required.model) {
+    if (required.reasoning_effort !== undefined) {
+      return `Advisor verifier must use the selected route ${required.provider}/${required.model} with reasoning_effort "${required.reasoning_effort}". Do not omit or change the effort; the user can reset it with ${effortReset('verifier-model', route)}.`
+    }
+    if (effortDiffers) return VERIFIER_MUST_OMIT
+    return expected === undefined
+      ? 'Advisor verifier is set to Inherit; omit provider and model instead of overriding them.'
+      : `Advisor verifier must use the selected route ${required.provider}/${required.model}.`
   }
   if (!enabled()) return 'Advisor verifier is off for this session; enable Advisor before starting a reserved verifier.'
   return undefined
