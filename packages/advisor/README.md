@@ -89,6 +89,44 @@ closes; nothing is retried automatically. A refused effort that you picked
 yourself only shows the Host's message: an effort row always sends its effort,
 and its refusal leaves the model's recommended effort in place.
 
+**Automatic effort.** When the model menu opens and the Advisor model is
+saved as a model without an effort (Default), the Advisor model cell applies
+that model's recommended effort once, by itself: it sends
+`/advisor model <provider>/<model> effort=<id>`, the line a pick of that model
+sends (the highest advertised effort whose id is not `max`). It sends only
+while Advisor is on, the cell's flyout is closed, the cell is not locked or
+saving, no Advisor update is pending, the saved route is authorized, the saved
+setting is still the one the cell first showed in that opening of the menu (a
+change from another tab or a typed command stops it until the menu is opened
+again), and the model directory lists the model's efforts with one below
+`max`. While the directory cannot tell the model's efforts yet, the cell waits
+and sends nothing; a model that advertises only `max` or no efforts gets
+nothing. A session with Advisor off gets it once Advisor is on while the menu
+is open. It is tried at most once per opening and never retried: a refusal is
+reported like any other, the setting stays as it was, and that model's next
+picks in that opening go without the effort. The command's chat entry and the
+cell's ` · <effort>` are the only signs; there is no other notice and no
+switch to turn it off. To undo it, pick **Default** in the Effort group.
+
+Before it sends, the cell records the session in the browser's localStorage
+under `dsh.autoEffort.v1:advisor:<session id>:advisorModel`: one key per
+session, whatever the model. Every choice in the Advisor model cell that sends
+a command (a model, an effort, Default, Inherit) writes the same key first, so
+nothing is applied automatically after you have chosen there and a Default you
+pick stays. A choice that sends nothing (the row already checked, or any row
+while the cell is locked) writes nothing. The key belongs to the GUI's origin
+(scheme, host and port), so:
+
+- Another browser or profile, another GUI origin, or cleared site data applies
+  it once more.
+- A Default set by command before this browser applied the effort or recorded
+  a choice cannot be told from an older setting without an effort, and is
+  upgraded once.
+- Without localStorage (unavailable, blocked, or failing), nothing is applied
+  automatically; the menu otherwise works as before.
+- The Verifier model cell never applies anything by itself, since its
+  recommendation is Default, and never reads or writes the key.
+
 **Upgrade notes.**
 
 - 0.3.0 removed `/advisor verifier on|off`; Advisor on always verifies.
@@ -97,6 +135,9 @@ and its refusal leaves the model's recommended effort in place.
   returns an error that points to `/advisor model`.
 - The projection moved to state version 7 (a saved model can carry an
   effort), so cached Advisor state is rebuilt once from the session log.
+- An Advisor model saved without an effort gets its recommended effort once,
+  the next time the model menu opens in a browser with Advisor on (see
+  **Automatic effort** above).
 - Advisor data moved into the DSH home (see [Data directory](#data-directory)).
   Runs recorded before the Advisor data directory existed are not read by the
   plugin.
@@ -190,6 +231,9 @@ What the lead does with each choice:
   another model there replaces the saved route, including a command-set
   effort, with that model and its recommended effort; picking Inherit resets
   both; picking the model already saved sends nothing and keeps the effort.
+  An Advisor model saved without an effort, including a Default set by
+  command, can get its recommended effort once from the open menu (see
+  **Automatic effort** under [Use](#use)).
 - Advisor children record both values in the ledger: `effort_requested` is
   the effort stored when the child first started (a child resumed after a
   Host restart keeps the value of its `started` line, whatever the setting is

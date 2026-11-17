@@ -275,10 +275,13 @@ test('verifier flyout commits one choice, shows saving, and snaps back on a reco
 })
 
 // `getService` answers every other ctx.get (locale, modelDirectories); it may
-// throw, as a lazily read service may.
-function loadWithRuntime(runtime, commandUi, getService = () => undefined) {
+// throw, as a lazily read service may. `globals` are extra client globals,
+// none by default (so no localStorage); each is defined on the context's own
+// global, so a throwing getter throws in the client as a blocked browser
+// storage does.
+function loadWithRuntime(runtime, commandUi, getService = () => undefined, globals = {}) {
   const registrations = []
-  vm.runInNewContext(readFileSync(new URL('../src/client.js', import.meta.url), 'utf8'), {
+  const context = vm.createContext({
     window: {
       __ModuleLoader__: {
         load({ factory }) {
@@ -292,6 +295,9 @@ function loadWithRuntime(runtime, commandUi, getService = () => undefined) {
       },
     },
   })
+  const define = vm.runInContext('(name, descriptor) => { Object.defineProperty(globalThis, name, descriptor) }', context)
+  for (const [name, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(globals))) define(name, descriptor)
+  vm.runInContext(readFileSync(new URL('../src/client.js', import.meta.url), 'utf8'), context)
   return registrations
 }
 
@@ -531,7 +537,9 @@ function textOf(node) {
 
 // One Advisor (registration 1) or Verifier (registration 2) model cell. The
 // close handle given to the flyout rows closes the flyout, as ModelFlyout's does.
-function cellHarness({ cell = 'advisor', view = {}, routes = ALL_ROUTES, getService, sessionId = 'session-1', execute } = {}) {
+// `globals` go to the loader; `props` are extra slot props (such as locked);
+// `present: false` mounts without a view (`initialView` is the one it gets).
+function cellHarness({ cell = 'advisor', view = {}, routes = ALL_ROUTES, getService, sessionId = 'session-1', execute, globals, props = {}, present = true } = {}) {
   const runtime = createRuntime()
   const calls = []
   const reports = []
@@ -541,17 +549,26 @@ function cellHarness({ cell = 'advisor', view = {}, routes = ALL_ROUTES, getServ
       return execute === undefined ? { kind: 'success' } : execute(line)
     },
   }
-  const registrations = loadWithRuntime(runtime, commandUi, getService)
+  const registrations = loadWithRuntime(runtime, commandUi, getService, globals)
   const field = cell === 'verifier' ? 'verifierModel' : 'advisorModel'
   // `routes` is the advisorModelRoutes projection; tests may change it.
-  const state = { view: { active: true, advisorModel: null, verifierModel: null, pending: false, pendingTarget: null, pendingSince: null, failure: null, ...view }, routes }
+  const initialView = { active: true, advisorModel: null, verifierModel: null, pending: false, pendingTarget: null, pendingSince: null, failure: null, ...view }
+  const state = { view: present ? initialView : undefined, routes }
   const wrapper = registrations[cell === 'verifier' ? 2 : 1]({
     sessionId,
     useProjection: (name) => name === 'advisorModelRoutes' ? state.routes : state.view,
     reportFailure: (message) => reports.push(message),
+    ...props,
   })
-  const mounted = runtime.mount(wrapper.type)
+  let mounted = runtime.mount(wrapper.type)
   let output = mounted.render(wrapper.props)
+  // The Host menu closes and opens again: a new cell on the same page.
+  const remount = () => {
+    mounted.unmount()
+    mounted = runtime.mount(wrapper.type)
+    output = mounted.render(wrapper.props)
+    return output
+  }
   const closes = []
   const rerender = () => { output = mounted.render(); return output }
   // A Host re-render with changed slot props (for example a session id).
@@ -624,8 +641,9 @@ function cellHarness({ cell = 'advisor', view = {}, routes = ALL_ROUTES, getServ
     rerender()
   }
   return {
-    state, calls, reports, closes, mounted,
-    rerender, setProps, desired, cellNode, cellValue, items, rows, openFlyout, closeFlyout,
+    state, initialView, calls, reports, closes,
+    get mounted() { return mounted },
+    rerender, setProps, remount, desired, cellNode, cellValue, items, rows, openFlyout, closeFlyout,
     effortGroup, effortHeading, effortRows, effortSummary,
     pickModel, pickInherit, pickEffort, fail, save,
     trace: () => mounted.instance.trace.join(','),
@@ -869,7 +887,7 @@ test('the saved model\'s row sends nothing, so a command-set effort survives; In
   plain.openFlyout()
   plain.closeFlyout()
   await ticks()
-  assert.deepEqual(plain.calls, [], 'a saved route is never given the default')
+  assert.deepEqual(plain.calls, [], 'a saved route is never given the default by a row (no localStorage here, so no automatic effort either)')
   assert.equal(textOf(plain.cellValue()), 'claude-fable-5-2')
   await plain.pickModel(FABLE)
   assert.deepEqual(plain.calls, [])
@@ -1481,8 +1499,9 @@ test('hook order: the same hooks in the same order while the directory throws th
     // anchor ref, cell ref, open, desired, useCommand (busy, error, mounted,
     // effect), the directory version and subscription, the open-efforts and
     // refused refs, the desired-clearing effect, the failure watch (ref,
-    // effect), the effect that closes the flyout on a reset.
-    assert.equal(first, 'ref,ref,state,state,state,state,ref,effect,state,effect,ref,ref,effect,ref,effect,effect', cell)
+    // effect), the effect that closes the flyout on a reset, then the
+    // automatic effort's attempt ref and effect (both cells call them).
+    assert.equal(first, 'ref,ref,state,state,state,state,ref,effect,state,effect,ref,ref,effect,ref,effect,effect,ref,effect', cell)
     assert.equal(directory.listeners.size, 0)
     const steps = [
       ['a session id appears, the directory still throws', () => harness.setProps({ sessionId: 'session-1' }), 0],
@@ -1609,4 +1628,546 @@ test('only a pick of another model is automatic: the saved model\'s row restores
   await verifier.pickModel(OPUS)
   assert.deepEqual(verifier.desired(), { key: 'anthropic/claude-opus-5-5', effort: undefined, auto: false })
   assert.deepEqual(verifier.calls, ['/advisor verifier-model anthropic/claude-opus-5-5'])
+})
+
+// ---- Automatic effort: the Advisor model's recommended effort, applied once ----
+
+const MARKER = 'dsh.autoEffort.v1:advisor:session-1:advisorModel'
+const AUTO_OPUS = '/advisor model anthropic/claude-opus-5-5 effort=xhigh'
+const OPUS_DEFAULT = '/advisor model anthropic/claude-opus-5-5'
+
+// A page localStorage stand-in; `log` lists every call in order.
+function fakeStorage(entries = {}) {
+  const items = new Map(Object.entries(entries))
+  const log = []
+  return {
+    items,
+    log,
+    getItem(key) {
+      log.push(`get ${key}`)
+      return items.has(key) ? items.get(key) : null
+    },
+    setItem(key, value) {
+      log.push(`set ${key}=${value}`)
+      items.set(key, String(value))
+    },
+    removeItem(key) {
+      log.push(`remove ${key}`)
+      items.delete(key)
+    },
+  }
+}
+// A fake storage with some methods replaced; `overrides` gets the plain one.
+function storageWith(overrides) {
+  const base = fakeStorage()
+  return { ...base, ...overrides(base) }
+}
+
+// An Advisor model cell on a page whose localStorage is `storage` (none for
+// null; `globals` replaces it), with the full directory (`directory: null`:
+// no directory service), Advisor on and Opus saved without an effort: every
+// precondition holds unless a case changes one. `atCall` copies the
+// storage's items each time a command line is executed.
+function autoHarness({ storage = fakeStorage(), directory = fakeDirectory(), view = { advisorModel: OPUS }, globals, execute, ...options } = {}) {
+  const atCall = []
+  const harness = cellHarness({
+    ...options,
+    view,
+    getService: directory === null ? () => undefined : directoryService(directory),
+    globals: globals ?? (storage === null ? {} : { localStorage: storage }),
+    execute: (line) => {
+      atCall.push(storage === null ? null : Object.fromEntries(storage.items))
+      return execute === undefined ? { kind: 'success' } : execute(line)
+    },
+  })
+  return Object.assign(harness, { storage, directory, atCall })
+}
+
+const turnOn = (harness) => {
+  harness.state.view = { ...harness.state.view, active: true }
+  return harness.rerender()
+}
+
+// Re-renders and settled promises: every chance to send again.
+async function churn(harness) {
+  for (let round = 0; round < 3; round++) {
+    harness.rerender()
+    await ticks()
+  }
+  return harness.rerender()
+}
+
+// One of the cell's hook slots, by its place in the order the hook-order
+// tests pin: 3 desired, 4 busy (useCommand), 11 the refused set.
+function hookAt(harness, index, kind) {
+  assert.equal(harness.trace().split(',')[index], kind, `hook ${index} is a ${kind}`)
+  return harness.mounted.instance.hooks[index]
+}
+
+// Mounted with Advisor off; `block` makes one precondition fail, then
+// Advisor comes on, so that precondition alone holds the effort back.
+function blockedWhileOff(block) {
+  const harness = autoHarness({ view: { advisorModel: OPUS, active: false } })
+  block(harness)
+  turnOn(harness)
+  return harness
+}
+
+test('automatic effort: with the menu open, a saved Advisor model without an effort gets its recommended effort once, claimed in localStorage first', async () => {
+  for (const [route, line] of [
+    [OPUS, AUTO_OPUS],
+    [FABLE, '/advisor model anthropic/claude-fable-5-2 effort=xhigh'],
+    [FLASH, '/advisor model openrouter/~deepseek/deepseek-flash-latest effort=high'],
+  ]) {
+    const harness = autoHarness({ view: { advisorModel: route } })
+    assert.deepEqual(harness.calls, [line], `${keyOf(route)}: the line a pick of it sends, on mount`)
+    assert.deepEqual(harness.storage.log, [`get ${MARKER}`, `set ${MARKER}=auto`, `get ${MARKER}`], 'absent, written, read back')
+    assert.deepEqual(harness.atCall, [{ [MARKER]: 'auto' }], 'the key is in storage when the line is sent')
+  }
+  assert.equal(MARKER, 'dsh.autoEffort.v1:advisor:session-1:advisorModel', 'the key text')
+
+  const harness = autoHarness()
+  harness.rerender()
+  assert.deepEqual(harness.desired(), { key: 'anthropic/claude-opus-5-5', effort: 'xhigh', auto: true }, 'the automatic flag, so the refusal escape applies')
+  assert.equal(textOf(harness.cellValue()), 'claude-opus-5-5 · xhigh', 'the cell shows the effort being saved')
+  assert.equal(harness.cellNode().props['aria-busy'], true)
+  assert.equal(harness.cellNode().props['aria-expanded'], false, 'the flyout stays closed')
+  assert.deepEqual(harness.closes, [], 'nothing is closed or focused')
+  // Its only signs are the chat command and the cell's effort: no toast, note, or switch.
+  const output = await churn(harness)
+  assert.deepEqual(harness.reports, [])
+  assert.deepEqual(Array.from(output.children).filter(Boolean).map((node) => node.type), ['style', 'button'])
+  harness.save(withEffort(OPUS, 'xhigh'))
+  assert.equal(harness.desired(), null, 'settled once the session shows it')
+  assert.equal(harness.cellNode().props['aria-busy'], false)
+  assert.equal(textOf(harness.cellValue()), 'claude-opus-5-5 · xhigh')
+  assert.deepEqual(harness.calls, [AUTO_OPUS])
+})
+
+test('automatic effort: each precondition alone holds it back and leaves the storage untouched; once it holds, the line is sent', async () => {
+  const maxAndHigh = [{ id: 'anthropic', models: [{ id: 'claude-max-only', reasoning: { efforts: efforts('high', 'max') } }] }]
+  const plainWithEfforts = [{ id: 'anthropic', models: [{ id: 'claude-plain', reasoning: { efforts: efforts('low', 'medium') } }] }]
+  const toSession = (h) => h.setProps({ sessionId: 'session-1' })
+  const cases = [
+    ['no session id', () => autoHarness({ sessionId: null }), toSession],
+    ['an undefined session id', () => autoHarness({ props: { sessionId: undefined } }), toSession],
+    ['an empty session id', () => autoHarness({ sessionId: '' }), toSession],
+    ['a session id that is not a string', () => autoHarness({ sessionId: 7 }), toSession],
+    ['no view yet', () => autoHarness({ present: false }), (h) => { h.state.view = h.initialView; h.rerender() }],
+    ['Advisor off', () => autoHarness({ view: { advisorModel: OPUS, active: false } }), turnOn],
+    ['the menu locks the cell', () => autoHarness({ props: { locked: true } }), (h) => h.setProps({ locked: false })],
+    ['an Advisor update pending', () => autoHarness({ view: { advisorModel: OPUS, pending: true, pendingTarget: 'verifierModel', pendingSince: Date.now() } }),
+      (h) => { h.state.view = { ...h.state.view, pending: false, pendingTarget: null, pendingSince: null }; h.rerender() }],
+    ['its own command line in flight (busy)', () => blockedWhileOff((h) => { hookAt(h, 4, 'state').value = true }),
+      (h) => { hookAt(h, 4, 'state').value = false; h.rerender() }],
+    ['its own setting unconfirmed', () => blockedWhileOff((h) => { hookAt(h, 3, 'state').value = { key: keyOf(FABLE), effort: 'max' } }),
+      (h) => { hookAt(h, 3, 'state').value = null; h.rerender() }],
+    ['its flyout open', () => blockedWhileOff((h) => { h.openFlyout() }), (h) => { h.closeFlyout() }],
+    ['the saved route not authorized', () => autoHarness({ routes: [FABLE] }), (h) => { h.state.routes = ALL_ROUTES; h.rerender() }],
+    ['no authorized route list', () => autoHarness({ routes: null }), (h) => { h.state.routes = ALL_ROUTES; h.rerender() }],
+    ['the directory not loaded yet', () => autoHarness({ directory: fakeDirectory([]) }), (h) => { h.directory.publish(CATALOG); h.rerender() }],
+    ['the model refused in this opening', () => blockedWhileOff((h) => { hookAt(h, 11, 'ref').current.add(keyOf(OPUS)) }),
+      (h) => { hookAt(h, 11, 'ref').current.delete(keyOf(OPUS)); h.rerender() }],
+    ['only max advertised (no recommendation)', () => autoHarness({ view: { advisorModel: MAX_ONLY } }),
+      (h) => { h.directory.publish(maxAndHigh); h.rerender() }, '/advisor model anthropic/claude-max-only effort=high'],
+    ['no efforts advertised', () => autoHarness({ view: { advisorModel: PLAIN } }),
+      (h) => { h.directory.publish(plainWithEfforts); h.rerender() }, '/advisor model anthropic/claude-plain effort=medium'],
+  ]
+  for (const [name, make, release, line = AUTO_OPUS] of cases) {
+    const harness = make()
+    await churn(harness)
+    assert.deepEqual(harness.calls, [], `${name}: nothing is sent`)
+    assert.deepEqual(harness.storage.log, [], `${name}: the storage is not touched`)
+    release(harness)
+    assert.deepEqual(harness.calls, [line], `${name}: once it holds, the line is sent`)
+    assert.deepEqual(harness.atCall, [{ [MARKER]: 'auto' }], `${name}: claimed before the send`)
+  }
+})
+
+test('automatic effort: nothing for Inherit, a saved effort, an unavailable route, or a model whose efforts the directory cannot list', async () => {
+  const cases = [
+    ['Inherit', { view: { advisorModel: null } }],
+    ['no saved field', { view: { advisorModel: undefined } }],
+    ['a saved effort', { view: { advisorModel: withEffort(OPUS, 'high') } }],
+    ['a saved max', { view: { advisorModel: withEffort(OPUS, 'max') } }],
+    ['a saved effort the model does not advertise', { view: { advisorModel: withEffort(FABLE, 'turbo') } }],
+    ['an unavailable saved route', { view: { advisorModel: { provider: 'gone', model: 'retired-model' } } }],
+    ['a model listed without efforts', { view: { advisorModel: PLAIN } }],
+    ['a model that advertises only max', { view: { advisorModel: MAX_ONLY } }],
+    ['a model the directory does not list', { view: { advisorModel: UNLISTED } }],
+    ['an empty effort list', { view: { advisorModel: FABLE }, directory: fakeDirectory(catalogOf({ efforts: [], defaultEffort: 'xhigh' })) }],
+    ['no usable effort id', { view: { advisorModel: FABLE }, directory: fakeDirectory(catalogOf({ efforts: [{ id: '' }, { id: 'two words' }, null] })) }],
+    ['no model directory', { directory: null }],
+  ]
+  for (const [name, options] of cases) {
+    const harness = autoHarness(options)
+    await churn(harness)
+    assert.deepEqual(harness.calls, [], name)
+    assert.deepEqual(harness.storage.log, [], `${name}: the storage is not touched`)
+    harness.remount()
+    await churn(harness)
+    assert.deepEqual(harness.calls, [], `${name}: nor on the next opening`)
+    assert.deepEqual(harness.storage.log, [], name)
+  }
+})
+
+test('automatic effort: while the directory cannot tell the model\'s efforts it waits and writes nothing, then sends once they are listed', async () => {
+  const directory = fakeDirectory([])
+  const harness = autoHarness({ directory })
+  assert.equal(directory.listeners.size, 1, 'it listens to the directory')
+  await churn(harness)
+  directory.publish([{ id: 'anthropic', models: [{ id: 'claude-other', reasoning: { efforts: efforts('high') } }] }])
+  await churn(harness)
+  assert.deepEqual(harness.calls, [], 'the saved model is still not listed')
+  assert.deepEqual(harness.storage.log, [], 'nothing written while it waits')
+  directory.publish(CATALOG)
+  assert.equal(harness.mounted.instance.dirty, true, 'the update re-renders the cell')
+  harness.rerender()
+  assert.deepEqual(harness.calls, [AUTO_OPUS])
+  assert.deepEqual(harness.atCall, [{ [MARKER]: 'auto' }])
+  directory.publish(CATALOG)
+  await churn(harness)
+  assert.deepEqual(harness.calls, [AUTO_OPUS], 'a later update sends nothing more')
+})
+
+test('automatic effort: a saved setting that changes after the cell\'s first render with a view stops it for that opening', async () => {
+  // Another tab or a typed command changes it while the menu is open.
+  const changed = autoHarness({ view: { advisorModel: OPUS, active: false } })
+  changed.save(FLASH)
+  turnOn(changed)
+  changed.save(OPUS)
+  changed.directory.publish(CATALOG)
+  await churn(changed)
+  assert.deepEqual(changed.calls, [], 'stopped, even back on the first setting')
+  assert.deepEqual(changed.storage.log, [], 'nothing claimed')
+  changed.remount()
+  assert.deepEqual(changed.calls, [AUTO_OPUS], 'the next opening starts over')
+
+  // The reference is the first render with a view, not the mount.
+  const late = autoHarness({ present: false, view: { advisorModel: OPUS, active: false } })
+  late.state.view = late.initialView
+  late.rerender()
+  late.save(FLASH)
+  turnOn(late)
+  await churn(late)
+  assert.deepEqual(late.calls, [])
+
+  // A view that comes back changed after a connection reset stops it; one
+  // that comes back unchanged does not.
+  for (const [route, expected] of [[FLASH, []], [OPUS, [AUTO_OPUS]]]) {
+    const reset = autoHarness({ view: { advisorModel: OPUS, active: false } })
+    reset.state.view = undefined
+    assert.equal(reset.rerender(), null)
+    reset.state.view = { ...reset.initialView, advisorModel: route, active: true }
+    reset.rerender()
+    assert.deepEqual(reset.calls, expected, keyOf(route))
+  }
+
+  // An effort saved elsewhere and cleared again is a change too.
+  const effort = autoHarness({ view: { advisorModel: OPUS, active: false } })
+  effort.save(withEffort(OPUS, 'high'))
+  effort.save(OPUS)
+  turnOn(effort)
+  await churn(effort)
+  assert.deepEqual(effort.calls, [])
+})
+
+test('automatic effort: one attempt per opening; a refused or failed automatic effort is never retried, not on updates nor on the next opening', async () => {
+  const once = autoHarness()
+  once.directory.publish(CATALOG)
+  await churn(once)
+  assert.deepEqual(once.calls, [AUTO_OPUS], 're-renders and directory updates send nothing more')
+  once.save(withEffort(OPUS, 'xhigh'))
+  once.save(OPUS) // reset to Default elsewhere, for example by command
+  await churn(once)
+  assert.deepEqual(once.calls, [AUTO_OPUS], 'nothing more in that opening')
+  once.remount()
+  await churn(once)
+  assert.deepEqual(once.calls, [AUTO_OPUS], 'nor in the next: the key is there')
+  assert.deepEqual(once.storage.log.filter((entry) => entry.startsWith('set ')), [`set ${MARKER}=auto`])
+
+  // The Host records a refusal: reported as any refusal, back to the saved
+  // setting, the refusal escape applies, and nothing is retried.
+  const refused = autoHarness()
+  refused.rerender()
+  refused.fail(AUTO_REFUSAL)
+  assert.deepEqual(refused.reports, [AUTO_REFUSAL], 'the Host text, verbatim')
+  assert.equal(refused.desired(), null)
+  assert.equal(textOf(refused.cellValue()), 'claude-opus-5-5', 'back to the saved setting')
+  refused.directory.publish(CATALOG)
+  await churn(refused)
+  assert.deepEqual(refused.calls, [AUTO_OPUS], 'no retry in that opening')
+  refused.save(FABLE)
+  await refused.pickModel(OPUS)
+  assert.deepEqual(refused.calls, [AUTO_OPUS, OPUS_DEFAULT], 'a later pick of that model goes without the refused effort')
+  refused.save(OPUS)
+  refused.remount()
+  await churn(refused)
+  assert.deepEqual(refused.calls, [AUTO_OPUS, OPUS_DEFAULT], 'nor on the next opening')
+
+  // (An Error from this realm is not an Error in the client's, so only its
+  // text is matched.)
+  for (const [name, execute, text] of [
+    ['not admitted', () => ({ kind: 'error', text: BUSY }), BUSY],
+    ['the call fails', () => { throw new Error('socket closed') }, 'socket closed'],
+  ]) {
+    const failed = autoHarness({ execute })
+    await churn(failed)
+    assert.equal(failed.reports.length, 1, `${name}: reported once`)
+    assert.ok(failed.reports[0].includes(text), `${name}: ${failed.reports[0]}`)
+    assert.equal(failed.desired(), null, name)
+    assert.equal(failed.cellNode().props['aria-busy'], false, name)
+    failed.directory.publish(CATALOG)
+    await churn(failed)
+    assert.deepEqual(failed.calls, [AUTO_OPUS], `${name}: no retry`)
+    failed.remount()
+    await churn(failed)
+    assert.deepEqual(failed.calls, [AUTO_OPUS], `${name}: nor on the next opening`)
+  }
+})
+
+test('automatic effort: no localStorage, a blocked or failing one, a write that does not read back, or a key already there sends nothing; nothing in memory stands in', async () => {
+  const blocked = { get localStorage() { throw new Error('SecurityError: The operation is insecure.') } }
+  const throwing = (method) => storageWith((base) => ({
+    [method](key, value) {
+      base.log.push(method === 'getItem' ? `get ${key}` : `set ${key}=${value}`)
+      throw new Error(method === 'getItem' ? 'SecurityError' : 'QuotaExceededError')
+    },
+  }))
+  const claimed = [`get ${MARKER}`, `set ${MARKER}=auto`, `get ${MARKER}`]
+  const cases = [
+    ['no localStorage', { storage: null }],
+    ['localStorage null', { storage: null, globals: { localStorage: null } }],
+    ['a blocked localStorage (its getter throws)', { storage: null, globals: blocked }],
+    ['getItem throws', { storage: throwing('getItem') }, [`get ${MARKER}`]],
+    ['setItem throws', { storage: throwing('setItem') }, [`get ${MARKER}`, `set ${MARKER}=auto`]],
+    ['the write is dropped', { storage: storageWith((base) => ({ setItem(key, value) { base.log.push(`set ${key}=${value}`) } })) }, claimed],
+    ['another value reads back', { storage: storageWith((base) => ({ setItem(key, value) { base.log.push(`set ${key}=${value}`); base.items.set(key, 'other') } })) }, claimed],
+    ['the key already there', { storage: fakeStorage({ [MARKER]: 'user' }) }, [`get ${MARKER}`]],
+    ['the key there, empty', { storage: fakeStorage({ [MARKER]: '' }) }, [`get ${MARKER}`]],
+  ]
+  for (const [name, options, accesses = []] of cases) {
+    const harness = autoHarness(options)
+    harness.directory.publish(CATALOG)
+    await churn(harness)
+    assert.deepEqual(harness.calls, [], name)
+    assert.equal(harness.desired(), null, name)
+    assert.deepEqual(harness.reports, [], `${name}: silently`)
+    assert.deepEqual(harness.storage?.log ?? [], accesses, `${name}: one attempt in the opening`)
+    harness.remount()
+    await churn(harness)
+    assert.deepEqual(harness.calls, [], `${name}: nor on the next opening`)
+  }
+  const present = fakeStorage({ [MARKER]: 'user' })
+  autoHarness({ storage: present })
+  assert.deepEqual([...present.items], [[MARKER, 'user']], 'a present key is left as it is')
+
+  // A storage that fails once: nothing in that opening, and nothing kept in
+  // memory either way, so the next opening claims the key and sends.
+  let failures = 1
+  const flaky = storageWith((base) => ({
+    getItem(key) {
+      if (failures-- > 0) throw new Error('SecurityError')
+      return base.getItem(key)
+    },
+  }))
+  const once = autoHarness({ storage: flaky })
+  await churn(once)
+  assert.deepEqual(once.calls, [])
+  once.remount()
+  assert.deepEqual(once.calls, [AUTO_OPUS])
+})
+
+test('automatic effort: every choice in the Advisor model cell that sends writes the key first; a choice that sends nothing writes nothing', async () => {
+  const withHigh = { advisorModel: withEffort(OPUS, 'high') }
+  for (const [name, view, pick, line] of [
+    ['another model, with its recommended effort', { advisorModel: null }, (h) => h.pickModel(OPUS), AUTO_OPUS],
+    ['another model, without one', { advisorModel: null }, (h) => h.pickModel(PLAIN), '/advisor model anthropic/claude-plain'],
+    ['an effort row', withHigh, (h) => h.pickEffort('Low'), '/advisor model anthropic/claude-opus-5-5 effort=low'],
+    ['Default', withHigh, (h) => h.pickEffort('Default (High)'), OPUS_DEFAULT],
+    ['Inherit', withHigh, (h) => h.pickInherit(), '/advisor model inherit'],
+  ]) {
+    const harness = autoHarness({ view })
+    assert.deepEqual(harness.storage.log, [], `${name}: nothing automatic to begin with`)
+    await pick(harness)
+    assert.deepEqual(harness.calls, [line], name)
+    assert.deepEqual(harness.atCall, [{ [MARKER]: 'user' }], `${name}: written before the line is sent`)
+    assert.deepEqual(harness.storage.log, [`set ${MARKER}=user`], `${name}: a plain write, no claim`)
+  }
+
+  // The saved model's row while another pick is unconfirmed restores the
+  // saved setting: a choice too.
+  const restore = autoHarness({ view: { advisorModel: withEffort(FABLE, 'max') } })
+  await restore.pickModel(OPUS)
+  await restore.pickModel(FABLE)
+  assert.deepEqual(restore.calls, [AUTO_OPUS, '/advisor model anthropic/claude-fable-5-2 effort=max'])
+  assert.deepEqual(restore.storage.log, [`set ${MARKER}=user`, `set ${MARKER}=user`])
+
+  // A choice that sends nothing writes nothing: the model the cell shows,
+  // its checked effort, any row of a locked cell.
+  const quiet = autoHarness({ view: withHigh })
+  await quiet.pickModel(OPUS)
+  await quiet.pickEffort('High')
+  const locked = autoHarness({ view: { ...withHigh, pending: true, pendingTarget: 'verifierModel', pendingSince: Date.now() } })
+  await locked.pickModel(FABLE)
+  await locked.pickEffort('Low')
+  await locked.pickInherit()
+  for (const [name, harness] of [['nothing to change', quiet], ['locked', locked]]) {
+    assert.deepEqual(harness.calls, [], name)
+    assert.deepEqual(harness.storage.log, [], name)
+  }
+  // Without a session id there is no key to write (nor a directory to ask).
+  const noSession = autoHarness({ sessionId: null, view: { advisorModel: null } })
+  await noSession.pickModel(OPUS)
+  assert.deepEqual(noSession.calls, [OPUS_DEFAULT])
+  assert.deepEqual(noSession.storage.log, [], 'no key without a session id')
+
+  // The storage never blocks a choice.
+  for (const [name, storage] of [['no storage', null], ['setItem throws', storageWith(() => ({ setItem() { throw new Error('QuotaExceededError') } }))]]) {
+    const harness = autoHarness({ storage, view: { advisorModel: null } })
+    await harness.pickModel(OPUS)
+    assert.deepEqual(harness.calls, [AUTO_OPUS], name)
+  }
+
+  // A choice ends the opening's automatic effort even when its write fails.
+  let failures = 1
+  const lost = autoHarness({
+    view: { advisorModel: OPUS, active: false },
+    storage: storageWith((base) => ({
+      setItem(key, value) {
+        if (failures-- > 0) {
+          base.log.push(`set ${key}=${value} (throws)`)
+          throw new Error('QuotaExceededError')
+        }
+        base.setItem(key, value)
+      },
+    })),
+  })
+  await lost.pickEffort('Low')
+  lost.fail(HAND_REFUSAL)
+  assert.equal(textOf(lost.cellValue()), 'claude-opus-5-5', 'the saved setting is unchanged')
+  turnOn(lost)
+  await churn(lost)
+  assert.deepEqual(lost.calls, ['/advisor model anthropic/claude-opus-5-5 effort=low'], 'no automatic effort after the choice')
+  assert.deepEqual(lost.storage.log, [`set ${MARKER}=user (throws)`])
+})
+
+test('automatic effort: a Default picked after it, or after a pick of another model, is never undone, in that opening or the next', async () => {
+  const storage = fakeStorage()
+  const after = autoHarness({ storage })
+  assert.deepEqual(after.calls, [AUTO_OPUS])
+  await ticks()
+  after.save(withEffort(OPUS, 'xhigh'))
+  await after.pickEffort('Default (High)')
+  after.save(OPUS)
+  after.directory.publish(CATALOG)
+  await churn(after)
+  assert.deepEqual(after.calls, [AUTO_OPUS, OPUS_DEFAULT], 'the Default stays in that opening')
+  after.remount()
+  await churn(after)
+  assert.deepEqual(after.calls, [AUTO_OPUS, OPUS_DEFAULT], 'and in the next')
+  assert.equal(storage.items.get(MARKER), 'user')
+  const reload = autoHarness({ storage })
+  await churn(reload)
+  assert.deepEqual(reload.calls, [], 'and after a page reload in the same browser')
+
+  // The sequence a key per model would break: from Inherit, a pick of
+  // another model (its effort added), then Default for it.
+  const picked = autoHarness({ view: { advisorModel: null } })
+  await picked.pickModel(OPUS)
+  picked.save(withEffort(OPUS, 'xhigh'))
+  await picked.pickEffort('Default (High)')
+  picked.save(OPUS)
+  await churn(picked)
+  assert.deepEqual(picked.calls, [AUTO_OPUS, OPUS_DEFAULT])
+  picked.remount()
+  await churn(picked)
+  assert.deepEqual(picked.calls, [AUTO_OPUS, OPUS_DEFAULT])
+})
+
+test('automatic effort: one key per session and cell, never per model', async () => {
+  const second = 'dsh.autoEffort.v1:advisor:session-2:advisorModel'
+  const other = autoHarness({ sessionId: 'session-2', storage: fakeStorage({ [MARKER]: 'user' }) })
+  assert.deepEqual(other.calls, [AUTO_OPUS], 'another session\'s key does not count')
+  assert.deepEqual(other.atCall, [{ [MARKER]: 'user', [second]: 'auto' }])
+
+  // After Opus got its effort, a model saved later without one (by command,
+  // say) gets nothing: the key names the session and the cell only.
+  const storage = fakeStorage()
+  const first = autoHarness({ storage })
+  first.save(withEffort(OPUS, 'xhigh'))
+  first.save(FLASH)
+  first.remount()
+  await churn(first)
+  assert.deepEqual(first.calls, [AUTO_OPUS])
+  assert.deepEqual([...storage.items.keys()], [MARKER], 'one key')
+  assert.doesNotMatch(MARKER, /anthropic|claude|opus|openrouter|deepseek|flash/)
+})
+
+test('automatic effort: the Verifier model cell never sends by itself and never touches the storage', async () => {
+  for (const route of [OPUS, FABLE, FLASH]) {
+    const verifier = autoHarness({ cell: 'verifier', view: { verifierModel: route } })
+    verifier.directory.publish(CATALOG)
+    verifier.state.view = { ...verifier.state.view, active: false }
+    verifier.rerender()
+    turnOn(verifier)
+    await churn(verifier)
+    verifier.remount()
+    await churn(verifier)
+    assert.deepEqual(verifier.calls, [], keyOf(route))
+    assert.deepEqual(verifier.storage.log, [], keyOf(route))
+  }
+  // Its recommendation stays Default, and its choices write nothing.
+  const verifier = autoHarness({ cell: 'verifier', view: { verifierModel: OPUS } })
+  verifier.openFlyout()
+  assert.equal(verifier.effortSummary()[0], 'Default (High) (recommended)=true')
+  await verifier.pickEffort('Low')
+  verifier.save(withEffort(OPUS, 'low'))
+  await verifier.pickEffort('Default (High)')
+  verifier.save(OPUS)
+  await verifier.pickModel(FABLE)
+  verifier.save(FABLE)
+  await verifier.pickInherit()
+  assert.deepEqual(verifier.calls, [
+    '/advisor verifier-model anthropic/claude-opus-5-5 effort=low',
+    '/advisor verifier-model anthropic/claude-opus-5-5',
+    '/advisor verifier-model anthropic/claude-fable-5-2',
+    '/advisor verifier-model inherit',
+  ])
+  assert.deepEqual(verifier.storage.log, [], 'no read, no write')
+})
+
+test('automatic effort: the cell calls the same hooks in the same order on every path', async () => {
+  const hooks = 'ref,ref,state,state,state,state,ref,effect,state,effect,ref,ref,effect,ref,effect,effect,ref,effect'
+  const traces = []
+  const directory = fakeDirectory([])
+  const harness = autoHarness({ directory })
+  traces.push(['waiting for the directory', harness.trace()])
+  directory.publish(CATALOG)
+  harness.rerender()
+  traces.push(['sent', harness.trace()])
+  harness.rerender()
+  traces.push(['saving', harness.trace()])
+  await ticks()
+  harness.save(withEffort(OPUS, 'xhigh'))
+  traces.push(['saved', harness.trace()])
+  harness.openFlyout()
+  traces.push(['flyout open', harness.trace()])
+  harness.state.view = undefined
+  assert.equal(harness.rerender(), null)
+  traces.push(['no view', harness.trace()])
+  harness.remount()
+  traces.push(['remounted without a view', harness.trace()])
+  for (const [name, options] of [
+    ['no storage', { storage: null }],
+    ['the key there', { storage: fakeStorage({ [MARKER]: 'user' }) }],
+    ['held back by Advisor off', { view: { advisorModel: OPUS, active: false } }],
+    ['the Verifier model cell', { cell: 'verifier', view: { verifierModel: OPUS } }],
+  ]) {
+    const other = autoHarness(options)
+    traces.push([name, other.trace()])
+    await churn(other)
+    traces.push([`${name}, re-rendered`, other.trace()])
+  }
+  for (const [name, trace] of traces) assert.equal(trace, hooks, name)
 })

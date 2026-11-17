@@ -503,21 +503,96 @@ window.__ModuleLoader__.load({
       }, [store])
     }
 
+    /**
+     * The once-marker of a cell's automatic effort, in localStorage: one key
+     * per session and cell, never per model, so a choice in the cell keeps
+     * every model of that session from it.
+     */
+    const autoEffortKey = (sessionId, field) => `dsh.autoEffort.v1:advisor:${sessionId}:${field}`
+
+    /**
+     * Claims the marker before the automatic send: true only when the key is
+     * absent and then reads back as written. No storage, or any throw (a
+     * blocked storage throws on access), is false, so nothing is sent; no
+     * memory or cookie stands in for the storage.
+     */
+    function claimAutoEffort(key) {
+      try {
+        if (typeof localStorage === 'undefined' || localStorage.getItem(key) !== null) return false
+        localStorage.setItem(key, 'auto')
+        return localStorage.getItem(key) === 'auto'
+      } catch {
+        return false
+      }
+    }
+
+    /** Writes the marker for a choice made in the cell; a failing storage is ignored. */
+    function markChoice(key) {
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem(key, 'user')
+      } catch { /* the choice still ends this opening's attempt */ }
+    }
+
+    /**
+     * The cell's one automatic recommended effort (`config.autoEffort`): a
+     * saved model without an effort gets the effort a pick of that model
+     * adds. RouteOption calls it on every render path, before its early
+     * return. It sends only when all of these hold in one render: a session
+     * id; the view; Advisor on; the cell not locked (props.locked, busy, or
+     * pending), without an unconfirmed setting of its own, and its flyout
+     * closed; a saved model, not Inherit, without an effort, whose text is
+     * that of the cell's first render with a view (a change ends the
+     * attempt); the route authorized; the directory listing the model's
+     * efforts (unknown waits for an update and writes nothing); a
+     * recommendation; the model not refused; and the marker claimed. One
+     * attempt per mount, spent by the claim or by a choice in the cell; no
+     * retry and no timer. Returns the attempt, for choose to end.
+     */
+    function useAutoEffort(config, cell) {
+      // `first`: the saved text at the first render with a view.
+      const attempt = React.useRef({ first: undefined, done: false })
+      React.useEffect(() => {
+        const state = attempt.current
+        const { view, saved, sessionId } = cell
+        if (config.autoEffort !== true || state.done || view === undefined || view === null) return
+        if (state.first === undefined) {
+          state.first = cell.savedText
+        } else if (cell.savedText !== state.first) {
+          state.done = true
+          return
+        }
+        if (typeof sessionId !== 'string' || sessionId === '') return
+        if (view.active !== true || cell.locked || cell.desired !== null || cell.open) return
+        if (saved.key === INHERIT || saved.effort !== undefined || !cell.authorized.includes(saved.key)) return
+        const advertised = effortsFor(cell.ctx, sessionId, keyRoute(saved.key))
+        if (advertised.state !== 'list') return
+        const effort = config.recommend(advertised)
+        if (effort === undefined || cell.refused.has(saved.key)) return
+        state.done = true
+        if (claimAutoEffort(autoEffortKey(sessionId, config.field))) cell.send({ key: saved.key, effort, auto: true })
+      })
+      return attempt
+    }
+
     // One cell plus single-choice flyout per Advisor-owned route setting:
     // Inherit, the authorized routes, then the current model's efforts. The
     // saved value is a {provider, model, effort?} field on the view, null
     // meaning Inherit. `recommend` gives the effort that a pick of another
-    // model adds; undefined is Default (no token).
-    const routeCell = (field, prefix, command, recommend) => ({
+    // model adds; undefined is Default (no token). `autoEffort` also applies
+    // it once to a saved model without an effort (useAutoEffort).
+    const routeCell = (field, prefix, command, recommend, autoEffort = false) => ({
       labelKey: `${prefix}.label`,
       failedKey: `${prefix}.failed`,
       staleKey: `${prefix}.stale`,
       failureTarget: field,
+      field,
       command,
       recommend,
+      autoEffort,
       saved: (view) => savedSetting(view?.[field]),
     })
-    const ADVISOR_MODEL_CELL = routeCell('advisorModel', 'advisorModel', '/advisor model', highestBelowMax)
+    const ADVISOR_MODEL_CELL = routeCell('advisorModel', 'advisorModel', '/advisor model', highestBelowMax, true)
+    // Its recommendation is Default, so it has nothing to apply by itself.
     const VERIFIER_CELL = routeCell('verifierModel', 'model', '/advisor verifier-model', () => undefined)
 
     function RouteOption(props) {
@@ -556,16 +631,11 @@ window.__ModuleLoader__.load({
       const missing = view === undefined || view === null
       // A connection reset briefly clears the view; do not reopen the flyout.
       React.useEffect(() => { if (missing && open) setOpen(false) }, [missing, open])
-      if (missing) return null
       const authorized = Array.isArray(routes) ? routes.map(routeKey) : []
-      const stale = saved.key !== INHERIT && !authorized.includes(saved.key)
-      const current = desired ?? saved
-      const currentText = settingText(current)
-      const saving = desired !== null && desiredText !== savedText
       const locked = props.locked === true || busy || pending
-      const choose = (next, close) => {
-        close.current(cellRef.current ?? undefined)
-        if (locked || settingText(next) === currentText) return
+      // Sends one setting of this cell; `auto` marks an effort the menu
+      // added, whose refusal drops it from that model's next picks.
+      const send = (next) => {
         setDesired(next)
         void run(`${config.command} ${settingText(next)}`, config.failedKey).then((ok) => {
           if (ok) return
@@ -573,10 +643,31 @@ window.__ModuleLoader__.load({
           setDesired(null)
         })
       }
+      const automatic = useAutoEffort(config, {
+        ctx: props.ctx, sessionId: props.sessionId, view, saved, savedText, authorized,
+        locked, desired, open, refused: refused.current, send,
+      })
+      if (missing) return null
+      const stale = saved.key !== INHERIT && !authorized.includes(saved.key)
+      const current = desired ?? saved
+      const currentText = settingText(current)
+      const saving = desired !== null && desiredText !== savedText
+      const choose = (next, close) => {
+        close.current(cellRef.current ?? undefined)
+        if (locked || settingText(next) === currentText) return
+        // A choice that sends ends the automatic effort: for this opening,
+        // and through the session's marker, written first, for later ones.
+        if (config.autoEffort === true) {
+          automatic.current.done = true
+          if (typeof props.sessionId === 'string' && props.sessionId !== '') markChoice(autoEffortKey(props.sessionId, config.field))
+        }
+        send(next)
+      }
       // The current model's row sends nothing, so an effort set by command
       // survives, and the saved model's row restores the saved setting as it
-      // is: a default is never applied to a saved route. Another model gets
-      // the cell's recommended effort, read from the directory at the pick.
+      // is: a row never applies a default to a saved route (only
+      // useAutoEffort does, once). Another model gets the cell's recommended
+      // effort, read from the directory at the pick.
       const chooseModel = (key, close) => {
         if (key === current.key) {
           close.current(cellRef.current ?? undefined)
