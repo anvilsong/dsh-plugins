@@ -4,6 +4,9 @@ import { createHash } from 'node:crypto'
 import * as host from '../src/index.host.js'
 import { apply, POLICY, routerPolicy } from '../src/index.host.js'
 import { foldRouter, INITIAL_ROUTER_STATE } from '../src/state.js'
+import { z } from 'zod'
+import { foldAudit } from '../src/audit.js'
+import { viewRouter } from '../src/state.js'
 
 const selected = { provider: 'openrouter', model: '~deepseek/deepseek-flash-latest' }
 
@@ -319,4 +322,201 @@ test('state and view schemas carry per-entry efforts; routerModelRoutes stays a 
   assert.deepEqual(modelRoutesDefinition.stateSchema.parse([haiku]), [haiku])
   assert.deepEqual(modelRoutesDefinition.stateSchema.parse([{ ...haiku, effort: 'low' }]), [haiku], 'no effort field')
   assert.equal(modelRoutesDefinition.wire.viewSchema, modelRoutesDefinition.stateSchema)
+})
+
+// Observe-only audit: a third, host-only projection and one /router status line.
+const sha256 = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
+const HAIKU_XHIGH = manualState({ hard: [{ ...haiku, effort: 'xhigh' }] })
+const MANUAL_STATUS = [
+  'Manual router is on for this session. The lead selects authorized routes or inheritance for ordinary subagents.',
+  'mechanical: Inherit',
+  'ordinary: Inherit',
+  'hard: anthropic/claude-haiku-5-5 effort=xhigh',
+].join('\n')
+const OFF_STATUS = [
+  'Router is off for this session. Ordinary subagent model selection is unchanged. Preferences are retained:',
+  'mechanical: Inherit',
+  'ordinary: Inherit',
+  'hard: anthropic/claude-haiku-5-5 effort=xhigh',
+].join('\n')
+const OBSERVED_LINE = 'Observed subagent requests while Router was on: 4 (inherit 1, match 2, unlisted_open 1). Observe only; nothing is blocked.'
+const toolCall = (args, turn = 2) => ({ type: 'tool/call', time: 10 + turn, data: { turn, step: 1, callId: `call_${turn}`, name: 'subagent', arguments: JSON.stringify(args) } })
+const AUDIT_LOG = [
+  { type: 'subagent/model-selection-policy', time: 1, data: { allowedModels: [selected, haiku] } },
+  { type: 'command/run', time: 2, data: { name: 'router', args: 'manual', commandId: 'a' } },
+  { type: 'command/done', time: 3, data: { commandId: 'a', kind: 'success' } },
+  { type: 'command/run', time: 4, data: { name: 'router', args: 'level hard anthropic/claude-haiku-5-5 effort=xhigh', commandId: 'b' } },
+  { type: 'command/done', time: 5, data: { commandId: 'b', kind: 'success' } },
+  toolCall({ description: 'review', prompt: 'Review it.', ...haiku, reasoning_effort: 'xhigh' }), // match
+  toolCall({ description: 'search', prompt: 'Search it.' }), // inherit
+  toolCall({ description: 'other', prompt: 'Do it.', provider: 'gone', model: 'retired' }), // unlisted_open
+  toolCall({ description: 'again', prompt: 'Review again.', ...haiku, reasoning_effort: 'xhigh' }, 3), // match
+]
+
+/** `logger`: true records warnings, false leaves ctx.logger out, an object is a property descriptor for it. */
+function auditHarness({ registerAudit, logger = true } = {}) {
+  const units = new Map()
+  const warnings = []
+  const agent = { session: {} }
+  let section
+  let command
+  let routerState = HAIKU_XHIGH
+  let readAudit = () => undefined
+  const ctx = {
+    sessionProjections: {
+      async register(unit) {
+        if (unit.key === 'routerAudit' && registerAudit !== undefined) return registerAudit(unit)
+        units.set(unit.key, unit)
+        return { stateOf: () => unit.key === 'router' ? routerState : unit.key === 'routerAudit' ? readAudit() : [selected, haiku] }
+      },
+    },
+    systemPrompt: { getSectionOrder: () => 500, section(value) { section = value } },
+    inject(names, callback) {
+      if (names.includes('commands')) callback({ commands: { register(value) { command = value } } })
+    },
+  }
+  if (logger === true) ctx.logger = { warn: (message) => warnings.push(message) }
+  else if (logger !== false) Object.defineProperty(ctx, 'logger', logger)
+  return {
+    ctx,
+    units,
+    warnings,
+    agent,
+    section: () => section.text({ agent }),
+    run: (rawInput) => command.handler({ agent, rawInput, commandId: 'now' }),
+    status: async () => (await command.handler({ agent, rawInput: 'status' })).text,
+    setRouter: (next) => { routerState = next },
+    setAudit: (read) => { readAudit = read },
+    observed: () => AUDIT_LOG.reduce(units.get('routerAudit').apply, units.get('routerAudit').init()),
+  }
+}
+
+test('the observe-only audit is a third, host-only projection; the router projections, inject list and POLICY are unchanged', async () => {
+  const h = auditHarness()
+  await apply(h.ctx)
+  assert.deepEqual([...h.units.keys()], ['router', 'routerModelRoutes', 'routerAudit'])
+  const router = h.units.get('router')
+  const modelRoutes = h.units.get('routerModelRoutes')
+  const audit = h.units.get('routerAudit')
+  assert.equal(audit.key, 'routerAudit')
+  assert.equal(audit.stateVersion, 1, 'bump routerAudit stateVersion together with the router stateVersion')
+  assert.equal('wire' in audit, false, 'host-only: no Client view')
+  assert.equal(audit.apply, foldAudit)
+  assert.equal(audit.stateSchema.shape.router, router.stateSchema)
+  // The router projection: state version, fold, state and view schemas, initial state.
+  assert.equal(router.stateVersion, 5, 'bump routerAudit stateVersion together with the router stateVersion')
+  assert.equal(router.apply, foldRouter)
+  assert.equal(router.wire.view, viewRouter)
+  assert.deepEqual(router.init(), INITIAL_ROUTER_STATE)
+  assert.equal(sha256(z.toJSONSchema(router.stateSchema)), 'fb530a31526f90a6fc69cc7507495c2a2cbd7d9d20729d6eae2eacf4c257de24')
+  assert.equal(sha256(z.toJSONSchema(router.wire.viewSchema)), '2860b642560431af620cb684450d9f49bbfa2016e9bb804310f8f91f4a19ced4')
+  assert.equal(modelRoutes.stateVersion, 1)
+  assert.equal(sha256(z.toJSONSchema(modelRoutes.stateSchema)), 'c352ac16993a9cd5383cbc882f5dbcce803a842326068254728998787007ded2')
+  assert.deepEqual(Array.from(host.inject), ['systemPrompt', 'sessionProjections'], 'no tools service, so no guard')
+  assert.equal('tools' in h.ctx, false, 'apply runs without ctx.tools')
+  assert.equal(createHash('sha256').update(POLICY).digest('hex'), 'cd72decfd9303d828fca43bfd4bf4aa2726ecbd06612e3601d3d84b453c3d490')
+  assert.deepEqual(h.warnings, [])
+})
+
+test('/router status appends one observed line only after requests were observed while Router was on', async () => {
+  const h = auditHarness()
+  await apply(h.ctx)
+  const audit = h.units.get('routerAudit')
+  h.setAudit(() => audit.init())
+  assert.equal(await h.status(), MANUAL_STATUS, 'nothing observed: the text is unchanged')
+  const observed = h.observed()
+  assert.equal(observed.total, 4)
+  h.setAudit(() => observed)
+  assert.equal(await h.status(), `${MANUAL_STATUS}\n${OBSERVED_LINE}`)
+  h.setRouter({ ...HAIKU_XHIGH, mode: 'off' })
+  assert.equal(await h.status(), `${OFF_STATUS}\n${OBSERVED_LINE}`, 'counts from while Router was on stay after it is off')
+  // While an update is pending, status reports only the update, as before.
+  h.setRouter({ ...HAIKU_XHIGH, pending: { target: 'level', level: 'hard', routes: null, commandId: 'p', startedAt: Date.now() } })
+  assert.equal(await h.status(), 'Router is updating (level hard) for this session.')
+  // Every other command answers as before.
+  h.setRouter(HAIKU_XHIGH)
+  assert.deepEqual(await h.run('off'), { kind: 'success', text: 'Router off. Ordinary subagent model selection is unchanged. Level preferences are retained.' })
+  assert.deepEqual(await h.run('level hard inherit'), { kind: 'success', text: 'hard models reset to Inherit for this session. This applies when Model router is on.' })
+  assert.deepEqual(await h.run('auto'), { kind: 'error', text: 'Jev auto mode is not included in this version. Use /router manual.' })
+})
+
+test('status keeps its existing text when the audit state is missing, no audit state, or unreadable', async () => {
+  const h = auditHarness()
+  await apply(h.ctx)
+  for (const [name, read] of [
+    ['undefined', () => undefined],
+    ['null', () => null],
+    ['a route list, as the stand-in harness returns', () => [selected, haiku]],
+    ['a total without counts', () => ({ total: 3 })],
+    ['a total that is no integer', () => ({ ...h.observed(), total: '4' })],
+    ['a read that throws', () => { throw new Error('projection unavailable') }],
+    ['a counts getter that throws', () => ({ total: 4, get counts() { throw new Error('counts') } })],
+    ['a state proxy whose traps throw', () => new Proxy({}, {
+      get() { throw new Error('get trap') },
+      getOwnPropertyDescriptor() { throw new Error('descriptor trap') },
+    })],
+  ]) {
+    h.setAudit(read)
+    assert.equal(await h.status(), MANUAL_STATUS, name)
+  }
+})
+
+test('Router keeps working when the audit cannot register', async () => {
+  for (const logger of [true, false]) {
+    const h = auditHarness({ logger, registerAudit: async () => { throw new Error('key routerAudit is already registered') } })
+    await apply(h.ctx)
+    assert.deepEqual([...h.units.keys()], ['router', 'routerModelRoutes'])
+    assert.deepEqual(h.warnings, logger ? ['router: the observe-only audit is unavailable: key routerAudit is already registered'] : [])
+    assert.equal(await h.status(), MANUAL_STATUS)
+    assert.equal(h.section(), routerPolicy(HAIKU_XHIGH, [selected, haiku]))
+    assert.equal((await h.run('off')).kind, 'success')
+  }
+})
+
+test('neither an odd rejection value nor a throwing logger lets the audit registration stop Router', async () => {
+  for (const [name, reason, shown] of [
+    ['a null-prototype value', Object.create(null), 'unknown error'],
+    ['a message getter that throws', { get message() { throw new Error('message getter') } }, 'unknown error'],
+    ['a symbol', Symbol('gone'), 'Symbol(gone)'],
+    ['a plain string', 'conflict', 'conflict'],
+  ]) {
+    const h = auditHarness({ registerAudit: () => Promise.reject(reason) })
+    await apply(h.ctx)
+    assert.deepEqual(h.warnings, [`router: the observe-only audit is unavailable: ${shown}`], name)
+    assert.equal(await h.status(), MANUAL_STATUS, name)
+  }
+  for (const [name, logger] of [
+    ['a warn that throws', { value: { warn() { throw new Error('logger down') } } }],
+    ['a logger getter that throws', { get() { throw new Error('no logger') } }],
+    ['a warn that is no function', { value: { warn: 'loud' } }],
+  ]) {
+    for (const reason of [new Error('key conflict'), Object.create(null)]) {
+      const h = auditHarness({ logger, registerAudit: () => Promise.reject(reason) })
+      await apply(h.ctx)
+      assert.deepEqual([...h.units.keys()], ['router', 'routerModelRoutes'], name)
+      assert.equal(await h.status(), MANUAL_STATUS, name)
+      assert.equal(h.section(), routerPolicy(HAIKU_XHIGH, [selected, haiku]), name)
+      assert.equal((await h.run('off')).kind, 'success', name)
+    }
+  }
+})
+
+test('the audit embeds the router state, so its state version moves with the router state version', async () => {
+  const h = auditHarness()
+  await apply(h.ctx)
+  // On failure: bump routerAudit's stateVersion in the same change, then update both numbers here.
+  assert.equal(h.units.get('router').stateVersion, 5, 'bump routerAudit stateVersion together with the router stateVersion')
+  assert.equal(h.units.get('routerAudit').stateVersion, 1, 'bump routerAudit stateVersion together with the router stateVersion')
+})
+
+test('the policy section is byte-identical whatever the audit counts', async () => {
+  const h = auditHarness()
+  await apply(h.ctx)
+  const expected = routerPolicy(HAIKU_XHIGH, [selected, haiku])
+  assert.ok(expected.endsWith('\n- hard: anthropic/claude-haiku-5-5 (effort xhigh)'))
+  for (const read of [() => undefined, () => h.units.get('routerAudit').init(), () => h.observed(), () => { throw new Error('unavailable') }]) {
+    h.setAudit(read)
+    assert.equal(h.section(), expected)
+    assert.doesNotMatch(h.section(), /observ|nothing is blocked/i) // ("auditable line" is POLICY's own wording)
+  }
 })

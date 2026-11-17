@@ -146,7 +146,9 @@ Each shortlist entry is a model plus, optionally, the effort to pass with it.
 `/router status` reports the current mode and every level's entries in
 command form (`<provider>/<model> effort=<id>`), marking entries whose route is
 no longer authorized with `(unavailable)`; while an update is pending it
-reports only which target is updating.
+reports only which target is updating. Once the
+[observe-only audit](#observe-only-audit) has counted a request, a last line
+reports its counts.
 
 **Upgrade note.** The projection moved to state version 5 (entries gained an
 optional effort), so cached Router state is rebuilt once from the session log.
@@ -264,6 +266,92 @@ router: <level> → <provider>/<model> because <criterion>; effort: <id|default>
 ```
 
 or `router: inherit — no clear route advantage`.
+
+## Observe-only audit
+
+While Router is on, the Host counts how the lead's `subagent` requests compare
+with the shortlist entries the lead was shown. It only observes: nothing is
+blocked, delayed or rewritten, and nothing reaches the prompt, the
+model-options menu or a tool. Its one output is a last line in
+`/router status`, for example:
+
+```text
+Observed subagent requests while Router was on: 12 (inherit 2, match 9, effort_mismatch 1). Observe only; nothing is blocked.
+```
+
+The line appears once a request has been counted, also after Router is turned
+off, and lists the non-zero verdicts in the order of the table below. While an
+update is pending, status still reports only the update.
+
+- **What is counted.** Each request to the tool named exactly `subagent` made
+  while Router is on in the session, as the session log records it, including
+  requests the Host then refused. Counts are requests: a spawn rejected for its
+  effort and its retry count as `match` and `retry`. Advisor-reserved children
+  (`advisor-verifier`, `advisor-planner` and `advisor-consult`, alone or
+  followed by `-`) and the other delegation tools (`subagent_fork`,
+  `subagent_codex`, `subagent_claude_code`, `spawn_teammate`) are not counted.
+- **What is compared.** The request's exact `provider`, `model` and
+  `reasoning_effort` (or its absence) against the union of the entries every
+  level shows the lead: authorized entries only, with the efforts their
+  shortlist lines show. Each request is judged against the mode and
+  shortlists in force at its event. A request carries no level, and none is
+  guessed. The Host records the session's authorized routes before its first
+  model request; only until that first record does the audit count every saved
+  entry as shown (the policy would then show such a level as
+  `Inherit (saved routes unavailable)`), so in practice no request is judged
+  that way.
+
+| Verdict | The request |
+|---|---|
+| `inherit` | Names no provider, model or effort. Inheritance is always compliant; it shows adoption, not a violation. |
+| `match` | Names a shown entry exactly: its route, with its effort, or with none for an entry without one. |
+| `retry` | Omits the effort on a shown route directly after an effort `match` on that route in the same turn: the one retry the policy prescribes. |
+| `effort_mismatch` | Names a shown route with an effort that none of its shown entries carries, including an effort for an entry without one. |
+| `effort_omitted` | Omits the effort on a shown route whose shown entries all carry one, and is no `retry`. |
+| `unlisted_closed` | Names a route no level shows while every level shows a shortlist. |
+| `unlisted_open` | Names a route no level shows while at least one level reads Inherit, where the policy allows a named non-cost reason. |
+| `no_shortlist` | Names a route while no level shows any entry. |
+| `malformed` | Has arguments that are no JSON object, a provider without a model or a model without a provider, an effort without both, or an empty or non-text route value. |
+
+- **Fidelity, not judgment.** The audit measures whether requests carry a
+  shown route and its effort, not whether the level was right: a 100 % match
+  rate does not show that substantive work was never relabelled Mechanical.
+- **Heuristics.** `retry` is an adjacency rule: two deliberate requests on one
+  route in a turn, first with and then without an effort, also read as a
+  retry, and only a request the audit counts breaks the adjacency. Requests
+  are not paired with their results.
+- **Per session, from the log.** The counts are a host-only projection of the
+  session log: no file, setting or configuration. They replay from the log, so
+  sessions that existed before this version are counted from their start. A
+  fork child inherits its parent's log, so its counts start with the parent's.
+  Of the requests themselves, only the last effort match is kept: its provider
+  and model ids (cut to 200 characters), its effort id and its turn number;
+  never a child's name, description or prompt. Besides the counts, the state
+  keeps the session's authorized routes and the router state rebuilt from the
+  same commands, with their selections and failure text, as the router
+  projection already does.
+- **Versions.** The audit embeds the router state, so a change to the router's
+  state version must bump the `routerAudit` state version in the same change.
+- **Not covered.** Subagent calls dispatched programmatically (from
+  `run_code`) are logged as `tool/ptc-dispatch` events and are not counted. A
+  call that names only an `agent_preset` counts as `inherit`, even when the
+  preset pins a model. A command event without a time folds as time 0 where
+  the router projection reads the clock, so the two could disagree about an
+  update pending for five minutes or more; the Host always records a time.
+
+### Before any enforce mode
+
+There is no enforce mode, and none is built. One would be considered only when
+all of these hold:
+
+- at least 100 explicit-route requests over at least 10 sessions;
+- `effort_mismatch` plus `unlisted_closed` at 2 % of them or more;
+- a hand review of those requests finds no false positive;
+- enforcement covers only those two verdicts;
+- pairing a request with its `tool/result` is verified, or the retry rule is
+  rewritten;
+- the guard reuses this classifier, fails open, is injected optionally, is
+  opt-in per session, and names the allowed entries in its denial.
 
 ## Jev auto mode
 

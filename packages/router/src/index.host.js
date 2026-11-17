@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { auditStateSchema, auditStatusLine, foldAudit, initAudit } from './audit.js'
 import { EFFORT_ID, foldRouter, INITIAL_ROUTER_STATE, parseLevelSetting, pendingRouter, ROUTER_LEVELS, viewRouter } from './state.js'
 
 export const name = 'router'
@@ -125,6 +126,29 @@ export async function apply(ctx) {
     },
     wire: { viewSchema: routeListSchema, view: (routes) => routes },
   })
+  // Observe-only delegation audit: a host-only unit (no wire) that the prompt,
+  // the Client and the tool path never read; only /router status reports it.
+  // It embeds the router state, so its version moves with stateVersion 5.
+  // Without it Router works as before.
+  let audit
+  try {
+    audit = await ctx.sessionProjections.register({
+      key: 'routerAudit',
+      stateVersion: 1,
+      stateSchema: auditStateSchema(stateSchema),
+      init: initAudit,
+      apply: foldAudit,
+    })
+  } catch (error) {
+    // Neither an odd rejection value nor a throwing logger may stop Router.
+    let reason = 'unknown error'
+    try {
+      reason = String(error?.message ?? error)
+    } catch { /* a value that cannot be shown */ }
+    try {
+      ctx.logger?.warn?.(`router: the observe-only audit is unavailable: ${reason}`)
+    } catch { /* no usable logger */ }
+  }
 
   ctx.systemPrompt.section({
     name: 'router:policy',
@@ -154,12 +178,11 @@ export async function apply(ctx) {
           }
           const authorizedRoutes = modelRoutes.stateOf(agent.session)
           const selections = ROUTER_LEVELS.map((level) => statusLine(state, level, authorizedRoutes)).join('\n')
-          return {
-            kind: 'success',
-            text: state.mode === 'manual'
-              ? `Manual router is on for this session. The lead selects authorized routes or inheritance for ordinary subagents.\n${selections}`
-              : `Router is off for this session. Ordinary subagent model selection is unchanged. Preferences are retained:\n${selections}`,
-          }
+          const text = state.mode === 'manual'
+            ? `Manual router is on for this session. The lead selects authorized routes or inheritance for ordinary subagents.\n${selections}`
+            : `Router is off for this session. Ordinary subagent model selection is unchanged. Preferences are retained:\n${selections}`
+          const observed = auditStatusLine(() => audit?.stateOf(agent.session))
+          return { kind: 'success', text: observed === '' ? text : `${text}\n${observed}` }
         }
         if (arg === 'auto') {
           return { kind: 'error', text: 'Jev auto mode is not included in this version. Use /router manual.' }
