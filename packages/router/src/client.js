@@ -315,11 +315,12 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The effort a level recommends for a model, applied only when a model
-     * that is not saved is checked in the flyout; undefined is Default (no
-     * effort token, the model's own default). Mechanical and Ordinary keep
-     * Default. Hard judgment takes the highest advertised effort other than
-     * `max` (a deliberate pick) and `off`. Unknown or absent efforts
+     * The effort a level recommends for a model, applied when a model that
+     * is not saved is checked in the flyout, and once, automatically, to the
+     * saved entries without an effort (see LevelCell); undefined is Default
+     * (no effort token, the model's own default). Mechanical and Ordinary
+     * keep Default. Hard judgment takes the highest advertised effort other
+     * than `max` (a deliberate pick) and `off`. Unknown or absent efforts
      * recommend nothing.
      */
     function recommendedEffort(level, advertised) {
@@ -329,6 +330,36 @@ window.__ModuleLoader__.load({
         if (ids[index] !== 'max' && ids[index] !== 'off') return ids[index]
       }
       return undefined
+    }
+
+    // The marker of the automatic recommended effort: one localStorage key
+    // per session and level, never per model. It is kept per browser origin
+    // and never removed.
+    const hasSessionId = (sessionId) => typeof sessionId === 'string' && sessionId !== ''
+    const autoEffortKey = (sessionId, level) => `dsh.autoEffort.v1:router:${sessionId}:${level}`
+    /**
+     * Claim the marker: true only when the key was absent and reads back as
+     * written. Missing storage or any throw (reading the global included)
+     * claims nothing, and nothing in memory stands in for it, so the
+     * automatic effort is not sent.
+     */
+    function claimAutoEffort(key) {
+      try {
+        if (typeof localStorage === 'undefined') return false
+        if (localStorage.getItem(key) !== null) return false
+        localStorage.setItem(key, 'auto')
+        return localStorage.getItem(key) === 'auto'
+      } catch {
+        return false
+      }
+    }
+    /** Set the marker for a choice made in a level cell, so the automatic effort never undoes it. */
+    function markAutoEffortChoice(key) {
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem(key, 'user')
+      } catch {
+        // Without storage nothing is sent automatically either.
+      }
     }
 
     /**
@@ -766,6 +797,53 @@ window.__ModuleLoader__.load({
       const live = current.filter((key) => authorizedSet.has(key))
       const stale = confirmed.filter((key) => !authorizedSet.has(key))
       const atCap = live.length >= MAX_MODELS
+
+      // The recommended effort, applied once and automatically: a saved level
+      // whose entries lack an effort gets this level's recommendation (only
+      // Hard judgment recommends one) as one whole-level draft, which the send
+      // effect, the lock, the deadline, the snap-back and the unmount commit
+      // handle like any other. Fail-closed: every condition holds in one
+      // render, the marker is claimed, and a mount makes one attempt at most.
+      const auto = React.useRef({ baseline: null, done: false })
+      React.useEffect(() => {
+        const state = auto.current
+        const sessionId = props.sessionId
+        if (state.done || !hasSessionId(sessionId) || view === undefined || view === null) return
+        // The saved level at the cell's first render with a view; a change
+        // (another tab, a typed command) stops the cell for this mount.
+        if (state.baseline === null) state.baseline = confirmedText
+        if (confirmedText !== state.baseline) {
+          state.done = true
+          return
+        }
+        if (view.mode !== 'manual' || locked || busy || pending || overdue || open) return
+        // No draft or command of its own, and no router command queued or
+        // running from this page, so the draft never waits behind one and
+        // then overwrites a newer value.
+        if (desired !== null || awaiting !== null || lock == null) return
+        expireLock(lock)
+        if (lock.current !== null) return
+        if (confirmed.length === 0 || stale.length > 0) return
+        const added = {}
+        for (const key of confirmed) {
+          if (effortFor(confirmedEfforts, key) !== undefined) continue
+          const advertised = effortsFor(props.ctx, sessionId, keyRoute(key))
+          // Efforts still unknown: wait for the directory, writing nothing.
+          if (advertised.state === 'unknown') return
+          const recommended = recommendedEffort(level, advertised)
+          if (recommended !== undefined) added[key] = recommended
+        }
+        if (Object.keys(added).length === 0) return
+        state.done = true
+        if (!claimAutoEffort(autoEffortKey(sessionId, level))) return
+        // The saved entries in order, their efforts kept, the recommendations added.
+        const draft = { keys: confirmed, efforts: { ...confirmedEfforts, ...added } }
+        sentDraft.current = null
+        // A menu that closes before the next render still commits the draft.
+        latest.current = { ...latest.current, desired: draft, desiredText: valueText(draft.keys, draft.efforts) }
+        setDesired(draft)
+      })
+
       // The effort rows are built once per opening, for every authorized model,
       // from the directory snapshot of that moment (null: no effort rows), with
       // the effort this level recommends; groups and rows are never added or
@@ -789,8 +867,11 @@ window.__ModuleLoader__.load({
         picks.current = new Map()
       }
       // Every edit makes a new draft from the one shown; it keeps efforts only
-      // for its own entries, so an unchecked model drops its effort.
+      // for its own entries, so an unchecked model drops its effort. Each one
+      // is a choice and sets the marker first, so the automatic effort never
+      // undoes it (such as a Default picked after it was applied).
       const edit = (change) => {
+        if (hasSessionId(props.sessionId)) markAutoEffortChoice(autoEffortKey(props.sessionId, level))
         sentDraft.current = null
         const keys = change.keys ?? live
         const source = change.efforts ?? currentEfforts
@@ -803,8 +884,8 @@ window.__ModuleLoader__.load({
       }
       // The effort of a model being checked: its pick from earlier in this
       // opening, else its saved effort when the level holds it, else (a model
-      // that is not saved) the level's recommendation. Nothing else, and
-      // never on load, applies a default.
+      // that is not saved) the level's recommendation. Apart from the one
+      // automatic draft above, nothing else applies a default.
       const checkedEffort = (key) => {
         if (picks.current?.has(key)) return picks.current.get(key)
         if (confirmed.includes(key)) return effortFor(confirmedEfforts, key)

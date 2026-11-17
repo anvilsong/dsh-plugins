@@ -104,10 +104,11 @@ Each shortlist entry is a model plus, optionally, the effort to pass with it.
   is appended last in the warning colour.
 - **Recommended defaults.** For a model whose efforts are listed, one row is
   marked *recommended* (Default, when the level recommends Default), and the
-  recommendation is applied only when a model that is not in the saved level is
+  recommendation is applied when a model that is not in the saved level is
   checked in the flyout; re-checking a model in the same opening restores the
-  effort it had. Saved entries, typed commands, and loading the menu never get
-  a default. Per level:
+  effort it had. Typed commands never get a default, and saved entries get one
+  only once, through the
+  [automatic recommended effort](#automatic-recommended-effort). Per level:
 
   | Level | Recommended effort |
   |---|---|
@@ -135,9 +136,12 @@ Each shortlist entry is a model plus, optionally, the effort to pass with it.
 - **Behaviour change.** Before this version the lead chose effort by level
   (`low` for Mechanical when advertised, the route default for Ordinary, the
   highest advertised effort for Hard judgment when useful). That rule is gone:
-  an entry without an effort now means the model's own default. Saved lists
-  are not changed retroactively; add efforts to their entries to keep the old
-  behaviour.
+  an entry without an effort now means the model's own default. The Host does
+  not rewrite saved lists; the model menu adds the recommended effort once to
+  saved Hard judgment entries without one (see
+  [Automatic recommended effort](#automatic-recommended-effort)), and
+  Mechanical entries keep their models' defaults: add `effort=low` to keep the
+  old behaviour.
 
 `/router status` reports the current mode and every level's entries in
 command form (`<provider>/<model> effort=<id>`), marking entries whose route is
@@ -154,6 +158,70 @@ entry (and `effort=default` as the id `default`), and `inherit effort=...` is
 no longer accepted, so a level that was reset that way is not reset on replay:
 it keeps its earlier shortlist, which comes back. Reset levels set with the
 earlier effort preference.
+
+## Automatic recommended effort
+
+While the model menu is open, a saved level with at least one entry without an
+effort gets the level's recommended effort added to those entries, once,
+automatically. It is one ordinary `/router level` command that states the whole
+level: the saved entries in their order, each existing effort kept, and the
+recommendation added to every entry whose model has one. Only **Hard judgment**
+sends anything today: Mechanical and Ordinary recommend Default, so they never
+send. For example, with Opus advertising efforts up to `xhigh` and `max`, a
+Hard judgment level saved as
+`anthropic/claude-opus-5-5,openrouter/~deepseek/deepseek-flash-latest effort=low`
+is sent as:
+
+```text
+/router level hard anthropic/claude-opus-5-5 effort=xhigh,openrouter/~deepseek/deepseek-flash-latest effort=low
+```
+
+The command is sent only when all of these hold at the same time:
+
+- Router is on and the menu is not locked.
+- No router command is pending in the session, and none is queued or running
+  from this page, including the cell's own (as for any change, a command that
+  has run for 30 seconds no longer counts).
+- The level's flyout is closed.
+- Every saved entry is authorized: a level with an **Unavailable** entry is
+  left alone.
+- The session's model directory has loaded the efforts of every entry without
+  one. While they are still unknown the cell waits and writes nothing. A model
+  listed without efforts, or whose only efforts are `max` and `off`, is
+  skipped; a level left without any recommendation sends nothing.
+- The level has not changed since the menu opened. A change from another tab
+  or a typed command stops it until the menu opens again.
+
+Each opening of the menu makes one attempt at most. The command takes the same
+path as a change made in the flyout: one command entry in the chat, the cell's
+effort and spinner while it is saved, the same 30-second deadline, and a
+failure reported once in the composer's toast and never retried. There is no
+other notice and no setting to turn it off. To undo it, pick **Default** in the
+level's flyout; the marker keeps that choice.
+
+**Marker.** The browser's localStorage records that it has happened, in one
+key per session and level, never one per model:
+`dsh.autoEffort.v1:router:<sessionId>:<level>`. The key is written just before
+the automatic command and on every choice made in that level's flyout
+(checking or unchecking a model, an effort row, Inherit, removing an
+unavailable entry), so a Default picked later is never undone. Keys are never
+removed. When localStorage is unavailable or throws (for example, blocked site
+storage), nothing is sent automatically; nothing in memory stands in for it.
+
+Caveats:
+
+- localStorage belongs to one browser origin (scheme, host and port). Another
+  browser or profile, another origin for the GUI, or cleared site data applies
+  the recommendation once more to a level that still has entries without one.
+- A saved entry without an effort cannot be told apart from a Default chosen
+  by typing a command. A Default typed before the menu was first opened in this
+  browser is upgraded once; pick Default in the flyout to keep it.
+- Mechanical and Ordinary send nothing, because they recommend Default.
+- Without usable localStorage nothing is sent.
+- The router Host does not check an effort against the model. A model
+  directory that is out of date can save an effort the model no longer offers;
+  a routed spawn rejected for it is retried once without the effort (see
+  [Effort per entry](#effort-per-entry)).
 
 ## Routing rules
 

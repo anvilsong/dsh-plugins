@@ -84,7 +84,10 @@ function createRuntime() {
 // options.locale: a locale service for ctx.get('locale') (its effects run);
 // options.getService: answers every other ctx.get (modelDirectories) and may
 // throw, as a lazily read service may;
-// options.globals: extra globals for the client, such as a fake document.
+// options.globals: extra globals for the client, such as a fake document or
+// localStorage;
+// options.prelude: source run in the client's context first, for a global
+// whose getter throws (a sandbox accessor would read as undefined instead).
 function load(options = {}) {
   const registrations = []
   const runtime = createRuntime()
@@ -98,7 +101,7 @@ function load(options = {}) {
     register(definition, component) { registrations.push({ definition, component }) },
   }
   const get = (key) => key === 'commandUi' ? harness.commandUi : key === 'locale' ? options.locale : options.getService?.(key)
-  vm.runInNewContext(readFileSync(new URL('../src/client.js', import.meta.url), 'utf8'), {
+  const context = vm.createContext({
     ...options.globals,
     Date: TestDate,
     window: {
@@ -115,6 +118,8 @@ function load(options = {}) {
       },
     },
   })
+  if (options.prelude !== undefined) vm.runInContext(options.prelude, context)
+  vm.runInContext(readFileSync(new URL('../src/client.js', import.meta.url), 'utf8'), context)
   return { registrations, runtime, harness, clock }
 }
 
@@ -979,8 +984,8 @@ function recordingExecute(env) {
 
 // One level cell of the menu in session SESSION, mounted as the host menu
 // mounts it; render() keeps the props given so far.
-function cellHarness({ level = 'hard', view = manualView({}), routeList = routes, getService = directoryService(fakeDirectory()), execute = 'record', extra = {}, locale, globals } = {}) {
-  const env = load({ getService, locale, globals })
+function cellHarness({ level = 'hard', view = manualView({}), routeList = routes, getService = directoryService(fakeDirectory()), execute = 'record', extra = {}, locale, globals, prelude } = {}) {
+  const env = load({ getService, locale, globals, prelude })
   const commands = execute === 'deferred' ? deferredExecute(env) : { calls: recordingExecute(env) }
   const reports = []
   const menu = levels(env, view, routeList, { sessionId: SESSION, reportFailure: (message) => reports.push(message), ...extra })
@@ -1855,4 +1860,515 @@ test('an unadvertised effort saved by another tab while the flyout is open shows
   assert.equal(allEffortRows(output).length, count, 'and no effort row is added')
   harness.close()
   assert.deepEqual(effortSummary(harness.open(), HAIKU).slice(-2), ['Max=false', 'turbo [warning]=true'])
+})
+
+// 11. The recommended effort, applied once and automatically to a saved level
+// whose entries lack an effort (today only Hard judgment recommends one): one
+// whole-level command through the draft path, guarded by one localStorage
+// key per session and level.
+const markerKey = (level, session = SESSION) => `dsh.autoEffort.v1:router:${session}:${level}`
+const MARKER = markerKey('hard')
+const AUTO_LINE = levelLine('hard', `${HAIKU} effort=xhigh`)
+const SECURITY_ERROR = "Object.defineProperty(globalThis, 'localStorage', { get() { throw new Error('SecurityError') }, configurable: true })"
+
+// A localStorage stand-in: its items, and every call in order.
+function fakeStorage(initial = {}) {
+  const items = new Map(Object.entries(initial))
+  const log = []
+  return {
+    items,
+    log,
+    getItem(key) { log.push(`get ${key}`); return items.has(key) ? items.get(key) : null },
+    setItem(key, value) { log.push(`set ${key}=${value}`); items.set(key, String(value)) },
+    removeItem(key) { log.push(`remove ${key}`); items.delete(key) },
+  }
+}
+
+// A cell of SESSION (Hard judgment saved as Haiku without an effort, unless
+// given) with that storage; other options as cellHarness.
+function autoHarness({ storage = fakeStorage(), view = manualView({ hard: [haiku] }), globals = {}, ...options } = {}) {
+  return { ...cellHarness({ view, globals: { localStorage: storage, ...globals }, ...options }), storage }
+}
+
+// The render that a draft set by an effect asks for, then the call it starts.
+async function settleRender(harness, changes) {
+  harness.render(changes)
+  await ticks()
+  return harness.calls
+}
+
+test('automatic effort: a saved Hard judgment entry without an effort gets its recommendation once, as one whole-level command sent after the marker is written', async () => {
+  assert.equal(MARKER, 'dsh.autoEffort.v1:router:session-1:hard', 'one key per session and level')
+  const storage = fakeStorage()
+  const harness = autoHarness({ storage })
+  // The first render claimed the marker and made the draft: no call yet, and no timer.
+  assert.deepEqual(storage.log, [`get ${MARKER}`, `set ${MARKER}=auto`, `get ${MARKER}`])
+  assert.equal(harness.cell.instance.dirty, true, 'the draft asks for a render')
+  await ticks()
+  assert.deepEqual(harness.calls, [])
+  const markerAtSend = []
+  const execute = harness.env.harness.commandUi.execute
+  harness.env.harness.commandUi = { execute: (target, line) => { markerAtSend.push(storage.items.get(MARKER)); return execute(target, line) } }
+  const output = harness.render()
+  assert.equal(effortSpan(output), '· xhigh', 'the cell shows the effort it is saving')
+  assert.equal(cellButton(output).props['aria-busy'], true)
+  await ticks()
+  assert.deepEqual(harness.calls, [AUTO_LINE])
+  assert.deepEqual(markerAtSend, ['auto'], 'the marker is in storage when the command is sent')
+  // Nothing but the command entry and the cell's effort: no toast, caption, or switch.
+  assert.deepEqual(harness.reports, [])
+  assert.deepEqual(cellButton(output).children.filter(Boolean).map((node) => node.props.className),
+    ['router-cell-label', 'router-cell-value', 'router-cell-effort', 'router-chevron'])
+  assert.equal(findAll(output, (node) => ['status', 'alert', 'switch'].includes(node.props?.role)).length, 0)
+  // The session confirms it; the cell settles and sends nothing more.
+  harness.render({ view: manualView({ hard: [{ ...haiku, effort: 'xhigh' }] }) })
+  const settled = harness.render()
+  assert.equal(cellButton(settled).props['aria-busy'], false)
+  assert.equal(effortSpan(settled), '· xhigh')
+  for (let index = 0; index < 3; index++) harness.render()
+  await ticks()
+  assert.deepEqual(harness.calls, [AUTO_LINE])
+  assert.deepEqual([...storage.items.keys()], [MARKER])
+})
+
+test('automatic effort: the line keeps the saved order and efforts, adds the recommendation only where a model has one, and uses one key per session and level', async () => {
+  const storage = fakeStorage()
+  const harness = autoHarness({ storage, view: manualView({ hard: [selected[0], { ...haiku, effort: 'low' }, selected[1]] }) })
+  assert.deepEqual(await settleRender(harness), [levelLine('hard', `${FLASH} effort=high,${HAIKU} effort=low,${CODEX}`)],
+    'Flash gets high, Haiku keeps low, Codex (listed without efforts) keeps Default')
+  const both = fakeStorage()
+  assert.deepEqual(await settleRender(autoHarness({ storage: both, view: manualView({ hard: [haiku, selected[0]] }) })),
+    [levelLine('hard', `${HAIKU} effort=xhigh,${FLASH} effort=high`)])
+  assert.deepEqual([...both.items.keys()], [MARKER], 'one key for the level, never one per model')
+  // A model whose only efforts are off and max gets nothing; the others still get theirs.
+  const catalog = [
+    { id: 'openrouter', models: [{ id: '~deepseek/deepseek-flash-latest', reasoning: { efforts: efforts('off', 'max'), defaultEffort: 'max' } }] },
+    { id: 'anthropic', models: [{ id: 'claude-haiku-5-5', reasoning: { efforts: efforts('low', 'high') } }] },
+  ]
+  const mixed = autoHarness({ view: manualView({ hard: [selected[0], haiku] }), getService: directoryService(fakeDirectory(catalog)) })
+  assert.deepEqual(await settleRender(mixed), [levelLine('hard', `${FLASH},${HAIKU} effort=high`)])
+  // The keys of another level or another session do not count; another session has a key of its own.
+  const others = fakeStorage({ [markerKey('mechanical')]: 'user', [markerKey('hard', 'session-2')]: 'auto' })
+  assert.deepEqual(await settleRender(autoHarness({ storage: others })), [AUTO_LINE])
+  const second = fakeStorage()
+  assert.deepEqual(await settleRender(autoHarness({ storage: second, extra: { sessionId: 'session-2' } })), [AUTO_LINE])
+  assert.deepEqual([...second.items.keys()], ['dsh.autoEffort.v1:router:session-2:hard'])
+})
+
+test('automatic effort: Mechanical and Ordinary recommend Default, so they never send and never read or write storage', async () => {
+  for (const level of ['mechanical', 'ordinary']) {
+    const storage = fakeStorage()
+    const harness = autoHarness({ level, storage, view: manualView({ [level]: [haiku, selected[0]] }) })
+    assert.equal(harness.cell.instance.dirty, false, level)
+    assert.deepEqual(await settleRender(harness), [], level)
+    harness.open()
+    harness.close()
+    await settleRender(harness)
+    assert.deepEqual(harness.calls, [], `${level}: opening and closing without a choice sends nothing`)
+    assert.deepEqual(storage.log, [], `${level}: storage is never read or written`)
+  }
+})
+
+test('automatic effort: Inherit, entries that all carry an effort, and a level with an unavailable entry send nothing and leave the marker alone', async () => {
+  for (const [name, hard, routeList] of [
+    ['Inherit', null, routes],
+    ['every entry has an effort', [{ ...haiku, effort: 'low' }, { ...selected[0], effort: 'off' }], routes],
+    ['an unavailable entry', [haiku, { provider: 'gone', model: 'retired' }], routes],
+    ['an entry no longer authorized that the directory still lists', [haiku, selected[0]], [selected[1], haiku]],
+    ['no authorized routes', [haiku], null],
+  ]) {
+    const storage = fakeStorage()
+    const harness = autoHarness({ storage, view: manualView({ hard }), routeList })
+    assert.deepEqual(await settleRender(harness), [], name)
+    assert.deepEqual(storage.log, [], name)
+  }
+  // Routes that load after the level, with the level unchanged, make it eligible.
+  const late = autoHarness({ routeList: selected })
+  assert.deepEqual(await settleRender(late), [], 'Haiku is not authorized yet')
+  late.render({ routes })
+  assert.deepEqual(await settleRender(late), [AUTO_LINE])
+})
+
+test('automatic effort: a render without a view does nothing; the first render with a view sets the saved level it compares with', async () => {
+  const storage = fakeStorage()
+  const env = load({ getService: directoryService(fakeDirectory()), globals: { localStorage: storage } })
+  const calls = recordingExecute(env)
+  const menu = levels(env, manualView({ hard: [haiku] }), routes, { sessionId: SESSION })
+  const element = menu.cells[2]
+  const cell = env.runtime.mount(element.type)
+  cell.render({ ...element.props, view: undefined, open: false })
+  cell.render()
+  await ticks()
+  assert.deepEqual([calls, storage.log], [[], []], 'no view: nothing is read, written or sent')
+  cell.render({ ...element.props, open: false })
+  cell.render()
+  await ticks()
+  assert.deepEqual(calls, [AUTO_LINE])
+})
+
+test('automatic effort: the router off, a locked menu, a pending router command, or the open flyout hold it back with no draft and no marker; it is sent once they clear', async () => {
+  const ready = manualView({ hard: [haiku] })
+  for (const [name, options, hold, release] of [
+    ['the router off', { view: { ...ready, mode: 'off' } }, {}, { view: ready }],
+    ['a locked menu', { extra: { locked: true } }, {}, { locked: false }],
+    ['a pending router command', { view: manualView({ hard: [haiku] }, { pending: true, pendingTarget: 'level', pendingLevel: 'ordinary', pendingSince: Date.now() }) }, {}, { view: ready }],
+    ['the open flyout', { extra: { locked: true } }, { locked: false, open: true }, { open: false }],
+  ]) {
+    const storage = fakeStorage()
+    const harness = autoHarness({ storage, ...options })
+    assert.deepEqual(await settleRender(harness, hold), [], `${name}: held back`)
+    assert.equal(harness.cell.instance.dirty, false, `${name}: no draft`)
+    assert.deepEqual(storage.log, [], `${name}: no marker`)
+    harness.render(release)
+    assert.deepEqual(await settleRender(harness), [AUTO_LINE], `${name}: sent once it clears`)
+    assert.deepEqual(harness.reports, [], name)
+  }
+})
+
+test('automatic effort: while another command holds the session lock no draft is made; once the lock is free it is sent, after that command', async () => {
+  const directory = fakeDirectory([])
+  const storage = fakeStorage()
+  const harness = autoHarness({ storage, getService: directoryService(directory), execute: 'deferred' })
+  // A Mechanical change commits from its own cell and holds the lock.
+  const mechanical = harness.env.runtime.mount(harness.menu.cells[0].type)
+  pick(mechanical.render({ ...harness.menu.cells[0].props, open: true }), HAIKU)
+  mechanical.render({ ...harness.menu.cells[0].props, open: false })
+  await ticks()
+  assert.deepEqual(harness.calls, [levelLine('mechanical', HAIKU)])
+  // The efforts arrive while that command runs.
+  directory.publish(CATALOG)
+  assert.equal(flush(harness.menu, harness.cell, 'hard'), true)
+  harness.render()
+  await ticks()
+  assert.equal(harness.cell.instance.dirty, false, 'no draft waits behind the lock')
+  assert.equal(effortSpan(harness.output()), undefined)
+  assert.equal(storage.items.has(MARKER), false, 'the marker is not claimed while the lock is held')
+  assert.equal(harness.calls.length, 1)
+  harness.settle[0]()
+  await ticks()
+  assert.equal(flush(harness.menu, harness.cell, 'hard'), true, 'the released lock wakes the cells')
+  assert.deepEqual(await settleRender(harness), [levelLine('mechanical', HAIKU), AUTO_LINE])
+  assert.equal(storage.items.get(MARKER), 'auto')
+  assert.equal(storage.items.get(markerKey('mechanical')), 'user', 'the Mechanical choice wrote its own key')
+})
+
+test('automatic effort: a command of another level that has run for 30 s no longer holds it back, as for any draft', async () => {
+  const directory = fakeDirectory([])
+  const harness = autoHarness({ getService: directoryService(directory), execute: 'deferred' })
+  const mechanical = harness.env.runtime.mount(harness.menu.cells[0].type)
+  pick(mechanical.render({ ...harness.menu.cells[0].props, open: true }), HAIKU)
+  mechanical.render({ ...harness.menu.cells[0].props, open: false })
+  await ticks()
+  directory.publish(CATALOG)
+  harness.render()
+  await ticks()
+  assert.equal(harness.calls.length, 1, 'held back while that command runs')
+  harness.env.clock.offset += 31_000
+  harness.render()
+  assert.deepEqual(await settleRender(harness), [levelLine('mechanical', HAIKU), AUTO_LINE])
+})
+
+test("automatic effort: while an entry's efforts are unknown it waits without writing the marker, and sends once the directory lists them", async () => {
+  const directory = fakeDirectory([])
+  const storage = fakeStorage()
+  const harness = autoHarness({ storage, getService: directoryService(directory) })
+  assert.deepEqual(await settleRender(harness), [])
+  assert.deepEqual(storage.log, [], 'nothing is written while the efforts are unknown')
+  directory.publish(CATALOG)
+  assert.equal(flush(harness.menu, harness.cell, 'hard'), true, 'the directory update re-renders the cells')
+  assert.deepEqual(await settleRender(harness), [AUTO_LINE])
+  directory.publish(CATALOG.slice())
+  flush(harness.menu, harness.cell, 'hard')
+  await settleRender(harness)
+  assert.deepEqual(harness.calls, [AUTO_LINE], 'a later directory update sends nothing more')
+  // One entry without an effort that is still unknown holds back the whole level.
+  const partial = fakeDirectory(CATALOG.filter((group) => group.id !== 'anthropic'))
+  const both = autoHarness({ view: manualView({ hard: [haiku, selected[0]] }), getService: directoryService(partial) })
+  assert.deepEqual(await settleRender(both), [], 'Haiku is not listed yet')
+  partial.publish(CATALOG)
+  flush(both.menu, both.cell, 'hard')
+  assert.deepEqual(await settleRender(both), [levelLine('hard', `${HAIKU} effort=xhigh,${FLASH} effort=high`)])
+  // An entry that has an effort needs no directory entry.
+  const kept = autoHarness({
+    view: manualView({ hard: [{ ...haiku, effort: 'low' }, selected[0]] }),
+    getService: directoryService(fakeDirectory(CATALOG.filter((group) => group.id !== 'anthropic'))),
+  })
+  assert.deepEqual(await settleRender(kept), [levelLine('hard', `${HAIKU} effort=low,${FLASH} effort=high`)])
+})
+
+test('automatic effort: a model listed without efforts, or only with max or off, gets nothing, and a level left without a recommendation sends nothing', async () => {
+  for (const [name, reasoning] of [
+    ['listed without efforts', undefined],
+    ['an empty list', { efforts: [] }],
+    ['only max', { efforts: efforts('max'), defaultEffort: 'max' }],
+    ['off and max', { efforts: efforts('off', 'max') }],
+    ['only off', { efforts: efforts('off') }],
+  ]) {
+    const storage = fakeStorage()
+    const harness = autoHarness({ storage, getService: directoryService(fakeDirectory(haikuCatalog(reasoning))) })
+    assert.deepEqual(await settleRender(harness), [], name)
+    assert.deepEqual(storage.log, [], `${name}: the marker is left alone`)
+  }
+})
+
+test('automatic effort: a saved level that changes after the first render stops the cell for its mount, even when it changes back', async () => {
+  const directory = fakeDirectory([])
+  const storage = fakeStorage()
+  const harness = autoHarness({ storage, getService: directoryService(directory) })
+  // Another tab or a typed command changes the level while the menu is open.
+  harness.render({ view: manualView({ hard: [selected[0]] }) })
+  directory.publish(CATALOG)
+  assert.deepEqual(await settleRender(harness), [])
+  assert.deepEqual(await settleRender(harness, { view: manualView({ hard: [haiku] }) }), [], 'changing back does not resume it')
+  assert.deepEqual(storage.log, [])
+  // The next mount takes the level as it is then.
+  const next = autoHarness({ storage, view: manualView({ hard: [selected[0]] }) })
+  assert.deepEqual(await settleRender(next), [levelLine('hard', `${FLASH} effort=high`)])
+})
+
+test('automatic effort: no storage, a storage that throws, or a marker that does not read back sends nothing, and nothing in memory stands in for it', async () => {
+  const dropping = { ...fakeStorage(), setItem() {} }
+  const other = fakeStorage()
+  other.setItem = (key) => { other.items.set(key, 'another tab') }
+  for (const [name, options] of [
+    ['no localStorage global', { globals: {} }],
+    ['localStorage is null', { globals: { localStorage: null } }],
+    ['reading localStorage throws', { prelude: SECURITY_ERROR }],
+    ['getItem throws', { globals: { localStorage: { ...fakeStorage(), getItem() { throw new Error('denied') } } } }],
+    ['setItem throws', { globals: { localStorage: { ...fakeStorage(), setItem() { throw new Error('QuotaExceededError') } } } }],
+    ['the write does not read back', { globals: { localStorage: dropping } }],
+    ['another value reads back', { globals: { localStorage: other } }],
+    ['the marker is already set', { globals: { localStorage: fakeStorage({ [MARKER]: 'user' }) } }],
+    ['the marker is an empty string', { globals: { localStorage: fakeStorage({ [MARKER]: '' }) } }],
+  ]) {
+    const harness = cellHarness({ view: manualView({ hard: [haiku] }), ...options })
+    assert.equal(harness.cell.instance.dirty, false, `${name}: no draft`)
+    assert.deepEqual(await settleRender(harness), [], name)
+    assert.equal(effortSpan(harness.output()), undefined, name)
+    // The menu opened again in the same page has nothing in memory to send with either.
+    harness.cell.unmount()
+    const element = harness.menu.cells[2]
+    const again = harness.env.runtime.mount(element.type)
+    again.render({ ...element.props, open: false })
+    again.render()
+    await ticks()
+    assert.deepEqual(harness.calls, [], `${name}: remounted`)
+  }
+  // A failed claim is the mount's one attempt: storage that works again later is not asked again by that mount.
+  let failing = true
+  const flaky = fakeStorage()
+  const write = flaky.setItem
+  flaky.setItem = (key, value) => { if (failing) throw new Error('QuotaExceededError'); write(key, value) }
+  const once = cellHarness({ view: manualView({ hard: [haiku] }), globals: { localStorage: flaky } })
+  failing = false
+  for (let index = 0; index < 3; index++) once.render()
+  await ticks()
+  assert.deepEqual(once.calls, [])
+  assert.deepEqual(flaky.log, [`get ${MARKER}`], 'one attempt per mount')
+  once.cell.unmount()
+  const element = once.menu.cells[2]
+  const next = once.env.runtime.mount(element.type)
+  next.render({ ...element.props, open: false })
+  next.render()
+  await ticks()
+  assert.deepEqual(once.calls, [AUTO_LINE], 'the next mount makes its own attempt')
+})
+
+test('automatic effort: one attempt per mount: a rejected automatic command snaps back, is reported once, and is not tried again in that mount or the next', async () => {
+  const storage = fakeStorage()
+  const harness = autoHarness({ storage })
+  assert.deepEqual(await settleRender(harness), [AUTO_LINE])
+  const failure = { count: 1, text: 'Router is already updating. Try again after it finishes.', target: 'level', level: 'hard' }
+  harness.render({ view: manualView({ hard: [haiku] }, { failure }) })
+  const output = harness.render()
+  assert.deepEqual(harness.reports, [failure.text])
+  assert.equal(effortSpan(output), undefined, 'snapped back to the saved entry')
+  assert.equal(cellButton(output).props['aria-busy'], false)
+  // Even with the marker gone, this mount does not try again.
+  storage.items.clear()
+  for (let index = 0; index < 3; index++) harness.render()
+  await ticks()
+  assert.deepEqual(harness.calls, [AUTO_LINE])
+  assert.equal(storage.items.size, 0, 'nor claims the marker again')
+  // The next mount finds the marker and sends nothing.
+  assert.deepEqual(await settleRender(autoHarness({ storage: fakeStorage({ [MARKER]: 'auto' }) })), [])
+  // A line the host does not admit is final too.
+  const refused = autoHarness()
+  refused.env.harness.commandUi = { execute: async (_target, line) => { refused.calls.push(line); return { kind: 'error', text: `unknown or malformed command: ${line}` } } }
+  assert.deepEqual(await settleRender(refused), [AUTO_LINE])
+  for (let index = 0; index < 3; index++) refused.render()
+  await ticks()
+  assert.deepEqual(refused.calls, [AUTO_LINE])
+  assert.deepEqual(refused.reports, [`unknown or malformed command: ${AUTO_LINE}`])
+  assert.equal(effortSpan(refused.output()), undefined)
+})
+
+test('automatic effort: every choice in the cell writes the marker at once, before its commit; a disabled row writes nothing', async () => {
+  // An unavailable entry keeps the cell from applying anything itself.
+  const view = manualView({ hard: [haiku, { provider: 'gone', model: 'retired' }] })
+  for (const [name, choose] of [
+    ['checking a model', (output) => pick(output, FLASH)],
+    ['unchecking a model', (output) => pick(output, HAIKU)],
+    ['picking an effort row', (output) => pickEffort(output, HAIKU, 'Low')],
+    ['picking Default', (output) => pickEffort(output, HAIKU, 'Default (Medium)')],
+    ['Inherit', (output) => pickInherit(output)],
+    ['removing an unavailable entry', (output) => pick(output, 'gone/retired')],
+  ]) {
+    const storage = fakeStorage()
+    const harness = autoHarness({ storage, view })
+    const output = harness.open()
+    assert.deepEqual(storage.log, [], `${name}: nothing before the choice`)
+    choose(output)
+    assert.deepEqual(storage.log, [`set ${MARKER}=user`], name)
+    assert.deepEqual(harness.calls, [], `${name}: written before the commit`)
+  }
+  const locked = autoHarness({ view, extra: { locked: true } })
+  pick(locked.open(), FLASH)
+  pickInherit(locked.render())
+  assert.deepEqual(locked.storage.log, [])
+})
+
+test('automatic effort: a Default picked after the automatic effort is never undone, in that mount or after a remount', async () => {
+  const storage = fakeStorage()
+  const harness = autoHarness({ storage })
+  assert.deepEqual(await settleRender(harness), [AUTO_LINE])
+  harness.render({ view: manualView({ hard: [{ ...haiku, effort: 'xhigh' }] }) })
+  pickEffort(harness.open(), HAIKU, 'Default (Medium)')
+  assert.equal(storage.items.get(MARKER), 'user')
+  harness.close()
+  await ticks()
+  harness.render({ view: manualView({ hard: [haiku] }) })
+  for (let index = 0; index < 3; index++) harness.render()
+  await ticks()
+  assert.deepEqual(harness.calls, [AUTO_LINE, levelLine('hard', HAIKU)])
+  assert.deepEqual(await settleRender(autoHarness({ storage })), [], 'the marker keeps the Default after a remount')
+})
+
+test('automatic effort: a model checked from Inherit and then set to Default stays at Default, in that mount and the next', async () => {
+  const storage = fakeStorage()
+  const harness = autoHarness({ storage, view: manualView({ hard: null }) })
+  // The pick path adds the recommendation; the user then picks Default.
+  pick(harness.open(), HAIKU)
+  pickEffort(harness.render(), HAIKU, 'Default (Medium)')
+  harness.close()
+  await ticks()
+  assert.deepEqual(harness.calls, [levelLine('hard', HAIKU)])
+  harness.render({ view: manualView({ hard: [haiku] }) })
+  for (let index = 0; index < 3; index++) harness.render()
+  await ticks()
+  assert.deepEqual(harness.calls, [levelLine('hard', HAIKU)], 'no automatic command while the menu stays open')
+  assert.equal(storage.items.get(MARKER), 'user')
+  assert.deepEqual(await settleRender(autoHarness({ storage })), [], 'nor when it opens again')
+})
+
+test('automatic effort: the draft takes the commit path: a menu closing before the next render commits it once, and closing after the send adds nothing', async () => {
+  const early = autoHarness()
+  assert.equal(early.cell.instance.dirty, true)
+  early.cell.unmount()
+  early.menu.parent.unmount()
+  await ticks()
+  assert.deepEqual(early.calls, [AUTO_LINE], 'committed once on unmount')
+  const late = autoHarness()
+  assert.deepEqual(await settleRender(late), [AUTO_LINE])
+  late.cell.unmount()
+  late.menu.parent.unmount()
+  await ticks()
+  assert.deepEqual(late.calls, [AUTO_LINE], 'the sent draft is not sent again')
+})
+
+test('automatic effort: its own draft and unconfirmed command, or its own call still running, hold it back even without the marker', async () => {
+  const directory = fakeDirectory([])
+  const harness = autoHarness({ getService: directoryService(directory) })
+  pick(harness.open(), FLASH)
+  harness.close()
+  await ticks()
+  assert.deepEqual(harness.calls, [levelLine('hard', `${HAIKU},${FLASH}`)])
+  // The storage is cleared and the efforts arrive while that command awaits its confirmation.
+  harness.storage.items.clear()
+  directory.publish(CATALOG)
+  harness.render()
+  await ticks()
+  assert.equal(harness.calls.length, 1, 'its own draft and unconfirmed command')
+  harness.render({ view: manualView({ hard: [haiku, selected[0]] }) })
+  for (let index = 0; index < 3; index++) harness.render()
+  await ticks()
+  assert.equal(harness.calls.length, 1, 'once confirmed, the changed level stops the cell for its mount')
+  assert.equal(harness.storage.items.size, 0)
+
+  // Its own call hangs past the lock's 30 s after the host recorded a rejection.
+  const late = fakeDirectory([])
+  const hung = autoHarness({ getService: directoryService(late), execute: 'deferred' })
+  pick(hung.open(), FLASH)
+  hung.close()
+  await ticks()
+  const failure = { count: 1, text: `Route ${FLASH} is not authorized for this session.`, target: 'level', level: 'hard' }
+  hung.render({ view: manualView({ hard: [haiku] }, { failure }) })
+  hung.render()
+  hung.env.clock.offset += 31_000
+  hung.storage.items.clear()
+  late.publish(CATALOG)
+  hung.render()
+  await ticks()
+  assert.equal(hung.calls.length, 1, 'its own call is still running')
+  assert.equal(hung.storage.items.size, 0)
+  hung.settle[0]()
+  await ticks()
+  hung.render()
+  assert.deepEqual(await settleRender(hung), [levelLine('hard', `${HAIKU},${FLASH}`), AUTO_LINE],
+    'with the marker gone, only that call held it back')
+  assert.deepEqual(hung.reports, [failure.text])
+})
+
+test('automatic effort: a cell without a session id never reads or writes storage', async () => {
+  for (const sessionId of [undefined, '', 7]) {
+    const storage = fakeStorage()
+    const harness = autoHarness({ storage, extra: { sessionId } })
+    assert.deepEqual(await settleRender(harness), [], String(sessionId))
+    pick(harness.open(), FLASH)
+    harness.close()
+    await ticks()
+    assert.deepEqual(harness.calls, [levelLine('hard', `${HAIKU},${FLASH}`)], `${String(sessionId)}: the choice is still committed`)
+    assert.deepEqual(storage.log, [], String(sessionId))
+  }
+})
+
+test('automatic effort: the cell calls the same hooks in the same order on every automatic-effort path', async () => {
+  const traces = new Map()
+  const record = (name, harness) => {
+    const trace = harness.cell.instance.trace.join(',')
+    if (!traces.has(trace)) traces.set(trace, name)
+  }
+  const sent = autoHarness()
+  record('claimed and drafted', sent)
+  sent.render()
+  record('sent', sent)
+  await ticks()
+  sent.render({ view: manualView({ hard: [{ ...haiku, effort: 'xhigh' }] }) })
+  record('confirmed', sent)
+  sent.open()
+  record('open', sent)
+  sent.close()
+  record('closed', sent)
+  for (const [name, harness] of [
+    ['no storage', cellHarness({ view: manualView({ hard: [haiku] }) })],
+    ['storage throws', autoHarness({ storage: { ...fakeStorage(), getItem() { throw new Error('denied') } } })],
+    ['reading storage throws', cellHarness({ view: manualView({ hard: [haiku] }), prelude: SECURITY_ERROR })],
+    ['efforts unknown', autoHarness({ getService: directoryService(fakeDirectory([])) })],
+    ['Mechanical', autoHarness({ level: 'mechanical', view: manualView({ mechanical: [haiku] }) })],
+    ['no session id', autoHarness({ extra: { sessionId: undefined } })],
+    ['locked', autoHarness({ extra: { locked: true } })],
+    ['the router off', autoHarness({ view: { ...manualView({ hard: [haiku] }), mode: 'off' } })],
+  ]) {
+    record(name, harness)
+    harness.render()
+    record(`${name}, again`, harness)
+    harness.open()
+    record(`${name}, open`, harness)
+    harness.close()
+    record(`${name}, closed`, harness)
+  }
+  assert.deepEqual([...traces.values()], ['claimed and drafted'], 'one hook order on every path')
+  assert.equal([...traces.keys()][0],
+    'ref,ref,state,state,ref,effect,state,state,ref,ref,ref,ref,effect,effect,effect,effect,ref,effect,ref,effect,ref,ref,ref,ref,state,effect',
+    'the automatic effort adds one ref and one effect after the unmount commit')
 })
