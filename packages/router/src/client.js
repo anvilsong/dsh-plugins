@@ -8,6 +8,8 @@ window.__ModuleLoader__.load({
     const LEVELS = ['mechanical', 'ordinary', 'hard']
     const MAX_MODELS = 4
     const STALE_PENDING_MS = 5 * 60_000
+    // The effort ids a `/router level` token can carry (the Host's rule).
+    const EFFORT_ID = /^[A-Za-z0-9._-]{1,32}$/
 
     const en = {
       'chip.on': 'Model router',
@@ -31,6 +33,11 @@ window.__ModuleLoader__.load({
       'level.count': '%COUNT% of 4 selected',
       'level.noRoutes': 'No explicit subagent routes are authorized in this session; Inherit only.',
       'level.failed': 'Could not update this level.',
+      'effort.labelFor': 'Effort for %MODEL%',
+      'effort.default': 'Default',
+      'effort.defaultNamed': 'Default (%EFFORT%)',
+      'effort.recommended': 'recommended',
+      'effort.cell': 'effort %EFFORT%',
     }
     const zh = {
       'chip.on': '模型路由器',
@@ -54,6 +61,12 @@ window.__ModuleLoader__.load({
       'level.count': '已选 %COUNT%/4',
       'level.noRoutes': '此会话没有已授权的显式子代理路由；只能继承。',
       'level.failed': '无法更新此级别。',
+      // The host model menu's own words: 推理等级, and Default kept as is.
+      'effort.labelFor': '%MODEL% 的推理等级',
+      'effort.default': 'Default',
+      'effort.defaultNamed': 'Default（%EFFORT%）',
+      'effort.recommended': '推荐',
+      'effort.cell': '推理等级 %EFFORT%',
     }
 
     // Row, cell, and flyout rules copy the host model menu (root cells, option
@@ -80,6 +93,8 @@ window.__ModuleLoader__.load({
       .router-cell-value{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
         text-align:right;color:var(--dsw-alias-label-tertiary)}
       .router-cell-value[data-warning]{color:var(--dsw-alias-state-warn-label)}
+      .router-cell-effort{flex:0 0 auto;white-space:nowrap;color:var(--dsw-alias-label-tertiary)}
+      .router-cell-more{flex:0 0 auto;white-space:nowrap;color:var(--dsw-alias-label-tertiary)}
       .router-chevron{display:grid;place-items:center;flex:0 0 12px;width:12px;height:12px;color:var(--dsw-alias-menu-icon)}
       .router-chevron svg,.router-check svg{display:block}
       .router-spinner{color:var(--dsw-alias-label-tertiary)}
@@ -112,6 +127,18 @@ window.__ModuleLoader__.load({
       .router-option[aria-disabled=true]{opacity:.4;cursor:not-allowed}
       .router-option-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .router-check{display:grid;place-items:center;flex:0 0 14px;color:var(--dsw-alias-label-primary)}
+      .router-chips{display:flex;flex:none;flex-wrap:wrap;gap:4px;padding:0 7px 5px 15px}
+      .router-chips[hidden]{display:none}
+      .router-chip{box-sizing:border-box;display:inline-flex;align-items:center;gap:4px;max-width:100%;min-height:24px;
+        padding:2px 8px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);outline:none;
+        background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:16px;
+        text-align:left;cursor:pointer}
+      .router-chip:focus-visible,.router-chip:focus{background:var(--dsw-alias-interactive-bg-hover)}
+      .router-chip[aria-checked=true]{border-color:var(--dsw-alias-label-primary);color:var(--dsw-alias-label-primary)}
+      .router-chip[aria-disabled=true]{opacity:.4;cursor:not-allowed}
+      .router-chip-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .router-chip[data-warning] .router-chip-label{color:var(--dsw-alias-state-warn-label)}
+      .router-chip-note{flex:none;color:var(--dsw-alias-label-tertiary);font-size:11px}
       .router-group+.router-group{margin-top:3px}
       .router-heading{padding:4px 7px 2px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;font-weight:500}
       .router-separator{flex:none;height:.5px;margin:3px 8px;background:var(--dsw-alias-border-l2)}
@@ -133,6 +160,39 @@ window.__ModuleLoader__.load({
     const providerOf = (key) => key.slice(0, key.indexOf('/'))
     const modelOf = (key) => key.slice(key.indexOf('/') + 1)
     const shortModel = (key) => modelOf(key).split('/').pop()
+    /** The route of an authorized `provider/model` key; provider ids hold no slash. */
+    const keyRoute = (key) => ({ provider: providerOf(key), model: modelOf(key) })
+    // The efforts of saved entries by route key; an entry without one (no
+    // key) runs at its model's own default.
+    const entryEfforts = (routes) => {
+      const efforts = {}
+      if (Array.isArray(routes)) {
+        for (const route of routes) {
+          if (typeof route?.effort === 'string' && route.effort !== '') efforts[routeKey(route)] = route.effort
+        }
+      }
+      return efforts
+    }
+    const effortFor = (efforts, key) => Object.hasOwn(efforts, key) ? efforts[key] : undefined
+    // A copy of efforts with key's effort set, or removed for Default.
+    const withEffort = (efforts, key, effort) => {
+      const next = { ...efforts }
+      if (effort === undefined) delete next[key]
+      else next[key] = effort
+      return next
+    }
+    const entryText = (key, effort) => effort === undefined ? key : `${key} effort=${effort}`
+    // A level value as a command states it, the whole level: `inherit`, or
+    // every entry with its own effort token. It also identifies a value in
+    // the draft bookkeeping.
+    const valueText = (keys, efforts) => keys.length === 0 ? 'inherit' : keys.map((key) => entryText(key, effortFor(efforts, key))).join(',')
+    // Model rows are checkboxes and effort chips single-choice radios; focus
+    // and the arrow keys cover both, in document order, except the chips of a
+    // hidden chip row.
+    const ROW_SELECTOR = '[role="menuitemcheckbox"],[role="menuitemradio"]'
+    const CHECKED_ROW_SELECTOR = '[role="menuitemcheckbox"][aria-checked="true"],[role="menuitemradio"][aria-checked="true"]'
+    const shown = (element) => typeof element?.closest !== 'function' || element.closest('[hidden]') === null
+    const rowsIn = (element, selector) => Array.from(element?.querySelectorAll?.(selector) ?? []).filter(shown)
     const supportsPopover = () => typeof HTMLElement !== 'undefined' && 'popover' in HTMLElement.prototype
     const activeElement = () => typeof document === 'undefined' ? null : document.activeElement
     let anchorCounter = 0
@@ -198,6 +258,157 @@ window.__ModuleLoader__.load({
       if (view?.pending !== true) return false
       const since = view.pendingSince
       return typeof since !== 'number' || Date.now() - since < STALE_PENDING_MS
+    }
+
+    // The model directory helpers below are copied from the advisor client
+    // (packages do not import each other); the router's id rule is stricter.
+
+    /**
+     * The session's ModelDirectory store, or undefined when the service is
+     * absent, the session has no directory, or anything throws. A lazy
+     * `ctx.get`, never an inject entry: a missing inject would leave the whole
+     * client entry pending and break web boot.
+     */
+    function directoryStore(ctx, sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') return undefined
+      try {
+        const directories = ctx?.get?.('modelDirectories')
+        if (typeof directories?.directoryFor !== 'function') return undefined
+        const store = directories.directoryFor(sessionId)?.store
+        return typeof store?.getSnapshot === 'function' ? store : undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    /**
+     * What the directory advertises for one route, efforts least to greatest:
+     * `list` (at least one effort), `none` (listed without efforts, or with
+     * an empty list), or `unknown` (service absent or throwing, no groups yet,
+     * route not listed, malformed snapshot, or a list none of whose entries
+     * is usable). Ids a command token cannot carry and repeats are skipped; a
+     * missing name shows the id. `defaultEffort` is the model's own default,
+     * only when it is one of the listed efforts. Never throws.
+     * @returns {{ state: 'unknown' | 'none' | 'list', efforts: { id: string, name: string }[], defaultEffort?: { id: string, name: string } }}
+     */
+    function effortsFor(ctx, sessionId, route) {
+      const unknown = { state: 'unknown', efforts: [] }
+      try {
+        const groups = directoryStore(ctx, sessionId)?.getSnapshot()?.groups
+        if (!Array.isArray(groups)) return unknown
+        const models = groups.find((group) => group?.id === route.provider)?.models
+        if (!Array.isArray(models)) return unknown
+        const model = models.find((candidate) => candidate?.id === route.model)
+        if (model === null || typeof model !== 'object') return unknown
+        if (model.reasoning === undefined) return { state: 'none', efforts: [] }
+        const advertised = model.reasoning?.efforts
+        if (!Array.isArray(advertised)) return unknown
+        const efforts = []
+        for (const effort of advertised) {
+          const id = effort?.id
+          if (typeof id !== 'string' || !EFFORT_ID.test(id) || efforts.some((listed) => listed.id === id)) continue
+          const name = typeof effort.name === 'string' && effort.name.trim() !== '' ? effort.name : id
+          efforts.push({ id, name })
+        }
+        // Entries that are all unusable say nothing about the model: unknown.
+        if (efforts.length === 0 && advertised.length > 0) return unknown
+        const defaultId = model.reasoning.defaultEffort
+        const defaultEffort = typeof defaultId === 'string' ? efforts.find((listed) => listed.id === defaultId) : undefined
+        return { state: efforts.length === 0 ? 'none' : 'list', efforts, ...(defaultEffort === undefined ? {} : { defaultEffort }) }
+      } catch {
+        return unknown
+      }
+    }
+
+    /**
+     * The effort a level recommends for a model, applied only when a model
+     * that is not saved is checked in the flyout; undefined is Default.
+     * Mechanical only lowers effort: the lowest advertised effort other than
+     * `off`, when it comes before the model's own default (default unknown:
+     * `low` when advertised). Ordinary keeps Default. Hard judgment takes the
+     * highest advertised effort other than `max` (a deliberate pick) and
+     * `off`. Unknown or absent efforts recommend nothing.
+     */
+    function recommendedEffort(level, advertised) {
+      if (advertised.state !== 'list') return undefined
+      const ids = advertised.efforts.map((effort) => effort.id)
+      if (level === 'mechanical') {
+        const defaultId = advertised.defaultEffort?.id
+        if (defaultId === undefined) return ids.includes('low') ? 'low' : undefined
+        const lowest = ids.find((id) => id !== 'off')
+        return lowest !== undefined && ids.indexOf(lowest) < ids.indexOf(defaultId) ? lowest : undefined
+      }
+      if (level === 'hard') {
+        for (let index = ids.length - 1; index >= 0; index--) {
+          if (ids[index] !== 'max' && ids[index] !== 'off') return ids[index]
+        }
+      }
+      return undefined
+    }
+
+    /**
+     * One model's chips: Default (carrying the name of the model's real
+     * default when advertised), the advertised efforts in order, then the
+     * entry's own ids the model does not advertise, with a warning unless the
+     * efforts are unknown. Unknown efforts give Default and those ids only,
+     * unmarked. The recommended chip is marked only for a listed model. Null
+     * (no chip row) for a model listed without efforts and without an id.
+     */
+    function chipsFor(advertised, own, recommended) {
+      const extra = []
+      for (const id of own) {
+        if (id !== undefined && !extra.includes(id) && !advertised.efforts.some((effort) => effort.id === id)) extra.push(id)
+      }
+      if (advertised.state === 'none' && extra.length === 0) return null
+      const marked = advertised.state === 'list'
+      const chips = [{ effort: undefined, name: advertised.defaultEffort?.name, warning: false, recommended: marked && recommended === undefined }]
+      for (const effort of advertised.efforts) {
+        chips.push({ effort: effort.id, name: effort.name, warning: false, recommended: marked && effort.id === recommended })
+      }
+      for (const id of extra) chips.push({ effort: id, name: id, warning: advertised.state !== 'unknown', recommended: false })
+      return chips
+    }
+
+    /** The Default chip's text: `Default (<effort name>)` when the name is known. */
+    function defaultLabel(t, name) {
+      if (name === undefined) return t('effort.default')
+      const pattern = t('effort.defaultNamed')
+      return pattern.includes('%EFFORT%') ? pattern.replace('%EFFORT%', () => name) : `${t('effort.default')} (${name})`
+    }
+
+    /** A chip row's label, naming its model as its row shows it. */
+    function effortLabel(t, key) {
+      const pattern = t('effort.labelFor')
+      return pattern.includes('%MODEL%') ? pattern.replace('%MODEL%', () => modelOf(key)) : `${pattern} ${modelOf(key)}`
+    }
+
+    /**
+     * Re-render when the session's model directory changes (the catalog loads
+     * or refreshes). RouterLevels calls it on every render path, before its
+     * early return, so its hook order never changes.
+     */
+    function useDirectoryUpdates(ctx, sessionId) {
+      const [, setVersion] = React.useState(0)
+      const store = directoryStore(ctx, sessionId)
+      let seen
+      try { seen = store?.getSnapshot() } catch { seen = undefined }
+      React.useEffect(() => {
+        if (typeof store?.subscribe !== 'function') return undefined
+        const changed = () => setVersion((version) => version + 1)
+        let unsubscribe
+        try {
+          unsubscribe = store.subscribe(changed)
+          // A change between that render and this subscription is not lost.
+          if (store.getSnapshot() !== seen) changed()
+        } catch {
+          // A broken store leaves the efforts unknown.
+        }
+        return () => {
+          try {
+            if (typeof unsubscribe === 'function') unsubscribe()
+          } catch { /* already gone */ }
+        }
+      }, [store])
     }
 
     function useAnchorName() {
@@ -318,19 +529,25 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // A model row (a checkbox with a trailing check), or with `chip` an
+    // effort chip (a radio that shows its state by its outline, with an
+    // optional note such as "recommended").
     function OptionRow(props) {
       return h('button', {
         type: 'button',
-        role: 'menuitemcheckbox',
-        className: 'router-option',
+        role: props.role ?? 'menuitemcheckbox',
+        className: props.chip ? 'router-chip' : 'router-option',
         'aria-checked': props.checked,
         'aria-disabled': props.disabled ? 'true' : undefined,
+        'data-warning': props.warning ? '' : undefined,
         title: props.title,
+        ref: props.elementRef,
         onMouseMove: (event) => { if (activeElement() !== event.currentTarget) event.currentTarget.focus() },
         onClick: () => { if (!props.disabled) props.onSelect() },
       },
-        h('span', { className: 'router-option-label' }, props.label),
-        h('span', { className: 'router-check' }, props.checked ? checkIcon : null),
+        h('span', { className: props.chip ? 'router-chip-label' : 'router-option-label' }, props.label),
+        props.note ? h('span', { className: 'router-chip-note' }, props.note) : null,
+        props.chip ? null : h('span', { className: 'router-check' }, props.checked ? checkIcon : null),
       )
     }
 
@@ -356,8 +573,7 @@ window.__ModuleLoader__.load({
         measure()
         const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null
         observer?.observe(element)
-        const focusTarget = element.querySelector('[role="menuitemcheckbox"][aria-checked="true"]')
-          ?? element.querySelector('[role="menuitemcheckbox"]')
+        const focusTarget = rowsIn(element, CHECKED_ROW_SELECTOR)[0] ?? rowsIn(element, ROW_SELECTOR)[0]
         focusTarget?.focus()
         return () => {
           observer?.disconnect()
@@ -378,7 +594,8 @@ window.__ModuleLoader__.load({
       }, [])
       const onKeyDown = (event) => {
         if (event.nativeEvent?.isComposing) return
-        const items = Array.from(ref.current?.querySelectorAll('[role="menuitemcheckbox"]') ?? [])
+        // Every chip is a stop of its own; a hidden chip row is skipped.
+        const items = rowsIn(ref.current, ROW_SELECTOR)
         const index = items.indexOf(activeElement())
         const focusAt = (at) => { items[(at + items.length) % items.length]?.focus() }
         switch (event.key) {
@@ -421,13 +638,19 @@ window.__ModuleLoader__.load({
       const anchor = useAnchorName()
       const cellRef = React.useRef(null)
       const { busy, run, report, mounted } = useCommand(props)
+      // The draft, { keys, efforts }: the entries the open flyout shows and
+      // their efforts by route key (no key: the model's own default). Its
+      // valueText is the command text, so texts compare both parts.
       const [desired, setDesired] = React.useState(null)
       const [awaiting, setAwaiting] = React.useState(null)
-      const confirmed = keysOf(view?.selections?.[level])
-      const confirmedText = confirmed.join(',')
+      const saved = view?.selections?.[level]
+      const confirmed = keysOf(saved)
+      const confirmedEfforts = entryEfforts(saved)
+      const confirmedText = valueText(confirmed, confirmedEfforts)
       const authorizedSet = new Set(keysOf(routes))
-      const current = desired ?? confirmed
-      const desiredText = desired === null ? null : desired.join(',')
+      const current = desired?.keys ?? confirmed
+      const currentEfforts = desired?.efforts ?? confirmedEfforts
+      const desiredText = desired === null ? null : valueText(desired.keys, desired.efforts)
       const pending = freshPending(view)
       const open = props.open === true
 
@@ -459,7 +682,7 @@ window.__ModuleLoader__.load({
       // Only the draft that was sent snaps back: a newer draft the user made
       // since (even on the render that runs this) survives and is committed.
       const snapBack = (sentText) => {
-        setDesired((draft) => draft !== null && draft.join(',') === sentText ? null : draft)
+        setDesired((draft) => draft !== null && valueText(draft.keys, draft.efforts) === sentText ? null : draft)
         clearAwaiting()
       }
       const fail = (text) => {
@@ -470,16 +693,21 @@ window.__ModuleLoader__.load({
       useFailureWatch(view, (failure) => failure.target === 'level' && failure.level === level && awaiting !== null,
         (failure) => fail(failure.text || t('level.failed')))
 
+      // One command line per draft, stating the whole level: every entry with
+      // its own effort token, or inherit. Nothing is kept from the saved
+      // level, so a line never depends on what the session shows meanwhile.
+      const lineFor = (draft) => `/router level ${level} ${valueText(draft.keys, draft.efforts)}`
       // One toast per failed commit: a call that the deadline, a recorded
       // rejection or a confirmation has superseded stays silent. A commit
       // sent on unmount (detached) has no later render to supersede it.
-      const send = (text, detached = false) => {
-        const record = { from: confirmedText, settled: false, startedAt: null, result: null }
+      const send = (draft, detached = false) => {
+        const line = lineFor(draft)
+        const record = { from: confirmedText, text: valueText(draft.keys, draft.efforts), settled: false, startedAt: null, result: null }
         const shouldReport = () => detached || sentFrom.current === record
         record.result = withLock(lock, level, () => {
           record.startedAt = Date.now()
           started.current = record
-          return run(`/router level ${level} ${text === '' ? 'inherit' : text}`, 'level.failed', shouldReport).then((ok) => {
+          return run(line, 'level.failed', shouldReport).then((ok) => {
             // Set before the lock announces its release, so woken cells see it.
             if (ok) record.settled = true
             return ok
@@ -509,7 +737,7 @@ window.__ModuleLoader__.load({
         if (open || (busy && !stalled) || pending || overdue) return
         if (heldByOther(lock, level)) return
         sentDraft.current = desiredText
-        const record = send(desiredText)
+        const record = send(desired)
         sentFrom.current = record
         setAwaiting(desiredText)
         void record.result.then((ok) => {
@@ -534,43 +762,176 @@ window.__ModuleLoader__.load({
       // own session and lock: cells are keyed by session, so a session switch
       // unmounts the old cell rather than handing it the new session.
       const latest = React.useRef(null)
-      latest.current = { desiredText, confirmedText, awaiting, send }
+      latest.current = { desired, desiredText, confirmedText, send }
       React.useEffect(() => () => {
         const state = latest.current
-        if (state === null || state.desiredText === null || state.desiredText === state.confirmedText) return
-        if (state.desiredText === sentDraft.current || state.desiredText === state.awaiting) return
-        void state.send(state.desiredText, true)
+        if (state === null || state.desired === null) return
+        // The commit in flight is read from its ref, not from the last
+        // render: it may have failed or been cleared since. Nothing to commit
+        // when the session already shows the draft and no earlier commit is
+        // still in flight to replace it.
+        const inFlightNow = sentFrom.current
+        if (state.desiredText === state.confirmedText && (inFlightNow === null || inFlightNow.text === state.desiredText)) return
+        // Nor when this draft was sent already, or is the commit in flight.
+        if (state.desiredText === sentDraft.current || (inFlightNow !== null && inFlightNow.text === state.desiredText)) return
+        void state.send(state.desired, true)
       }, [])
 
       const locked = props.locked === true
       const live = current.filter((key) => authorizedSet.has(key))
       const stale = confirmed.filter((key) => !authorizedSet.has(key))
       const atCap = live.length >= MAX_MODELS
-      const edit = (next) => {
+      // The chip rows are built once per opening, for every authorized model,
+      // from the directory snapshot of that moment (null: no chip row), with
+      // the efforts this level recommends; rows and chips are never added or
+      // removed while the flyout is open, only shown or hidden.
+      const openChips = React.useRef(null)
+      // Per opening: the effort each model had when it was unchecked, which a
+      // check in the same opening restores.
+      const picks = React.useRef(null)
+      if (!open) {
+        openChips.current = null
+        picks.current = null
+      } else if (openChips.current === null) {
+        const chips = new Map()
+        for (const key of authorizedSet) {
+          const advertised = effortsFor(props.ctx, props.sessionId, keyRoute(key))
+          const recommended = recommendedEffort(level, advertised)
+          const own = [effortFor(currentEfforts, key), effortFor(confirmedEfforts, key)]
+          chips.set(key, { recommended, chips: chipsFor(advertised, own, recommended) })
+        }
+        openChips.current = chips
+        picks.current = new Map()
+      }
+      // Every edit makes a new draft from the one shown; it keeps efforts only
+      // for its own entries, so an unchecked model drops its effort.
+      const edit = (change) => {
         sentDraft.current = null
-        setDesired(next)
+        const keys = change.keys ?? live
+        const source = change.efforts ?? currentEfforts
+        const efforts = {}
+        for (const key of keys) {
+          const effort = effortFor(source, key)
+          if (effort !== undefined) efforts[key] = effort
+        }
+        setDesired({ keys, efforts })
+      }
+      // The effort of a model being checked: its pick from earlier in this
+      // opening, else its saved effort when the level holds it, else (a model
+      // that is not saved) the level's recommendation. Nothing else, and
+      // never on load, applies a default.
+      const checkedEffort = (key) => {
+        if (picks.current?.has(key)) return picks.current.get(key)
+        if (confirmed.includes(key)) return effortFor(confirmedEfforts, key)
+        return openChips.current?.get(key)?.recommended
+      }
+      const remember = (keys) => {
+        for (const key of keys) picks.current?.set(key, effortFor(currentEfforts, key))
       }
       const toggle = (key) => {
         if (locked) return
-        if (live.includes(key)) edit(live.filter((item) => item !== key))
-        else if (!authorizedSet.has(key)) edit(live)
-        else if (!atCap) edit([...live, key])
+        if (live.includes(key)) {
+          remember([key])
+          edit({ keys: live.filter((item) => item !== key) })
+        } else if (!authorizedSet.has(key)) edit({ keys: live })
+        else if (!atCap) edit({ keys: [...live, key], efforts: withEffort(currentEfforts, key, checkedEffort(key)) })
       }
-      const inherit = () => { if (!locked) edit([]) }
+      const inherit = () => {
+        if (locked) return
+        remember(live)
+        edit({ keys: [] })
+      }
+      // A chip of a model that is not checked is disabled and sends nothing.
+      const chooseEffort = (key, effort) => {
+        if (locked || !live.includes(key)) return
+        edit({ efforts: withEffort(currentEfforts, key, effort) })
+      }
       const saving = awaiting !== null || (desired !== null && !open && desiredText !== confirmedText)
+
+      // The elements of the model rows and chip rows, for the focus hand-off.
+      const elements = React.useRef(null)
+      if (elements.current === null) elements.current = { nodes: new Map(), refs: new Map() }
+      const elementRef = (id) => {
+        const { nodes, refs } = elements.current
+        if (!refs.has(id)) refs.set(id, (node) => { if (node) nodes.set(id, node); else nodes.delete(id) })
+        return refs.get(id)
+      }
+      // A chip row that holds focus when its model stops being checked (a
+      // snap-back, another tab's change) stays shown for one render: the
+      // effect below first moves focus to its model row, then hides it, so
+      // focus never falls to the document, which would close the host menu.
+      // A row whose model row cannot take focus is hidden on the next render.
+      const handedOff = React.useRef(null)
+      const [, setHandOff] = React.useState(0)
+      const focused = open ? activeElement() : null
+      let holding = null
+      if (focused !== null && focused !== undefined) {
+        for (const [id, node] of elements.current.nodes) {
+          if (id.startsWith('chips:') && typeof node?.contains === 'function' && node.contains(focused)) {
+            holding = id.slice('chips:'.length)
+            break
+          }
+        }
+      }
+      if (holding === null) handedOff.current = null
+      const keep = holding !== null && !live.includes(holding) && handedOff.current !== holding ? holding : null
+      useLayoutEffect(() => {
+        if (keep === null) return
+        handedOff.current = keep
+        elements.current.nodes.get(`model:${keep}`)?.focus?.()
+        setHandOff((count) => count + 1)
+      })
 
       const shownStale = current.filter((key) => !authorizedSet.has(key))
       const label = t(`level.${level}`)
+      const first = live[0]
+      const firstEffort = first === undefined ? undefined : effortFor(currentEfforts, first)
       const value = live.length === 0
         ? shownStale.length > 0
           ? `${t('level.inheritShort')} · ${shownStale.length} ${t('level.unavailableShort')}`
           : t('level.inheritShort')
-        : `${shortModel(live[0])}${live.length > 1 ? ` +${live.length - 1}` : ''}`
-      const valueLabel = live.length > 1
-        ? `${modelOf(live[0])}, ${t('level.more').replace('%COUNT%', String(live.length - 1))}`
-        : undefined
-      const title = `${t(`level.${level}.hint`)}\n${live.length === 0 ? t('level.inherit') : live.join(', ')}`
+        : shortModel(first)
+      // The first entry's effort and the count of the others have spans of
+      // their own, so the model name truncates first.
+      const effortValue = firstEffort === undefined ? null : `· ${firstEffort}`
+      const moreValue = live.length > 1 ? `+${live.length - 1}` : null
+      const ariaLabel = live.length === 0 ? `${label}: ${value}` : [
+        `${label}: ${live.length > 1 ? modelOf(first) : value}`,
+        ...(firstEffort === undefined ? [] : [t('effort.cell').replace('%EFFORT%', () => firstEffort)]),
+        ...(live.length > 1 ? [t('level.more').replace('%COUNT%', String(live.length - 1))] : []),
+      ].join(', ')
+      const title = `${t(`level.${level}.hint`)}\n${live.length === 0
+        ? t('level.inherit')
+        : live.map((key) => entryText(key, effortFor(currentEfforts, key))).join(', ')}`
       const flyoutId = `${anchor.slice(2)}-menu`
+
+      // One model's chip row, right after its model row; hidden until the
+      // model is checked.
+      const chipRow = (key) => {
+        const frozen = openChips.current?.get(key)
+        if (frozen === undefined || frozen.chips === null) return null
+        const checked = live.includes(key)
+        const effort = effortFor(currentEfforts, key)
+        return h('div', {
+          key: `chips:${key}`,
+          ref: elementRef(`chips:${key}`),
+          className: 'router-chips',
+          role: 'group',
+          'aria-label': effortLabel(t, key),
+          hidden: !checked && key !== keep,
+        }, frozen.chips.map((chip) => h(OptionRow, {
+          key: chip.effort === undefined ? 'default' : `effort:${chip.effort}`,
+          chip: true,
+          role: 'menuitemradio',
+          label: chip.effort === undefined ? defaultLabel(t, chip.name) : chip.name,
+          note: chip.recommended ? t('effort.recommended') : undefined,
+          warning: chip.warning,
+          title: chip.effort,
+          checked: checked && effort === chip.effort,
+          disabled: locked || !checked,
+          onSelect: () => chooseEffort(key, chip.effort),
+        })))
+      }
 
       const groups = []
       for (const key of keysOf(routes)) {
@@ -606,14 +967,18 @@ window.__ModuleLoader__.load({
             ? h('div', { className: 'router-note' }, t('level.noRoutes'))
             : groups.map((group) => h('div', { className: 'router-group', role: 'group', 'aria-label': group.provider, key: group.provider },
               h('div', { className: 'router-heading', 'aria-hidden': 'true' }, group.provider),
-              group.keys.map((key) => h(OptionRow, {
-                key,
-                label: modelOf(key),
-                title: key,
-                checked: live.includes(key),
-                disabled: locked || (atCap && !live.includes(key)),
-                onSelect: () => toggle(key),
-              })),
+              group.keys.flatMap((key) => [
+                h(OptionRow, {
+                  key,
+                  label: modelOf(key),
+                  title: key,
+                  checked: live.includes(key),
+                  disabled: locked || (atCap && !live.includes(key)),
+                  elementRef: elementRef(`model:${key}`),
+                  onSelect: () => toggle(key),
+                }),
+                chipRow(key),
+              ]),
             )),
           stale.length > 0
             ? h('div', { className: 'router-group', role: 'group', 'aria-label': t('level.unavailableGroup') },
@@ -638,7 +1003,7 @@ window.__ModuleLoader__.load({
           'aria-expanded': open,
           'aria-controls': open ? flyoutId : undefined,
           'aria-busy': saving,
-          'aria-label': `${label}: ${valueLabel ?? value}`,
+          'aria-label': ariaLabel,
           'data-inactive': view?.mode === 'manual' ? undefined : '',
           style: { '--router-anchor': anchor },
           title,
@@ -662,6 +1027,8 @@ window.__ModuleLoader__.load({
             className: 'router-cell-value',
             'data-warning': live.length === 0 && shownStale.length > 0 ? '' : undefined,
           }, value),
+          effortValue === null ? null : h('span', { className: 'router-cell-effort' }, effortValue),
+          moreValue === null ? null : h('span', { className: 'router-cell-more' }, moreValue),
           h('span', { className: 'router-chevron' }, saving ? spinnerIcon : chevronIcon),
         ),
         flyout,
@@ -686,6 +1053,9 @@ window.__ModuleLoader__.load({
       // A connection reset briefly clears the view; do not reopen a flyout
       // that the user did not reopen.
       React.useEffect(() => { if (missing && openLevel !== null) setOpenLevel(null) }, [missing, openLevel])
+      // Called on every render path, before the early return, so the hook
+      // order never changes; a cell reads the snapshot when its flyout opens.
+      useDirectoryUpdates(props.ctx, props.sessionId)
       if (missing) return null
       return h(React.Fragment, null,
         h('style', null, styles),

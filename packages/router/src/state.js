@@ -1,5 +1,9 @@
 export const STALE_PENDING_MS = 5 * 60_000
 export const ROUTER_LEVELS = Object.freeze(['mechanical', 'ordinary', 'hard'])
+// A shortlist entry's effort id, kept verbatim: what a command token, the
+// lead's shortlist line and a menu chip can carry unchanged (no whitespace,
+// commas, quotes or brackets). Ids are not checked against the model.
+export const EFFORT_ID = /^[A-Za-z0-9._-]{1,32}$/
 
 export const INITIAL_ROUTER_STATE = Object.freeze({
   mode: 'off',
@@ -9,13 +13,73 @@ export const INITIAL_ROUTER_STATE = Object.freeze({
   failure: null,
 })
 
-function routeFrom(value) {
+export function parseRoute(value) {
   const slash = value.indexOf('/')
   if (slash <= 0 || slash === value.length - 1) return undefined
   const provider = value.slice(0, slash)
   const model = value.slice(slash + 1)
   if (provider.trim() !== provider || model.trim() !== model) return undefined
   return { provider, model }
+}
+
+const EFFORT_KEYWORD = 'effort='
+// Any spelling of the keyword marks an effort token, so a misspelled one is
+// malformed rather than read as part of a model id; only lowercase is valid.
+const isEffortToken = (token) => token.slice(0, EFFORT_KEYWORD.length).toLowerCase() === EFFORT_KEYWORD
+
+/**
+ * Split one trimmed entry into its route text and its effort id: effort null
+ * without a token; undefined for a malformed entry. The token is the entry's
+ * last whitespace-separated token and may appear once, so a model id may
+ * still contain inner spaces.
+ */
+function splitEffort(entry) {
+  const tokens = entry.split(/\s+/)
+  const marked = tokens.filter(isEffortToken)
+  if (marked.length === 0) return { head: entry, effort: null }
+  const last = tokens[tokens.length - 1]
+  if (marked.length > 1 || !last.startsWith(EFFORT_KEYWORD)) return undefined
+  const effort = last.slice(EFFORT_KEYWORD.length)
+  if (!EFFORT_ID.test(effort)) return undefined
+  return { head: entry.slice(0, entry.length - last.length).trim(), effort }
+}
+
+/** One entry, `<provider>/<model>[ effort=<id>]`: `{ provider, model, effort? }` or undefined. */
+function parseEntry(text) {
+  if (text === '') return undefined
+  const split = splitEffort(text)
+  if (split === undefined) return undefined
+  const route = parseRoute(split.head)
+  if (route === undefined) return undefined
+  return split.effort === null ? route : { ...route, effort: split.effort }
+}
+
+/**
+ * Parse the text after `level `: `<level> inherit|<provider>/<model>[
+ * effort=<id>][,<provider>/<model>[ effort=<id>]...]`. Returns `{ level,
+ * routes }` (routes null for Inherit) or undefined when invalid. Every
+ * command states the whole level: an entry without a token has no effort key
+ * (its model's own default), and nothing is kept from the saved level.
+ * Inherit takes no token; there is no level-wide or effort-only form.
+ * Duplicates are the handler's check. The command handler and the fold both
+ * parse with this function, so what the handler accepts is what the fold
+ * stores.
+ */
+export function parseLevelSetting(value) {
+  if (typeof value !== 'string') return undefined
+  const rest = value.trim()
+  const level = rest.split(/\s+/)[0]
+  if (!ROUTER_LEVELS.includes(level)) return undefined
+  const selection = rest.slice(level.length).trim()
+  if (selection === '') return undefined
+  if (selection.toLowerCase() === 'inherit') return { level, routes: null }
+  const routes = []
+  for (const part of selection.split(',')) {
+    const route = parseEntry(part.trim())
+    if (route === undefined) return undefined
+    routes.push(route)
+  }
+  return { level, routes }
 }
 
 function commandArg(state, args) {
@@ -25,21 +89,8 @@ function commandArg(state, args) {
   if (arg === 'on' || arg === 'manual') return { target: 'mode', arg: 'manual' }
   if (arg === 'off') return { target: 'mode', arg: 'off' }
   if (arg.startsWith('level ')) {
-    const rest = raw.slice('level '.length).trim()
-    const level = rest.split(/\s+/)[0]
-    if (!ROUTER_LEVELS.includes(level)) return null
-    const selection = rest.slice(level.length).trim()
-    if (selection === '') return null
-    if (selection.toLowerCase() === 'inherit') return { target: 'level', level, routes: null }
-    const parts = selection.split(',').map((part) => part.trim())
-    if (parts.some((part) => part === '')) return null
-    const routes = []
-    for (const part of parts) {
-      const route = routeFrom(part)
-      if (route === undefined) return null
-      routes.push(route)
-    }
-    return { target: 'level', level, routes }
+    const parsed = parseLevelSetting(raw.slice('level '.length))
+    return parsed === undefined ? null : { target: 'level', ...parsed }
   }
   return null
 }
@@ -85,6 +136,7 @@ export function foldRouter(state, event) {
     if (event.data.kind !== 'success') return withFailure(next, { target: pending.target, level: pending.level ?? null }, event)
     if (pending.target === 'level') {
       if (!ROUTER_LEVELS.includes(pending.level)) return next
+      // The entries land together with their efforts: the level is replaced.
       return {
         ...next,
         selections: {
