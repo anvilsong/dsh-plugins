@@ -2011,6 +2011,41 @@ test('report: validateVerifierReport checks statuses, refs of advice, plans and 
   assert.deepEqual(issuesOfBoth.slice(0, 2), ['(root): Unrecognized key: "__proto__"', 'entries.0: Unrecognized key: "__proto__"'])
 })
 
+test('report: evidence uses the advice reference grammar: literal brackets and braces are paths; * and ? and malformed line suffixes are refused, also through the tool', async () => {
+  const advice = Object.freeze({ kind: 'advice', expected: 1 })
+  const withRefs = (evidence) => ({ entries: [reportEntry('1', 'confirmed', { evidence })] })
+  const accepted = validateVerifierReport(withRefs(['app/[id]/page.tsx:3', 'routes/{x}/a.js', 'a/[b]/c.ts:1-4', 'dir/a:b.js', 'a.js:12-14']), advice)
+  assert.equal(accepted.ok, true, accepted.issues?.join('\n'))
+  const SUFFIX = 'line suffix must be :line or :start-end with positive whole numbers; write path, path:line or path:start-end, such as src/a.js:12 or src/a.js:12-30'
+  for (const [reference, issue] of [
+    ['src/*.js', 'path must be a path prefix, not a glob'],
+    ['a?.js', 'path must be a path prefix, not a glob'],
+    ['app/[id]/../x.js', 'path must not contain ..'],
+    ['/etc/passwd', 'path must be workspace-relative'],
+    ['.git/config', 'path must not touch .git'],
+    ['app/[id]/.env', 'path reaches a protected file (.env)'],
+    ['a.js:12:5', SUFFIX],
+    ['a.js:12-', SUFFIX],
+    ['a.js:', SUFFIX],
+    ['a.js:0', 'lines start at 1'],
+    ['a.js:5-3', 'line range must not run backwards'],
+  ]) {
+    const result = validateVerifierReport(withRefs(['src/a.js:1', reference]), advice)
+    assert.equal(result.ok, false, reference)
+    assert.deepEqual(result.issues, [`entries.0.evidence.1: ${issue}`], reference)
+  }
+
+  const ledger = freshLedger()
+  await recordRun(ledger, { count: 1 })
+  const h = harness({ ledger })
+  const c = h.startChild()
+  await assert.rejects(guardedReport(h, c, withRefs(['a.js:12:5'])), (error) => error.message.includes(`entries.0.evidence.0: ${SUFFIX}`))
+  const stored = await guardedReport(h, c, withRefs(['app/[id]/page.tsx:3', 'routes/{x}/a.js']))
+  assert.equal(stored.recorded, true)
+  assert.deepEqual(JSON.parse(readFileSync(sidePath(ledger), 'utf8')).entries[0].evidence, ['app/[id]/page.tsx:3', 'routes/{x}/a.js'])
+  h.dispose()
+})
+
 test('report: a valid advice report is stored once: the side file, one flat ledger line with Host-computed counts, and the uncovered claims in the result', async () => {
   const ledger = freshLedger()
   const run = await recordRun(ledger, { count: UNEQUAL_CLAIMS })

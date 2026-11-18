@@ -247,9 +247,19 @@ export async function apply(ctx, config = {}) {
   })
 
   // Optional and bound late, as the task board is: without the
-  // working-directory service the verifier boundary stays installed and
-  // denies every verifier, because its workspace root is unknown.
+  // working-directory service the verifier and child boundaries stay
+  // installed, and every verifier, planner and consult child fails closed
+  // because its workspace root is unknown. Both boundaries read it through
+  // workspaceOf; the effect keeps its original label.
   let workingDirectory
+  /** The working directory of an agent's session, or undefined while the service is missing or cannot answer. */
+  const workspaceOf = (agent) => {
+    try {
+      return workingDirectory?.get(agent.session)
+    } catch {
+      return undefined
+    }
+  }
   ctx.inject(['workingDirectory'], (directoryCtx) => {
     directoryCtx.effect(() => {
       workingDirectory = directoryCtx.workingDirectory
@@ -271,16 +281,7 @@ export async function apply(ctx, config = {}) {
       (agent) => stateFor(agent)?.active === true,
       (agent) => stateFor(agent)?.verifierModel ?? null,
       dataDirProblem,
-      {
-        workspaceOf: (agent) => {
-          try {
-            return workingDirectory?.get(agent.session)
-          } catch {
-            return undefined
-          }
-        },
-        ledger,
-      },
+      { workspaceOf, ledger },
     ), 'advisor: verifier boundary')
   })
 
@@ -293,7 +294,9 @@ export async function apply(ctx, config = {}) {
     }, 'advisor: task board')
   })
 
-  ctx.inject(['agents', 'subagents', 'tools', 'workingDirectory'], (plannerCtx) => {
+  // The working directory is bound late (above), so the boundary is installed
+  // without it and every planner and consult child then fails closed.
+  ctx.inject(['agents', 'subagents', 'tools'], (plannerCtx) => {
     const rootSession = (agent) => {
       try {
         return plannerCtx.subagents.rootOf(agent).session
@@ -317,13 +320,7 @@ export async function apply(ctx, config = {}) {
           return false
         }
       },
-      workspaceOf: (agent) => {
-        try {
-          return plannerCtx.workingDirectory.get(agent.session)
-        } catch {
-          return undefined
-        }
-      },
+      workspaceOf,
       ledger,
     }), 'advisor: child boundary')
   })

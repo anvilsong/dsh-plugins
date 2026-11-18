@@ -314,7 +314,8 @@ Checks:
 - Tasks with overlapping scopes are ordered by `blocked_by`. Overlap ignores
   case and Unicode normalization.
 - Mechanical tasks have no open questions.
-- Scopes are not absolute and contain no `~`, `..`, `.git`, or globs.
+- Scopes are not absolute and contain no `~`, `..`, `.git`, or glob
+  characters (`*`, `?`, `[`, `]`, `{`, `}`).
 
 ### Advice format
 
@@ -323,8 +324,13 @@ Checks:
   is recommended, and names are unique
 - `risks` and `do_not_build`
 - `claims`: the repository facts the advice relies on, each with 1–5
-  `path[:line[-line]]` references, for the verifier; a reference may not
-  contain control, format or line separator characters or unpaired surrogates
+  `path[:line[-line]]` references, for the verifier. The path follows the
+  scope rules, except that literal `[`, `]`, `{` and `}` are allowed (as in
+  `app/[id]/page.tsx:3`); `*` and `?` are refused as globs. A malformed line
+  suffix such as `a.js:12:5`, `a.js:12-` or `a.js:` is refused rather than read
+  as part of the path; a colon followed by anything else, as in `dir/a:b.js`,
+  belongs to the name. A reference may not contain control, format or line
+  separator characters or unpaired surrogates
 - `open_questions`
 
 ### Invalid submissions
@@ -508,6 +514,12 @@ Execution:
   model (provider and model; the effort is checked at delegation only).
 - Reads stay inside the lead's workspace after symlinks are resolved, and paths
   may not contain `..`.
+- The workspace root is the lead's working directory, and the child's own
+  working directory must lie inside it. Without the working-directory service,
+  or with an unknown root or working directory, the child is stopped (with a
+  `failed` line, unless its id already has a terminal line or belongs to
+  another child) and every tool is denied; the delegation checks above still
+  apply.
 - `.git`, `.ssh`, `.env*` (except templates), keys, and credential files are
   refused.
 - The child's `grep` is a scoped wrapper around the Host grep that drops
@@ -679,9 +691,10 @@ Its one argument, `entries`, holds 1 to 100 entries:
 - `reply_line`: the physical reply line of the claim, a positive integer.
 - `evidence`: 0 to 5 workspace-relative references in the grammar of advice
   claims (`path`, `path:line` or `path:start-end`; no absolute, `~`, `..`,
-  `.git`, glob or protected path, and no control, format or line separator
-  character or unpaired surrogate). `confirmed` and `refuted` need at least
-  one.
+  `.git`, glob (`*` or `?`; literal brackets and braces are allowed) or
+  protected path, no malformed line suffix such as `:12:5`, and no control,
+  format or line separator character or unpaired surrogate). `confirmed` and
+  `refuted` need at least one.
 - `note`: optional plain text of at most 300 characters, without control,
   format or line separator characters or unpaired surrogates.
 

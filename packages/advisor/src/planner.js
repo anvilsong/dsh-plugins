@@ -187,19 +187,31 @@ export const PLAN_PARAMETERS = Object.freeze({
 
 const CONTROL = /[\u0000-\u001f\u007f]/
 const LINE_BREAK = /[\r\n\v\f\u0085\u2028\u2029]/
+// Glob characters. A write scope refuses all of them. An evidence reference
+// names one file read, so literal brackets and braces are part of its path
+// (app/[id]/page.tsx, routes/{x}/a.js) and only * and ? are refused.
+const SCOPE_GLOB = /[*?[\]{}]/
+const REFERENCE_GLOB = /[*?]/
 
-function scopeIssue(scope) {
-  if (scope.trim() !== scope || scope === '') return 'must be a non-empty path without surrounding whitespace'
-  if (CONTROL.test(scope)) return 'must not contain control characters'
-  if (path.isAbsolute(scope) || /^[a-zA-Z]:/.test(scope) || scope.startsWith('\\')) return 'must be workspace-relative'
-  if (scope.startsWith('~')) return 'must not start with ~'
-  if (/[*?[\]{}]/.test(scope)) return 'must be a path prefix, not a glob'
-  const parts = scope.replace(/\\/g, '/').split('/').filter((part) => part !== '')
+/**
+ * The problem of a workspace-relative path under the rules write scopes and
+ * evidence references share, or undefined.
+ * @param {RegExp} glob the characters refused as a glob
+ */
+function pathIssue(value, glob) {
+  if (value.trim() !== value || value === '') return 'must be a non-empty path without surrounding whitespace'
+  if (CONTROL.test(value)) return 'must not contain control characters'
+  if (path.isAbsolute(value) || /^[a-zA-Z]:/.test(value) || value.startsWith('\\')) return 'must be workspace-relative'
+  if (value.startsWith('~')) return 'must not start with ~'
+  if (glob.test(value)) return 'must be a path prefix, not a glob'
+  const parts = value.replace(/\\/g, '/').split('/').filter((part) => part !== '')
   if (parts.length === 0 || parts.every((part) => part === '.')) return 'must not be the workspace root'
   if (parts.includes('..')) return 'must not contain ..'
   if (parts.some((part) => part.toLowerCase() === '.git')) return 'must not touch .git'
   return undefined
 }
+
+const scopeIssue = (scope) => pathIssue(scope, SCOPE_GLOB)
 
 function normalizeScope(scope) {
   return scope.replace(/\\/g, '/').split('/').filter((part) => part !== '' && part !== '.').join('/')
@@ -367,6 +379,12 @@ export const ADVICE_PARAMETERS = Object.freeze({
 })
 
 const EVIDENCE = /^(.+?)(?::(\d+)(?:-(\d+))?)?$/
+// A path that still ends in a colon and only digits or hyphens once the
+// optional suffix is taken off holds a mistyped line suffix (a.js:12:5,
+// a.js:12-, a.js:); a colon followed by anything else (dir/a:b.js) is part of
+// the name.
+const MALFORMED_SUFFIX = /:[\d-]*$/
+const SUFFIX_GRAMMAR = 'line suffix must be :line or :start-end with positive whole numbers; write path, path:line or path:start-end, such as src/a.js:12 or src/a.js:12-30'
 // Characters no evidence reference may carry: C0 and C1 controls, format
 // characters (bidi controls, zero-width and soft-hyphen characters, tags),
 // unpaired surrogates, and line and paragraph separators.
@@ -375,20 +393,23 @@ const UNSAFE_TEXT = /[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/u
 /**
  * The problems of one evidence reference, the grammar that advice claims and
  * the verifier's report share: a workspace-relative path with an optional
- * :line or :start-end, under the write-scope path rules, that does not reach
- * a protected file and carries no control, format or separator character and
- * no unpaired surrogate. An input refused for another reason keeps that
- * reason's message.
+ * :line or :start-end, under the write-scope path rules except that literal
+ * brackets and braces are allowed (only * and ? count as a glob), that does
+ * not reach a protected file, carries no control, format or separator
+ * character and no unpaired surrogate, and does not end in a malformed line
+ * suffix such as :12:5, :12- or a bare colon. An input refused for another
+ * reason keeps that reason's message.
  * @returns {string[]} issues without a location prefix; empty when it is valid
  */
 export function evidenceReferenceIssues(reference) {
   const match = typeof reference === 'string' ? EVIDENCE.exec(reference.trim() === reference ? reference : '') : null
   if (match === null || reference === '') return ['must be a workspace-relative path with optional :line or :start-end']
   const issues = []
-  const issue = scopeIssue(match[1])
+  const issue = pathIssue(match[1], REFERENCE_GLOB)
   if (issue !== undefined) issues.push(`path ${issue}`)
   else if (protectedSegment(match[1]) !== undefined) issues.push(`path reaches a protected file (${protectedSegment(match[1])})`)
   else if (UNSAFE_TEXT.test(reference)) issues.push('path must not contain control, format or line separator characters, or unpaired surrogates')
+  else if (MALFORMED_SUFFIX.test(match[1])) issues.push(SUFFIX_GRAMMAR)
   if (match[3] !== undefined && Number(match[3]) < Number(match[2])) issues.push('line range must not run backwards')
   if (match[2] !== undefined && Number(match[2]) === 0) issues.push('lines start at 1')
   return issues

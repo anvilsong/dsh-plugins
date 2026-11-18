@@ -496,9 +496,12 @@ function harness(options = {}) {
  * Install the boundary the way the Host does: through index.host.js apply()
  * with this config and an optional profileContext.home, on top of a harness
  * created with install: false. Only the agent services come from the harness;
- * `dataDir` only tells h.lines() which ledger file to read.
+ * `dataDir` only tells h.lines() which ledger file to read. `services` lists
+ * the Host services ctx.inject finds, so a callback that needs a missing one
+ * never runs, as on a Host without that service.
  */
-async function hostHarness(config, { home, dataDir, ...options } = {}) {
+const HOST_SERVICES = Object.freeze(['agents', 'subagents', 'tools', 'workingDirectory', 'agentTeams', 'commands'])
+async function hostHarness(config, { home, dataDir, services = HOST_SERVICES, ...options } = {}) {
   const h = harness({ ...options, dataDir, ledgerMode: 'none', install: false })
   h.lead.session = { id: 'lead-session-log' } // index.host.js reads lead state through rootOf(agent).session
   const effects = new Map()
@@ -513,7 +516,8 @@ async function hostHarness(config, { home, dataDir, ...options } = {}) {
       },
     },
     systemPrompt: { getSectionOrder: () => 500, section(value) { sections.push(value); return () => {} } },
-    inject(_names, callback) {
+    inject(names, callback) {
+      if (!names.every((name) => services.includes(name))) return
       callback({
         ...h.ctx,
         workingDirectory: { get: () => h.state.workspace },
@@ -532,7 +536,7 @@ async function hostHarness(config, { home, dataDir, ...options } = {}) {
     disposed = true
     for (const effect of effects.values()) effect?.()
   }
-  return { ...h, boundary, dispose, sections, command: () => command }
+  return { ...h, boundary, effects, dispose, sections, command: () => command }
 }
 
 function startChild(h, options) {
@@ -910,6 +914,71 @@ test('evidenceReferenceIssues: the one evidence-reference check that advice clai
     assert.deepEqual(evidenceReferenceIssues(reference), expected, JSON.stringify(reference))
     if (typeof reference !== 'string') continue
     // validateAdvice reports exactly these issues, each under its claim and reference.
+    assert.deepEqual(validateAdvice(withEvidence(reference)).issues, expected.map((issue) => `claims.0.evidence.0: ${issue}`), JSON.stringify(reference))
+  }
+})
+
+test('evidenceReferenceIssues: a path may carry literal brackets and braces; * and ? and every other path rule still refuse; write_scopes still refuse all glob characters', () => {
+  // Real framework route files: Next.js app/[id]/page.tsx, brace-named folders.
+  for (const reference of ['app/[id]/page.tsx:3', 'routes/{x}/a.js', 'a/[b]/c.ts:1-4', 'app/[...slug]/page.tsx', 'a]b/c}d.js:2', 'app/(group)/[id]/page.tsx:7-9']) {
+    assert.deepEqual(evidenceReferenceIssues(reference), [], reference)
+    assert.equal(validateAdvice(withEvidence(reference)).ok, true, reference)
+  }
+  const GLOB = 'path must be a path prefix, not a glob'
+  for (const [reference, expected] of [
+    ['src/*.js', [GLOB]],
+    ['a?.js', [GLOB]],
+    ['app/[id]/*.tsx:3', [GLOB]],
+    ['routes/{x}/a?.js', [GLOB]],
+    ['../x', ['path must not contain ..']],
+    ['app/[id]/../x.js', ['path must not contain ..']],
+    ['/etc/passwd', ['path must be workspace-relative']],
+    ['/[id]/a.js:1', ['path must be workspace-relative']],
+    ['C:\\[id]\\a.js', ['path must be workspace-relative']],
+    ['~/[id]/a.js', ['path must not start with ~']],
+    ['.git/config', ['path must not touch .git']],
+    ['app/[id]/.git/HEAD', ['path must not touch .git']],
+    ['.env', ['path reaches a protected file (.env)']],
+    ['app/[id]/.env:1', ['path reaches a protected file (.env)']],
+    ['{x}/credentials.json', ['path reaches a protected file (credentials.json)']],
+    ['app/[id]\u0000/a.js', ['path must not contain control characters']],
+    ['app/[id]\u202e/a.js', ['path must not contain control, format or line separator characters, or unpaired surrogates']],
+  ]) {
+    assert.deepEqual(evidenceReferenceIssues(reference), expected, JSON.stringify(reference))
+    assert.deepEqual(validateAdvice(withEvidence(reference)).issues, expected.map((issue) => `claims.0.evidence.0: ${issue}`), JSON.stringify(reference))
+  }
+  // write_scopes keep the whole glob refusal: brackets and braces included.
+  for (const scope of ['app/[id]', 'routes/{x}', 'a/[b]/c.ts', 'a]b', 'a}b', 'src/*.js', 'a?.js']) {
+    assert.equal(issues(plan([task('T1', { write_scopes: [scope] })])), 'tasks.0.write_scopes.0: must be a path prefix, not a glob', scope)
+  }
+})
+
+test('evidenceReferenceIssues: a malformed line suffix is refused, not read as part of the path', () => {
+  const SUFFIX = 'line suffix must be :line or :start-end with positive whole numbers; write path, path:line or path:start-end, such as src/a.js:12 or src/a.js:12-30'
+  for (const reference of ['a.js:12', 'a.js:12-14', 'dir/a:b.js', 'dir/a:b.js:3', 'ab:1c.js', 'logs/10:30/x.txt:2', 'a.js']) {
+    assert.deepEqual(evidenceReferenceIssues(reference), [], reference)
+    assert.equal(validateAdvice(withEvidence(reference)).ok, true, reference)
+  }
+  for (const [reference, expected] of [
+    // A column is not part of the grammar, and an unfinished range or bare colon is a typo.
+    ['a.js:12:5', [SUFFIX]],
+    ['src/a.js:12:5-7', [SUFFIX]],
+    ['a.js:12-', [SUFFIX]],
+    ['a.js:', [SUFFIX]],
+    ['a.js:12:', [SUFFIX]],
+    ['a.js:-3', [SUFFIX]],
+    ['a.js:1-2-3', [SUFFIX]],
+    ['a.js::12', [SUFFIX]],
+    [':12', [SUFFIX]],
+    // Rejected before, with their messages unchanged.
+    ['a.js:0', ['lines start at 1']],
+    ['a.js:5-3', ['line range must not run backwards']],
+    ['../a.js:12:5', ['path must not contain ..']],
+    ['src/*.js:12:5', ['path must be a path prefix, not a glob']],
+    ['.ssh/a:1:2', ['path reaches a protected file (.ssh)']],
+    ['a.js:12:0', [SUFFIX, 'lines start at 1']],
+  ]) {
+    assert.deepEqual(evidenceReferenceIssues(reference), expected, JSON.stringify(reference))
     assert.deepEqual(validateAdvice(withEvidence(reference)).issues, expected.map((issue) => `claims.0.evidence.0: ${issue}`), JSON.stringify(reference))
   }
 })
@@ -2876,6 +2945,54 @@ test('fail closed through apply(): advisor-verifier delegations are refused whil
   assert.equal(h.delegate(), undefined)
   assert.ok(h.sections[0].text({ agent: h.lead }).includes(`the ledger \`${path.join(dataDir, 'sessions.jsonl')}\``))
   assert.match(h.call('subagent', { name: 'advisor-verifier-bad' }), /12-character/, 'the other verifier checks still apply')
+})
+
+test('fail closed through apply(): without the working-directory service the child boundary is still installed and every planner and consult child is stopped with every tool denied', async (t) => {
+  const box = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'advisor-no-wd-')))
+  t.after(() => rmSync(box, { recursive: true, force: true }))
+  const decoys = { HOME: path.join(box, 'home'), XDG_STATE_HOME: path.join(box, 'xdg-state'), DSH_HOME: path.join(box, 'dsh-home') }
+  for (const dir of Object.values(decoys)) mkdirSync(dir)
+  decoyEnv(t, decoys)
+  const dataDir = path.join(box, 'data')
+  const h = await hostHarness({ dataDir }, { dataDir, services: HOST_SERVICES.filter((name) => name !== 'workingDirectory') })
+  t.after(h.dispose)
+  assert.equal(h.effects.has('advisor: verifier working directory'), false, 'the service is missing')
+  // The host-wide guard is installed: namespace, name, tool and messaging checks apply.
+  assert.match(h.call('subagent', { name: `advisor-plannr-${PLAN_ID}` }), /reserved for Advisor roles/)
+  assert.match(h.delegate({ name: 'advisor-planner-bad' }), /12 lowercase hex id/)
+  assert.equal(h.delegate({}, { tool: 'subagent_fork' }), 'Advisor children require the fresh in-process subagent tool.')
+  assert.match(h.call('send_message', { agent: PLANNER, message: 'x' }), /do not accept messages/)
+  for (const [index, [self, submitArgs]] of [[PLANNER, plan()], [CONSULT_B, advice()]].entries()) {
+    const c = startChild(h, { id: `no-wd-${index}`, self })
+    assert.equal(c.agent.cancelled, 1, `${self} is stopped`)
+    assert.equal(c.registered.has(c.tool), false, `${self} gets no submit tool`)
+    for (const [name, args] of [
+      ['read', { file_path: 'src/a.js' }], ['grep', { pattern: 'x' }], ['glob', { pattern: '**/*.js' }],
+      [c.tool, submitArgs], ['bash', { command: 'true' }], ['write', { file_path: 'x', content: 'y' }],
+    ]) {
+      assert.equal(h.run(c, name, args), 'Advisor child failed closed: no tools are permitted.', `${self} ${name}`)
+    }
+  }
+  await until(() => h.terminal().length === 2, 'the failed lines')
+  assert.deepEqual(h.reasons(), [['failed', 'invalid advisor child start'], ['failed', 'invalid advisor child start']], 'each child gets a failed line and no started line')
+})
+
+test('apply(): the child boundary binds the working-directory service late; once it is unbound the next planner child is stopped', async (t) => {
+  const dataDir = path.join(mkdtempSync(path.join(TMP, 'late-wd-')), 'data')
+  const h = await hostHarness({ dataDir }, { dataDir })
+  t.after(h.dispose)
+  const bound = startChild(h, { id: 'late-wd-1' })
+  assert.equal(bound.agent.cancelled, 0, h.logs.join('\n'))
+  assert.equal(h.run(bound, 'read', { file_path: 'src/a.js' }), undefined, 'unchanged while the service is bound')
+  assert.match(h.run(bound, 'read', { file_path: path.join(OUT, 'canary.txt') }), /inside the workspace/)
+  h.end(bound)
+  await settle()
+  h.effects.get('advisor: verifier working directory')()
+  const later = startChild(h, { id: 'late-wd-2', self: CONSULT_B })
+  assert.equal(later.agent.cancelled, 1)
+  for (const [name, args] of [['read', { file_path: 'src/a.js' }], ['grep', { pattern: 'x' }], ['glob', { pattern: '**/*.js' }]]) {
+    assert.equal(h.run(later, name, args), 'Advisor child failed closed: no tools are permitted.', name)
+  }
 })
 
 /** The verifier's denial while an effort is stored and a delegation does not pass it with the exact route. */
