@@ -152,6 +152,12 @@ test('assertOverview: nested negative cases', () => {
   rejects(assertOverview, overviewFixture, (d) => { d.capabilities.prune = false; d.capabilities.reason = null }, /reason is required when prune is false/)
   rejects(assertOverview, overviewFixture, (d) => { d.capabilities.prune = false; d.capabilities.reason = 'nope' }, /capabilities\.reason/)
   rejects(assertOverview, overviewFixture, (d) => { d.totals.sessions = '3' }, /totals\.sessions: expected a non-negative integer/)
+  // archivedMissing: archived ids of the registry without a stored log (an integer, always present).
+  assert.equal(overviewFixture().totals.archivedMissing, 1)
+  rejects(assertOverview, overviewFixture, (d) => { delete d.totals.archivedMissing }, /totals: missing key "archivedMissing"/)
+  rejects(assertOverview, overviewFixture, (d) => { d.totals.archivedMissing = -1 }, /totals\.archivedMissing: expected a non-negative integer/)
+  rejects(assertOverview, overviewFixture, (d) => { d.totals.archivedMissing = 1.5 }, /totals\.archivedMissing: expected a non-negative integer/)
+  rejects(assertOverview, overviewFixture, (d) => { d.totals.archivedMissing = null }, /totals\.archivedMissing: expected a non-negative integer/)
   rejects(assertOverview, overviewFixture, (d) => { d.workspaces[0].bytes = null }, /workspaces\[0\]\.bytes/)
   rejects(assertOverview, overviewFixture, (d) => { d.workspaces[0].title = 'x' }, /workspaces\[0\]: unknown key "title"/)
   rejects(assertOverview, overviewFixture, (d) => { d.largest[0].title = 5 }, /largest\[0\]\.title: expected a string or null/)

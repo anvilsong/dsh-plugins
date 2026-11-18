@@ -100,6 +100,7 @@ Response `Overview` (validator `assertOverview`):
 | `totals.reclaimableBytes` | integer | computed (units that pass every safety check now) |
 | `totals.reclaimableUnits` | integer | computed |
 | `totals.blockedUnits` | integer | computed |
+| `totals.archivedMissing` | integer | registry joined with persistence snapshot (archived ids with no stored log; not counted in `totals.archived`; harmless leftovers the page names in a small line under the Archived card, shown only when above 0) |
 | `indexLoad` | `normal` or `high` | computed (`totals.bytes` against `indexWarnBytes`) |
 | `workspaces[].id` | string or null (null is the Unassigned row) | registry |
 | `workspaces[].name` | string or null | registry |
@@ -222,7 +223,7 @@ Response `UnarchiveResult` (validator `assertUnarchiveResult`):
 
 ### `trash`
 
-Request: `{}` or `{ fresh: boolean }` (same meaning as for `overview`). Errors: `sessions-manager/forbidden`, `sessions-manager/invalid-request`, `sessions-manager/trash-unusable`, `sessions-manager/store-unreadable`.
+Request: `{}` or `{ fresh: boolean }` (same meaning as for `overview`). With `fresh: true`, when a batch still owes registry steps and pruning is available, the Host first runs its recovery (only if no change is running in this process and the trash lock is free; a failure never fails the read) and then lists the trash again. A plain read only reports. Errors: `sessions-manager/forbidden`, `sessions-manager/invalid-request`, `sessions-manager/trash-unusable`, `sessions-manager/store-unreadable`.
 
 Response `TrashList` (validator `assertTrashList`):
 
@@ -231,8 +232,8 @@ Response `TrashList` (validator `assertTrashList`):
 | `trashDir` | path | computed (config) |
 | `batches[].batchId` | batch id | lstat (a real folder of the trash, never a link) |
 | `batches[].createdAt` | integer ms | computed (the manifest's time) |
-| `batches[].units`, `.sessions`, `.bytes` | integers | computed (what the batch folder holds now: `units` wholly in the trash; `sessions` and `bytes` of every copy in the batch folder, a copy in `conflict` included, since `purge` deletes it too; a complete batch that holds nothing, for example one fully restored, is not listed) |
-| `batches[].state` | `complete`, `needs-recovery` or `conflict` | computed (fold of the batch journal) |
+| `batches[].units`, `.sessions`, `.bytes` | integers | computed (what the batch folder holds now: `units` wholly in the trash; `sessions` and `bytes` of every copy in the batch folder, a copy in `conflict` included, since `purge` deletes it too; a complete batch that holds nothing and owes no registry step, for example one fully restored, is not listed, nor is a closed batch) |
+| `batches[].state` | `complete`, `needs-recovery` or `conflict` | computed (fold of the batch journal; a batch the fold calls `complete` that still owes registry steps is `needs-recovery`: prune steps (unpin, detach, unarchive) of a unit wholly in the trash, by the journal and the registry; restore steps (attach, insertBefore, archive, pin) of members back in the store, by the journal) |
 
 ### `restore`
 
@@ -240,7 +241,7 @@ Request: `{ batchId }`; the id is one path segment (`[A-Za-z0-9][A-Za-z0-9._-]{0
 
 Errors: `sessions-manager/forbidden`, `sessions-manager/invalid-request`, `sessions-manager/busy`, `sessions-manager/batch-not-found`, `sessions-manager/unsupported-backend`, `sessions-manager/unsupported-platform`, `sessions-manager/trash-unusable`, `sessions-manager/store-unreadable`.
 
-Response: `ApplyResult` (validator `assertApplyResult`; fields and sources as for `apply`). A destination that already exists is skipped with `conflict`; nothing is overwritten. A second restore of the same batch is a no-op.
+Response: `ApplyResult` (validator `assertApplyResult`; fields and sources as for `apply`). A destination that already exists is skipped with `conflict`; nothing is overwritten. A second restore of the same batch is a no-op. The log of each member must be back as it was when it was moved (revision file part and size journaled right after the move; a batch of an older build has only the hint of the last re-read before the move): a log that changed in the trash is not attached (`recovery-needed`; recovery accepts it later). The batch's archived ids are archived again in their recorded order and its pinned ids pinned in reverse recorded order. A batch wholly back with no registry step left is closed: it stays on disk, unlisted, and recovery skips it.
 
 ### `purge`
 

@@ -411,10 +411,11 @@ function sandboxMethods(world) {
     return treeOf(real).join('\n')
   }
 
+  /** The registry now, in order: workspace order, the archive list (archive appends) and the pin list (pin prepends). */
   const registrySnapshot = () => ({
     workspaces: Object.fromEntries(world.registry.workspaces.map((w) => [w.id, [...w.sessionIds]])),
-    archived: [...world.registry.archived].sort(),
-    pinned: [...world.registry.pinned].sort(),
+    archived: [...world.registry.archived],
+    pinned: [...world.registry.pinned],
   })
 
   const auditRecords = () => {
@@ -456,6 +457,8 @@ function sandboxMethods(world) {
     pluginText,
     /** The store folder of a session, at its original place. */
     dirOf: (folder) => world.entries.get(folder).dir,
+    /** Ids of the sessions whose folder is in a trash batch now. */
+    idsInTrash: () => [...places()].filter(([, found]) => found.some((f) => f.place.startsWith('trash:'))).map(([folder]) => world.entries.get(folder).id),
     idOf: (folder) => world.entries.get(folder).id,
     async cleanup() {
       for (const folder of [...world.foreignLocks.keys()]) releaseForeignLock(world, folder)
@@ -618,6 +621,7 @@ function pathArgs(name, args) {
  * @param {(pid: number) => boolean} [options.isAlive] liveness of a recorded trash-lock pid
  * @param {{ beforeFs?: Function, beforeRegistry?: Function }} [options.hooks] beforeRegistry may return a promise to hold the call
  * @param {'service' | 'entry'} [options.mount] 'entry': load options.entry (src/index.host.js) with ctx.plugin()
+ * @param {boolean} [options.startupRecover] false: no recovery at start (default on, as in the plugin entry)
  */
 export function startProcess(world, options = {}) {
   const {
@@ -918,6 +922,8 @@ export function startProcess(world, options = {}) {
       adapter: proc.adapter,
       settings: proc.settings,
       fs: proc.serviceFs,
+      // The recovery at start runs as in the plugin entry unless a test turns it off.
+      startupRecover: options.startupRecover,
       clock: options.clock ?? (() => Date.now() + clockOffset),
       trashOptions: {
         identity: { pid, startedAt: 1, host },
@@ -1163,6 +1169,28 @@ export function assertAuditClean(world, label) {
   return records.map((record) => record.op)
 }
 
+/**
+ * The registry a restore gives back (README, known limits), from the registry
+ * before the prune and the ids that went through prune and restore, batch by
+ * batch in restore order: the workspace order exactly; the archive list keeps
+ * every other id in its place and gets each batch's archived ids back at its
+ * end (archive appends), in their recorded relative order; the pin list gets
+ * each batch's pinned ids back at its start (pin prepends), in their recorded
+ * relative order.
+ * @param {{ workspaces: object, archived: string[], pinned: string[] }} original registrySnapshot() before the prune
+ * @param {string[][]} batches ids of each restored batch
+ */
+export function registryAfterRestore(original, batches) {
+  let archived = [...original.archived]
+  let pinned = [...original.pinned]
+  for (const ids of batches) {
+    const set = new Set(ids)
+    archived = [...archived.filter((id) => !set.has(id)), ...original.archived.filter((id) => set.has(id))]
+    pinned = [...original.pinned.filter((id) => set.has(id)), ...pinned.filter((id) => !set.has(id))]
+  }
+  return { workspaces: original.workspaces, archived, pinned }
+}
+
 /** The batch folders of the trash folder. */
 export const batchFolders = (world) => (nodeFs.existsSync(world.trashDir) ? nodeFs.readdirSync(world.trashDir).filter((name) => /^b-/.test(name)).sort() : [])
 
@@ -1194,12 +1222,14 @@ export async function killRun(phase, spec) {
   try {
     const baseline = world.original
     let batchId = null
+    let pruned = []
     if (phase === 'restore') {
       const healthy = startProcess(world, FAST)
       const plan = await healthy.call('plan', { scope: 'all' })
       const done = await healthy.call('apply', { planId: plan.planId, confirmCount: plan.totals.readySessions })
       assert.equal(done.state, 'complete')
       batchId = done.batchId
+      pruned = world.idsInTrash()
       healthy.stop()
     }
     const dying = startProcess(world, FAST)
@@ -1226,13 +1256,15 @@ export async function killRun(phase, spec) {
       assertWorld(world, { label: 'after recover()', baseline })
       assertAuditClean(world, 'after recover()')
       assertTrashList(await next.call('trash', { fresh: true }))
+      // The sessions the prune took out of the registry: the ones a crash left in the trash, or that the healthy prune moved.
+      if (phase === 'apply') pruned = world.idsInTrash()
       const calls = world.registryLog.length
       const again = await startProcess(world, { ...FAST, clockOffset: LATER }).recover()
       assert.equal(world.registryLog.length, calls, 'a second recover() makes no registry call')
       assert.ok(again.batches.every((b) => b.appended === 0 && b.moved === 0), 'a second recover() appends and moves nothing')
       for (const name of batchFolders(world)) assertApplyResult(await next.call('restore', { batchId: name }))
       assert.deepEqual(world.storeTree(), baseline.tree, 'the restore gives back the byte-identical store tree')
-      assert.deepEqual(world.registrySnapshot(), baseline.registry, 'the restore gives back the exact registry')
+      assert.deepEqual(world.registrySnapshot(), registryAfterRestore(baseline.registry, [pruned]), 'the restore gives back the registry, in order')
       assert.deepEqual(world.violations, [], 'no guard violation')
       assert.deepEqual(gateViolations(), [], 'no fs.promises call left the sandbox')
       return { reached: true, kill }

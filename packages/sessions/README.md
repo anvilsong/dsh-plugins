@@ -47,7 +47,10 @@ time of the last read and **Refresh**. Three tabs follow.
   hint, **Normal** or **High**), **Archived** (size of archived roots and how
   many children ride along), **Reclaimable** (size of the trees a prune can
   take right now, blocked trees counted apart, button **Review prune…**) and
-  **Largest**.
+  **Largest**. The counts are of stored sessions. When the registry also marks
+  ids archived whose log is gone, a small line under **Archived** says how
+  many: that is why the sidebar's registry can hold more archived ids than the
+  page counts. Such ids are harmless leftovers.
 - A workspace table: sessions, archived count, size with a bar, last activity.
   A row opens the Archived tab filtered to that workspace. Sessions in no
   workspace appear as **Unassigned** rows, grouped by their store folder name.
@@ -83,7 +86,10 @@ time of the last read and **Refresh**. Three tabs follow.
 
 **Trash** lists prune batches (time, sessions, size, state *complete*, *needs
 recovery* or *conflict*) with **Restore batch** (it runs on one click, with no
-confirmation) and **Delete permanently…**. Permanent delete needs the batch id
+confirmation) and **Delete permanently…**. A batch whose folders are where they
+belong but whose registry steps are not all done (a refused detach after a
+prune, a refused attach after a restore) reads *needs recovery* and stays
+listed, even when it holds no session any more, until recovery has done them. Permanent delete needs the batch id
 typed, then a second confirmation, and is disabled when `allowPermanentDelete`
 is `false`.
 
@@ -181,15 +187,21 @@ device as the store.
     <batchId>/                 e.g. b-20261117T221150Z-1a2b3c4d
       manifest.json            the full intent, written and synced before the first move
       journal.jsonl            one line per state change; the batch state is a fold of it
-      registry.json            position, neighbours, revision and size of each member
+                               (also each moved log's revision and size, and `closed`)
+      registry.json            position, neighbours, archive and pin order, log name,
+                               revision and size of each member
       sessions/<project folder>/<session id>/…    the moved session folders
 ```
 
 `manifest.json` records, for each session, its id, project folder, workspace,
 parent, archived and pinned marks, size and exact source path. A restore goes
 only to that recorded folder. Project folders and the sessions tree are never
-moved or removed. A fully restored batch is hidden from the Trash tab; its
-small manifest and journal stay in the folder.
+moved or removed. A batch wholly back in the store with every registry step
+done is **closed**: its journal ends with a `closed` line, the Trash tab hides
+it, and recovery skips it after reading only the end of that journal (a fixed
+four file calls per closed batch, whatever it held). Its small manifest, hints
+and journal stay in the folder; only **Delete permanently…** (by batch id)
+removes a batch.
 
 ## Safety rules
 
@@ -295,12 +307,26 @@ session; that tree's registry steps wait), `registry-step-failed`,
   the ids in place is not safe: after a host restart its next workspace change
   drops a missing id for good, and a later restore would land the session under
   *Ungrouped*. A restore moves the folder back to the exact recorded folder
-  (never over an existing one), checks that the log is back (same folder, size
-  and revision), re-attaches the session to its workspace, puts it back before
-  its recorded neighbour, archives it again if it was archived, and pins it
-  again only if it was pinned and is not archived. A tree whose workspace no
-  longer exists stays in the trash (`workspace-missing`); a missing project
-  folder is recreated (mode 0700) when the manifest recorded it.
+  (never over an existing one), checks that the log is back (same folder, and
+  the size and revision the log had when it was moved: they are journaled
+  right after the move, so a log that changed after the last check but before
+  its move still restores, and one that changed in the trash does not),
+  re-attaches the session to its workspace, puts it back before its recorded
+  neighbour, archives it again if it was archived, and pins it again only if it
+  was pinned and is not archived. A tree whose workspace no longer exists stays
+  in the trash (`workspace-missing`); a missing project folder is recreated
+  (mode 0700) when the manifest recorded it.
+- **Archive and pin order after a restore.** The workspace order comes back
+  exactly. Of the registry's archive and pin lists, a restore gives back the
+  batch's own ids in their recorded relative order (it archives them in that
+  order and pins them in reverse order), but it cannot put them back at their
+  old places among ids outside the batch: `archiveSession` appends and
+  `pinSession` prepends, and the registry has no call that puts an id at a
+  place. So restored ids come back as the most recently archived (end of the
+  archive list) and the most recently pinned (start of the pin list). Moving
+  other sessions to make room would take registry calls on sessions outside the
+  batch, which the plugin never makes. When the batch's ids were the newest
+  archived and the newest pinned, the exact order comes back.
 - **Findings come from the rc.4 sources, run on macOS (APFS)**; the installed
   rc.3 was read, not run. The page itself was not driven in a browser by the
   spike. How long an already open sidebar keeps a row after a prune is untested.
@@ -318,8 +344,11 @@ session; that tree's registry steps wait), `registry-step-failed`,
   Host takes the sessions tree from the newest trash batch, so the page is not
   read-only and **Restore batch** works.
 - **An interrupted action.** After a crash, a batch shows *needs recovery* (or
-  *conflict*). Recovery runs at the start of the next prune, restore or
-  permanent delete, under the trash lock. It compares the manifest with the disk,
+  *conflict*). Recovery runs once when the Host starts the plugin (if the trash
+  holds a batch; a failure is only logged), at the start of every prune,
+  restore or permanent delete, and when **Refresh** reads the Trash tab while a
+  batch still owes registry steps (a plain read only reports them). It runs
+  under the trash lock; every page call waits for the one at start. It compares the manifest with the disk,
   appends the missing journal lines, finishes registry steps a crash left undone
   and renames a tree that is split between store and trash back whole into the
   store. **Recovery never deletes and never moves toward the trash.** Folders

@@ -103,6 +103,8 @@ window.__ModuleLoader__.load({
       'card.archived': 'Archived',
       'card.archived.roots': 'Archived roots',
       'card.archived.children': 'Children included',
+      'card.archived.missing': 'The registry also lists {n} archived ids whose log is gone. They are harmless and are not counted here.',
+      'card.archived.missingOne': 'The registry also lists 1 archived id whose log is gone. It is harmless and is not counted here.',
       'card.reclaim': 'Reclaimable',
       'card.reclaim.ready': 'Ready units',
       'card.reclaim.blocked': 'Blocked units',
@@ -413,6 +415,8 @@ window.__ModuleLoader__.load({
       'card.archived': '已归档',
       'card.archived.roots': '归档根会话',
       'card.archived.children': '随附子会话',
+      'card.archived.missing': '注册表还列出 {n} 个已归档 ID，其会话日志已不存在。它们无害，不计入此处。',
+      'card.archived.missingOne': '注册表还列出 1 个已归档 ID，其会话日志已不存在。它无害，不计入此处。',
       'card.reclaim': '可回收',
       'card.reclaim.ready': '可清理单元',
       'card.reclaim.blocked': '受阻单元',
@@ -947,7 +951,7 @@ window.__ModuleLoader__.load({
 
     const TOTAL_KEYS = [
       'sessions', 'live', 'archived', 'children', 'unreadable', 'bytes', 'archivedBytes', 'archivedRoots', 'archivedChildren',
-      'reclaimableBytes', 'reclaimableUnits', 'blockedUnits',
+      'reclaimableBytes', 'reclaimableUnits', 'blockedUnits', 'archivedMissing',
     ]
     const count = (value) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0)
     /** A count the Host may not know (overview.largest[].events): null stays null. */
@@ -1302,7 +1306,12 @@ window.__ModuleLoader__.load({
               [tr('card.archived.roots'), formatNumber(totals.archivedRoots)],
               [tr('card.archived.children'), formatNumber(totals.archivedChildren)],
             ],
-          })),
+          }),
+          // Archived ids of the registry whose log is gone: why the registry's count can be higher than the page's.
+          totals.archivedMissing > 0
+            ? h('p', { className: 'sm-hint', 'data-fact': 'archived-missing' },
+              tr(totals.archivedMissing === 1 ? 'card.archived.missingOne' : 'card.archived.missing', { n: formatNumber(totals.archivedMissing) }))
+            : null),
         h(Card, { id: 'reclaimable', title: tr('card.reclaim'), value: formatBytes(tr, totals.reclaimableBytes) },
           h(Facts, {
             rows: [

@@ -1783,3 +1783,132 @@ test('list() and inspect(): DTO-valid rows from a fold of each journal; validate
   assert.equal((await trashFor(fresh).validate()).exists, false)
   assert.ok(!existsSync(fresh.trashDir), 'validate() creates nothing')
 })
+
+// ---------------------------------------------------------------------------
+// 11. Closed batches and the log facts of a move (T16)
+// ---------------------------------------------------------------------------
+
+const lastRecord = (world, batchId) => journalLines(path.join(world.trashDir, batchId, 'journal.jsonl')).at(-1)
+
+test('close(): only a batch the journal places wholly in the store, with no open operation, is closed; the closed line is the last one and is written once', () => {
+  const world = makeWorld('close')
+  const batchId = applyAll(world)
+  const trash = trashFor(world)
+  assert.equal(trash.close(batchId), false, 'a batch that holds its sessions is not closed')
+  assert.notEqual(lastRecord(world, batchId).op, 'closed')
+  // A partial restore: one unit stays in the trash.
+  trash.restore(batchId, { precheck: (entry) => (entry.id === 'sb1' ? 'live' : null) })
+  assert.equal(trash.close(batchId), false, 'a batch with a unit left in the trash is not closed')
+  assert.notEqual(lastRecord(world, batchId).op, 'closed')
+  assert.equal(trash.restore(batchId).state, 'complete')
+  const lines = journalOps(world, batchId).length
+  assert.equal(trash.close(batchId), true)
+  assert.equal(journalOps(world, batchId).length, lines + 1, 'one line')
+  assert.deepEqual([lastRecord(world, batchId).op, lastRecord(world, batchId).batchId], ['closed', batchId])
+  assert.equal(trash.inspect(batchId).closed, true)
+  assert.equal(trash.close(batchId), true, 'closing again is a no-op that says closed')
+  assert.equal(journalOps(world, batchId).length, lines + 1, 'nothing more is written')
+  assert.deepEqual(treeOf(world.store), world.storeTree, 'closing moves nothing')
+  assert.ok(existsSync(path.join(world.trashDir, batchId, 'manifest.json')), 'a closed batch stays on disk')
+  // A batch being written by this instance is never closed.
+  const lock = trash.acquire()
+  try {
+    const open = trash.createBatch({ ...world.intent, units: world.intent.units.slice(1, 2), sessions: world.intent.sessions.filter((s) => s.id === 'sb1') })
+    assert.equal(trash.close(open.batchId), false)
+    open.finish()
+  } finally {
+    lock.release()
+  }
+})
+
+test('closed batch cost: recover() and list() skip each closed batch with one journal-tail read (4 fs calls), whatever its size and however many there are', () => {
+  const world = makeWorld('closed-cost')
+  const trash = trashFor(world)
+  const closed = []
+  const measure = () => {
+    const events = []
+    const report = trashFor(world, { events }).recover()
+    const listEvents = []
+    const list = trashFor(world, { events: listEvents }).list()
+    return { calls: events.length, listCalls: listEvents.length, report, list }
+  }
+  trash.acquire().release() // the trash folder exists: the base cost is the same in every measure
+  const empty = measure()
+  const costs = []
+  for (let k = 0; k < 4; k += 1) {
+    const batchId = applyAll(world)
+    // One batch with a long journal: far more than any tail window.
+    if (k === 1) for (let i = 0; i < 400; i += 1) trash.recordStep(batchId, { step: 'attach', id: 'sa1', outcome: 'failed', error: 'EINJECTED' })
+    assert.equal(trash.restore(batchId).state, 'complete')
+    assert.equal(trash.close(batchId), true)
+    closed.push(batchId)
+    const frozen = treeOf(path.join(world.trashDir, batchId))
+    const measured = measure()
+    assert.deepEqual(treeOf(path.join(world.trashDir, batchId)), frozen, 'recover() and list() do not write to a closed batch')
+    assert.equal(measured.report.closed, closed.length)
+    assert.deepEqual(measured.report.batches, [], 'a closed batch is not recovered again')
+    assert.deepEqual(measured.list.batches, [], 'a closed batch is not listed')
+    costs.push([measured.calls - empty.calls, measured.listCalls - empty.listCalls])
+  }
+  // The same fixed cost per closed batch (open, fstat, read, close of the journal): the 400-line journal costs what a short one costs.
+  assert.deepEqual(costs, [[4, 4], [8, 8], [12, 12], [16, 16]], `fs calls over the empty trash, recover() and list(): ${JSON.stringify(costs)}`)
+  assertEachOnce(world, 'closed-cost')
+})
+
+test('a closed line that is not the last line, or names another batch, does not close the batch: recover() reads it in full', () => {
+  const world = makeWorld('closed-not-last')
+  const batchId = applyAll(world)
+  const trash = trashFor(world)
+  assert.equal(trash.restore(batchId).state, 'complete')
+  const journal = path.join(world.trashDir, batchId, 'journal.jsonl')
+  appendFileSync(journal, `${JSON.stringify({ v: 1, ts: 1, op: 'closed', batchId: 'b-20200101T000000Z-00000000' })}\n`)
+  let report = trashFor(world).recover()
+  assert.deepEqual([report.closed, report.batches.map((b) => b.batchId)], [0, [batchId]], 'a closed line of another batch id is ignored')
+  assert.equal(trash.close(batchId), true)
+  appendFileSync(journal, `${JSON.stringify({ v: 1, ts: 2, op: 'step', step: 'attach', id: 'sa1', outcome: 'ok' })}\n`)
+  report = trashFor(world).recover()
+  assert.deepEqual([report.closed, report.batches.map((b) => b.batchId)], [0, [batchId]], 'a line after the closed line reopens it')
+  appendFileSync(journal, '{"v":1,"op":"clo')
+  assert.equal(trashFor(world).recover().closed, 0, 'a torn last line is not a closed line')
+})
+
+test('log facts: recordLogs() journals what was moved; the fold keeps the last facts per session; bad facts are refused', () => {
+  const world = makeWorld('log-facts')
+  const trash = trashFor(world)
+  const lock = trash.acquire()
+  let batchId
+  try {
+    const batch = trash.createBatch(world.intent)
+    batchId = batch.batchId
+    const unit = batch.units[0]
+    assert.equal(batch.moveUnit(unit, () => null).outcome, 'moved')
+    batch.recordLogs([{ id: 'sa1', name: 'session.v4.jsonl.zstd', revision: '1:2:900:4:5', sizeBytes: 900 }, { id: 'sa2', name: 'session.v4.jsonl.zstd', revision: '1:3:900:4:5', sizeBytes: 900 }])
+    for (const bad of [
+      [{ id: 'sa1', name: 'session.v4.jsonl.zstd', revision: 'x', sizeBytes: 1 }],
+      [{ id: 'sa1', name: '../escape', revision: '1:2:3:4:5', sizeBytes: 1 }],
+      [{ id: 'sa1', name: 'session.v4.jsonl.zstd', revision: '1:2:3:4:5', sizeBytes: -1 }],
+      [{ id: '../x', name: 'session.v4.jsonl.zstd', revision: '1:2:3:4:5', sizeBytes: 1 }],
+      [],
+    ]) assert.throws(() => batch.recordLogs(bad), TypeError)
+    for (const other of batch.units.slice(1)) batch.moveUnit(other, () => null)
+    batch.finish()
+  } finally {
+    lock.release()
+  }
+  trash.recordLogs(batchId, [{ id: 'sa1', name: 'session.v4.jsonl.zstd', revision: '1:2:901:6:7', sizeBytes: 901 }])
+  const detail = trash.inspect(batchId)
+  assert.deepEqual(detail.logs, [
+    { id: 'sa1', name: 'session.v4.jsonl.zstd', revision: '1:2:901:6:7', sizeBytes: 901 },
+    { id: 'sa2', name: 'session.v4.jsonl.zstd', revision: '1:3:900:4:5', sizeBytes: 900 },
+  ])
+  assert.equal(detail.closed, false)
+  // A logs line names only sessions of the batch.
+  appendFileSync(path.join(world.trashDir, batchId, 'journal.jsonl'), `${JSON.stringify({ v: 1, ts: 1, op: 'logs', sessions: [{ id: 'sk1', name: 'x.jsonl', revision: '1:1:1:1:1', sizeBytes: 1 }] })}\n`)
+  assert.equal(trash.inspect(batchId).logs.some((entry) => entry.id === 'sk1'), false)
+  // list() stays a TrashList; list({ detail: true }) adds what the Host needs to find the registry steps a batch still owes.
+  assertTrashList(trash.list())
+  const [row] = trash.list({ detail: true }).batches
+  assert.deepEqual(Object.keys(row.detail).sort(), ['openOp', 'sessions', 'steps', 'units'])
+  assert.deepEqual(row.detail.units.map((unit) => [unit.rootId, unit.location]), [['sa1', 'trash'], ['sb1', 'trash'], ['sc1', 'trash']])
+  assert.deepEqual(row.detail.sessions[0], { id: 'sa1', workspaceId: 'ws-alpha', archived: true, pinned: false, location: 'trash' })
+})

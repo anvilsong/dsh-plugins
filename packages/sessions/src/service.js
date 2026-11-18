@@ -17,26 +17,37 @@
 //   recover() -> audit apply-start (abort if it fails) -> re-read every fact
 //   -> manifest (trash.createBatch) and the registry hints -> per unit:
 //   synchronous re-check of the live ids and the session lock (held across
-//   the rename), then the renames -> post-move rule (the backend must no
-//   longer list the id, else `stale-backend-entry` and that unit's registry
-//   steps wait for a later recover()) -> registry steps of policy at-prune:
-//   unpin -> detach (recorded workspace) -> unarchive, each idempotent and
-//   journaled in the batch -> audit apply-end.
+//   the rename), then the renames -> the log facts of each moved log, taken
+//   from the trash copy right after the move and journaled (`logs`) -> post-move
+//   rule (the backend must no longer list the id, else `stale-backend-entry`
+//   and that unit's registry steps wait for a later recover()) -> registry
+//   steps of policy at-prune: unpin -> detach (recorded workspace) ->
+//   unarchive, each idempotent and journaled in the batch -> audit apply-end.
 // Restore: recover() -> move back (exact recorded folder; `workspace-missing`
 //   and `conflict` keep the unit in trash) -> verify the log is back (same
-//   folder, size and revision file part) -> attach, check membership ->
-//   insertSessionBefore the recorded anchor -> archive -> pin (only members
-//   that were pinned and not archived), each journaled.
+//   folder, and the size and revision file part it had when it was moved) ->
+//   attach, check membership -> insertSessionBefore the recorded anchor ->
+//   archive (in recorded archive order) -> pin (only members that were pinned
+//   and not archived, in reverse recorded pin order), each journaled. A batch
+//   wholly back with no registry step left is closed (trash.close): later
+//   recoveries skip it after one read of its journal's tail.
 // recover(): the trash engine's recover(), then the registry steps a crash
 //   left undone: units wholly in trash get their prune steps, units moved back
 //   get their restore steps. It never deletes and never moves toward the trash.
+//   It runs before every mutation, once when the service starts (best effort,
+//   logged; every call waits for it), and on a fresh Trash tab read when a
+//   batch still owes registry steps.
 //
 // The trash manifest (src/trash.js) records each member's workspace, parent,
-// archived and pinned marks, but not its position in the workspace order nor
-// its persistence revision and size. Both are written once, before the first
-// move, to `registry.json` in the batch folder (HINTS_FILE); purge removes it
-// with the batch. Without it a restore still attaches, archives and pins, but
-// keeps the attach position and checks only that the log is back.
+// archived and pinned marks, but not its position in the workspace order, its
+// place in the registry's archive and pin lists, nor its persistence revision
+// and size. They are written once, before the first move, to `registry.json`
+// in the batch folder (HINTS_FILE); purge removes it with the batch. Without
+// it a restore still attaches, archives and pins, but keeps the attach
+// position and checks only that the log is back. The revision a restore
+// compares with is the one journaled right after the move (`logs` line); the
+// hint's revision (the last re-read before the move) is used only for a batch
+// of a build that did not journal it.
 //
 // Host services are reached only through src/host-adapter.js.
 
@@ -50,7 +61,7 @@ import { assertRequest, BATCH_ID_PATTERN, ERROR, ERROR_CODES, METHOD_NAMES, NAME
 import { diffPlan, planDigest, selectScope } from './lineage.js'
 import { assertDisjoint, PathError } from './paths.js'
 import { archivedPage, buildIndex, overview as overviewOf } from './store-index.js'
-import { createTrash, isBatchId, MANIFEST_FILE } from './trash.js'
+import { createTrash, isBatchId, MANIFEST_FILE, SESSIONS_FOLDER } from './trash.js'
 
 /** Plans kept in memory; an older one reads as expired. */
 export const PLANS_KEPT = 5
@@ -61,6 +72,10 @@ const MAX_HINTS_BYTES = 64 * 1024 * 1024
 const MAX_MANIFEST_BYTES = 64 * 1024 * 1024
 const MINUTE_MS = 60_000
 const PRUNE_STEPS = new Set(['unpin', 'detach', 'unarchive'])
+const PRUNE_ORDER = Object.freeze(['unpin', 'detach', 'unarchive'])
+const RESTORE_ORDER = Object.freeze(['attach', 'insert', 'archive', 'pin'])
+/** A log file name: one path segment, no `..` (the trash engine checks it again). */
+const LOG_NAME = /^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]{1,255}$/
 const STATE_RANK = Object.freeze({ complete: 0, partial: 1, conflict: 2, 'needs-recovery': 3 })
 const STEP_ERROR = /^[A-Za-z0-9_.:-]{1,64}$/
 const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0
@@ -198,11 +213,20 @@ function writeHints(fs, dir, record) {
   }
 }
 
+const isCount = (value) => Number.isSafeInteger(value) && value >= 0
+const optional = (value, check) => value === undefined || value === null || check(value)
+/**
+ * One session's hints. `logName`, `archivedAt` and `pinnedAt` (the log file
+ * name, and the place of the id in the registry's archive and pin lists at
+ * prune time) are absent in the hints of an older build.
+ */
 const isHint = (value) => isPlain(value) && isId(value.id) && (value.workspaceId === null || isId(value.workspaceId))
-  && (value.position === null || (Number.isSafeInteger(value.position) && value.position >= 0))
+  && (value.position === null || isCount(value.position))
   && Array.isArray(value.anchors) && value.anchors.every(isId)
   && (value.revision === null || isId(value.revision) || Number.isFinite(value.revision))
-  && (value.sizeBytes === null || (Number.isSafeInteger(value.sizeBytes) && value.sizeBytes >= 0))
+  && (value.sizeBytes === null || isCount(value.sizeBytes))
+  && optional(value.logName, (name) => typeof name === 'string' && LOG_NAME.test(name))
+  && optional(value.archivedAt, isCount) && optional(value.pinnedAt, isCount)
 
 /** The hints of a batch by session id, or null when the file is missing or not valid. */
 function readHints(fs, trashDir, batchId) {
@@ -211,6 +235,29 @@ function readHints(fs, trashDir, batchId) {
   if (!isPlain(value) || value.v !== 1 || value.kind !== HINTS_KIND || value.batchId !== batchId || !Array.isArray(value.sessions)) return null
   if (!value.sessions.every(isHint)) return null
   return new Map(value.sessions.map((hint) => [hint.id, hint]))
+}
+
+/**
+ * The facts of a log as it lies now: lstat (a link is never followed), the
+ * revision file part the persistence backend derives from the same stat
+ * (dev:ino:size:mtimeNs:ctimeNs, docs/store-safety.md S5) and the size. null
+ * when it is not a regular file. Metadata only: the log is never opened.
+ */
+function logFacts(fs, file) {
+  try {
+    const stat = fs.lstatSync(file, { bigint: true })
+    if (!stat.isFile()) return null
+    return { revision: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`, sizeBytes: Number(stat.size) }
+  } catch {
+    return null
+  }
+}
+
+/** Id -> index of an id list (the registry's archive or pin order). */
+const rankOf = (ids) => {
+  const out = new Map()
+  for (const [index, id] of [...(ids ?? [])].entries()) if (isId(id) && !out.has(id)) out.set(id, index)
+  return out
 }
 
 const CLEAN_ABSOLUTE = (value) => typeof value === 'string' && value.startsWith('/') && value.length <= 4096
@@ -256,6 +303,7 @@ function recordedRoot(fs, trashDir) {
  * @param {(size: number) => Buffer} [options.random] random bytes (plan ids)
  * @param {object} [options.trashOptions] extra createTrash options (identity, isAlive, uid, random)
  * @param {string} [options.pluginVersion] recorded in the audit log
+ * @param {boolean} [options.startupRecover] false: no recovery at start (default: it runs once, see ensureStartup)
  */
 function createCore(options) {
   const { adapter, settings } = options
@@ -482,8 +530,39 @@ function createCore(options) {
   }
 
   const detachDone = (history) => history.some((s) => s.step === 'detach' && s.outcome !== 'failed')
-  const pruneNeeded = (entry, history) => adapter.isPinned(entry.id) || (entry.workspaceId !== null && !detachDone(history))
-    || adapter.isArchived(entry.id)
+  /** The at-prune steps a member in the trash still needs, by the journal and the registry `registry` (isPinned, isArchived). */
+  const pruneNeeds = (entry, history, registry) => ({
+    unpin: registry.isPinned(entry.id),
+    detach: entry.workspaceId !== null && !detachDone(history),
+    unarchive: registry.isArchived(entry.id),
+  })
+  const pruneNeeded = (entry, history) => Object.values(pruneNeeds(entry, history, adapter)).some(Boolean)
+  /** Whether an id's prune steps did something: only then does its restore owe the registry anything. */
+  const prunedOk = (history) => history.some((s) => PRUNE_STEPS.has(s.step) && s.outcome === 'ok')
+  /**
+   * The restore steps a member back in the store still needs: a step is
+   * needed until the batch journal holds it (ok or skipped), never because of
+   * the registry's state now (completeRestore). `gone`: its workspace was
+   * missing at the attach, so there is no order to restore.
+   */
+  const restoreNeeds = (entry, history) => {
+    const done = (step) => history.some((s) => s.step === step && s.outcome !== 'failed')
+    const gone = history.some((s) => s.step === 'attach' && s.error === 'workspace-missing')
+    return {
+      attach: entry.workspaceId !== null && !done('attach'),
+      insert: entry.workspaceId !== null && !gone && !done('insert'),
+      archive: entry.archived && !done('archive'),
+      pin: entry.pinned && !entry.archived && !done('pin'),
+      gone,
+    }
+  }
+  /** The registry's archive and pin sets now, read once (for many lookups). */
+  const registryView = () => {
+    const view = adapter.facts()
+    const archived = new Set(view.archivedIds())
+    const pinned = new Set(view.pinnedIds())
+    return { isArchived: (id) => archived.has(id), isPinned: (id) => pinned.has(id) }
+  }
 
   /** The at-prune steps one moved member still needs: unpin, detach (recorded workspace), unarchive. */
   async function completePrune(entry, history, record, warnings) {
@@ -519,8 +598,14 @@ function createCore(options) {
     return out
   }
 
-  /** 'ok', 'changed' (back, but not the recorded log) or 'missing' (the backend does not list it at the recorded folder). */
-  async function verify(entry, hint) {
+  /**
+   * 'ok', 'changed' (back, but not the log that was moved) or 'missing' (the
+   * backend does not list it at the recorded folder). The log is compared
+   * with its facts at the move (`moved`, the batch's `logs` line), so a log
+   * that changed after the last re-read but before its move still restores;
+   * a batch of an older build has only the hint of that re-read.
+   */
+  async function verify(entry, hint, moved) {
     let found
     try {
       found = await adapter.stat(entry.id)
@@ -528,9 +613,10 @@ function createCore(options) {
       return 'missing'
     }
     if (found === undefined || found.path === null || path.dirname(found.path) !== entry.source) return 'missing'
-    if (hint === null || hint.revision === null) return 'ok'
-    if (filePart(found.revision) !== filePart(hint.revision)) return 'changed'
-    if (hint.sizeBytes !== null && found.sizeBytes !== hint.sizeBytes) return 'changed'
+    const expected = moved ?? (hint !== null && hint.revision !== null ? hint : null)
+    if (expected === null) return 'ok'
+    if (filePart(found.revision) !== filePart(expected.revision)) return 'changed'
+    if (expected.sizeBytes !== null && found.sizeBytes !== expected.sizeBytes) return 'changed'
     return 'ok'
   }
 
@@ -542,16 +628,22 @@ function createCore(options) {
   }
 
   /**
-   * The restore steps the given members still need, members with a later
-   * recorded position first, so that each recorded anchor is back before the
-   * member that goes in front of it. A step is needed until the batch journal
-   * holds it (ok or skipped), never because of the registry's state now: once
-   * a restore is done, the user may unarchive, unpin or move the session, and
-   * a later recover() must not undo that. `strict`: a log that is back but not
-   * the recorded one is not attached (the restore itself); recovery accepts it,
-   * since the session may have been used since.
+   * The restore steps the given members still need (restoreNeeds). Every
+   * member's log is verified first. Then attach and reorder, members with a
+   * later recorded position first, so that each recorded anchor is back
+   * before the member that goes in front of it. Then archive in the recorded
+   * archive order (archiveSession appends) and pin in reverse recorded pin
+   * order (pinSession prepends), so the batch's own ids come back in their
+   * recorded relative order. The registry has no call that puts an id at a
+   * place in those lists, so they come back as the most recently archived and
+   * pinned (README, known limits). Once a restore step is journaled, the user
+   * may unarchive, unpin or move the session, and a later recover() must not
+   * undo that; a pin of a session that is archived again is journaled
+   * skipped. `strict`: a log that is back but not the one that was moved is
+   * not attached (the restore itself); recovery accepts it, since the session
+   * may have been used since. `logs`: the log facts at the move, by id.
    */
-  async function completeRestore(entries, histories, hints, record, warnings, { strict }) {
+  async function completeRestore(entries, histories, hints, logs, record, warnings, { strict }) {
     const items = entries.map((entry) => ({ entry, hint: hints?.get(entry.id) ?? null, history: restorePhase(histories.get(entry.id) ?? []) }))
     items.sort((a, b) => {
       const aw = a.entry.workspaceId
@@ -562,41 +654,116 @@ function createCore(options) {
       const bp = b.hint?.position ?? -1
       return bp - ap || byString(a.entry.id, b.entry.id)
     })
-    let count = 0
-    for (const { entry, hint, history } of items) {
-      const { id, workspaceId } = entry
-      const done = (step) => history.some((s) => s.step === step && s.outcome !== 'failed')
-      const gone = history.some((s) => s.step === 'attach' && s.error === 'workspace-missing')
-      const needAttach = workspaceId !== null && !done('attach')
-      const needInsert = workspaceId !== null && !gone && !done('insert')
-      const needArchive = entry.archived && !done('archive')
-      const needPin = entry.pinned && !entry.archived && !done('pin')
-      if (!needAttach && !needInsert && !needArchive && !needPin) continue
-      const verdict = await verify(entry, hint)
+    const ready = []
+    for (const item of items) {
+      const needs = restoreNeeds(item.entry, item.history)
+      if (!RESTORE_ORDER.some((step) => needs[step])) continue
+      const verdict = await verify(item.entry, item.hint, logs?.get(item.entry.id) ?? null)
       if (verdict === 'missing' || (strict && verdict === 'changed')) {
-        warnings.add('recovery-needed', id)
+        warnings.add('recovery-needed', item.entry.id)
         continue
       }
-      let attached = !needAttach && !gone
-      if (needAttach) {
+      ready.push({ ...item, needs })
+    }
+    let count = 0
+    for (const { entry, hint, needs } of ready) {
+      const { id, workspaceId } = entry
+      let attached = !needs.attach && !needs.gone
+      if (needs.attach) {
         attached = (await runStep(record, 'attach', id, () => adapter.attach(id, workspaceId), warnings)) === 'ok'
         count += 1
       }
-      if (attached && needInsert) {
+      if (attached && needs.insert) {
         await runStep(record, 'insert', id, () => (hint === null ? 'skipped' : adapter.insertBefore(id, workspaceId, hint.anchors)), warnings)
         count += 1
       }
-      if (needArchive) {
-        await runStep(record, 'archive', id, () => adapter.archive(id), warnings)
-        count += 1
-      }
-      if (needPin && !adapter.isArchived(id)) {
-        await runStep(record, 'pin', id, () => adapter.pin(id), warnings)
-        count += 1
-      }
+    }
+    const byRank = (key, direction) => (a, b) => {
+      const ra = a.hint?.[key] ?? null
+      const rb = b.hint?.[key] ?? null
+      if ((ra === null) !== (rb === null)) return ra === null ? 1 : -1
+      return (ra === null ? 0 : (ra - rb) * direction) || byString(a.entry.id, b.entry.id)
+    }
+    for (const { entry } of ready.filter((item) => item.needs.archive).sort(byRank('archivedAt', 1))) {
+      await runStep(record, 'archive', entry.id, () => adapter.archive(entry.id), warnings)
+      count += 1
+    }
+    for (const { entry } of ready.filter((item) => item.needs.pin).sort(byRank('pinnedAt', -1))) {
+      await runStep(record, 'pin', entry.id, () => (adapter.isArchived(entry.id) ? 'skipped' : adapter.pin(entry.id)), warnings)
+      count += 1
     }
     return count
   }
+
+  /**
+   * The registry steps a batch still owes (`detail`: inspect() output, or a
+   * list row's detail; `registry`: isPinned, isArchived): prune steps of its
+   * units wholly in the trash, restore steps of its members back in the store
+   * whose prune steps did something. Exactly what recover() would run.
+   */
+  function owedSteps(detail, registry) {
+    const entries = new Map(detail.sessions.map((s) => [s.id, s]))
+    const histories = historiesOf(detail.steps)
+    const owed = []
+    for (const unit of detail.units) {
+      for (const id of unit.memberIds) {
+        const entry = entries.get(id)
+        const history = histories.get(id) ?? []
+        if (entry === undefined) continue
+        if (unit.location === 'trash') {
+          const needs = pruneNeeds(entry, history, registry)
+          for (const step of PRUNE_ORDER) if (needs[step]) owed.push({ id, step })
+        } else if (unit.location === 'store' && prunedOk(history)) {
+          const needs = restoreNeeds(entry, restorePhase(history))
+          for (const step of RESTORE_ORDER) if (needs[step]) owed.push({ id, step })
+        }
+      }
+    }
+    return owed
+  }
+
+  /** A batch wholly back in the store, unsafe nowhere, with no operation open and no registry step owed: it can be closed. */
+  const closable = (info, owed) => info.state === 'complete' && info.openOp === null && owed.length === 0
+    && info.sessions.every((s) => s.location === 'store' && !s.unsafe)
+
+  /** Close the batch when nothing is left to do; never fails the caller. */
+  function closeIfDone(trash, batchId) {
+    try {
+      const info = trash.inspect(batchId)
+      const owed = owedSteps(info, registryView())
+      if (closable(info, owed)) trash.close(batchId)
+      return { info, owed }
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Log facts a crash left unrecorded: a member whose unit is wholly in the
+   * trash, with a log name in the hints (this build) and no `logs` line yet,
+   * died between its move and that line. Its trash copy is what was moved.
+   */
+  function fillLogs(trash, info, hints, logs) {
+    const missing = []
+    const entries = new Map(info.sessions.map((s) => [s.id, s]))
+    for (const unit of info.units) {
+      if (unit.location !== 'trash') continue
+      for (const id of unit.memberIds) {
+        const entry = entries.get(id)
+        const name = hints?.get(id)?.logName ?? null
+        if (entry === undefined || entry.unsafe || logs.has(id) || name === null) continue
+        const facts = logFacts(fs, path.join(trash.trashDir, info.batchId, SESSIONS_FOLDER, entry.workspaceDir, id, name))
+        if (facts !== null) missing.push({ id, name, ...facts })
+      }
+    }
+    if (missing.length === 0) return
+    try {
+      trash.recordLogs(info.batchId, missing)
+      for (const item of missing) logs.set(item.id, item)
+    } catch { /* the restore falls back to the hints */ }
+  }
+
+  const logsOf = (info) => new Map((info.logs ?? []).map((item) => [item.id, item]))
 
   const historiesOf = (steps) => {
     const out = new Map()
@@ -614,6 +781,8 @@ function createCore(options) {
     const record = (step) => trash.recordStep(info.batchId, step)
     const entries = new Map(info.sessions.map((s) => [s.id, s]))
     const histories = historiesOf(info.steps)
+    const logs = logsOf(info)
+    fillLogs(trash, info, hints, logs)
     let count = 0
     for (const unit of info.units) {
       if (unit.location !== 'trash') continue
@@ -631,10 +800,10 @@ function createCore(options) {
     for (const unit of info.units) {
       if (unit.location !== 'store') continue
       for (const id of unit.memberIds) {
-        if ((histories.get(id) ?? []).some((s) => PRUNE_STEPS.has(s.step) && s.outcome === 'ok')) back.push(entries.get(id))
+        if (prunedOk(histories.get(id) ?? [])) back.push(entries.get(id))
       }
     }
-    count += await completeRestore(back, histories, hints, record, warnings, { strict: false })
+    count += await completeRestore(back, histories, hints, logs, record, warnings, { strict: false })
     return count
   }
 
@@ -654,8 +823,12 @@ function createCore(options) {
       }
       const done = await completeBatch(trash, info, warnings)
       steps += done
+      // The state counts the registry steps still owed; a batch with nothing left is closed.
+      const after = closeIfDone(trash, item.batchId)
+      const owes = after !== null && after.owed.length > 0
+      const state = after === null ? info.state : owes && after.info.state === 'complete' ? 'needs-recovery' : after.info.state
       batches.push({
-        batchId: item.batchId, state: info.state, appended: item.appended, moved: item.moved, conflicts: item.conflicts, lost: item.lost, steps: done,
+        batchId: item.batchId, state, appended: item.appended, moved: item.moved, conflicts: item.conflicts, lost: item.lost, steps: done,
       })
     }
     const appended = report.batches.reduce((sum, item) => sum + item.appended, 0)
@@ -663,7 +836,7 @@ function createCore(options) {
     if (appended > 0 || moved > 0 || steps > 0) {
       await note({ op: 'recover', counts: { batches: batches.length, appended, moved, steps } }, warnings)
     }
-    return { batches, tombstones: report.tombstones, orphans: report.orphans, problems, warnings: warnings.list }
+    return { batches, closed: report.closed ?? 0, tombstones: report.tombstones, orphans: report.orphans, problems, warnings: warnings.list }
   }
 
   // --- plan ----------------------------------------------------------------------
@@ -812,7 +985,11 @@ function createCore(options) {
     const index = await readStore()
     const fresh = await requalify(planned.units, index)
     const order = adapter.workspaceOrder()
+    const registry = adapter.facts()
+    const archivedRank = rankOf(registry.archivedIds())
+    const pinnedRank = rankOf(registry.pinnedIds())
     const entries = new Map()
+    const logNames = new Map()
     const intent = { planId: planned.planId, units: [], sessions: [] }
     for (const { unit, rows } of fresh.units) {
       intent.units.push({ rootId: unit.rootId, memberIds: [...unit.memberIds] })
@@ -823,6 +1000,8 @@ function createCore(options) {
         }
         entries.set(row.id, entry)
         intent.sessions.push(entry)
+        const name = isId(row.logPath) ? path.basename(row.logPath) : null
+        logNames.set(row.id, name !== null && LOG_NAME.test(name) ? name : null)
       }
     }
     const batch = trash.createBatch(intent)
@@ -839,7 +1018,8 @@ function createCore(options) {
               const found = fresh.stats.get(s.id)
               return {
                 id: s.id, workspaceId: s.workspaceId, position: held?.position ?? null, anchors: held?.anchors ?? [],
-                revision: found?.revision ?? null, sizeBytes: found?.sizeBytes ?? null,
+                revision: found?.revision ?? null, sizeBytes: found?.sizeBytes ?? null, logName: logNames.get(s.id) ?? null,
+                archivedAt: archivedRank.get(s.id) ?? null, pinnedAt: pinnedRank.get(s.id) ?? null,
               }
             }),
           })
@@ -862,6 +1042,21 @@ function createCore(options) {
           continue
         }
         const members = unit.memberIds.map((id) => entries.get(id))
+        // What was really moved: the log of each member as its trash copy holds it now (a log may have changed
+        // after the re-read and before the move; a restore compares with this, not with the re-read).
+        try {
+          const moved = []
+          for (const entry of members) {
+            const name = logNames.get(entry.id)
+            const facts = name === null ? null : logFacts(fs, path.join(batch.dir, SESSIONS_FOLDER, entry.workspaceDir, entry.id, name))
+            if (facts !== null) moved.push({ id: entry.id, name, ...facts })
+          }
+          if (moved.length > 0) batch.recordLogs(moved)
+        } catch {
+          warnings.add('recovery-needed', unit.rootId)
+          fatal = true
+          break
+        }
         await note({ op: 'unit-moved', batchId: batch.batchId, planId: planned.planId, sessions: members, bytes: unit.bytes }, warnings)
         const listed = await stillListed(unit.memberIds)
         if (listed.length > 0) {
@@ -982,17 +1177,20 @@ function createCore(options) {
         let fatal = false
         try {
           const hints = readHints(fs, trash.trashDir, batchId)
-          await completeRestore(back, historiesOf(after.steps), hints, (step) => trash.recordStep(batchId, step), warnings, { strict: true })
+          await completeRestore(back, historiesOf(after.steps), hints, logsOf(after), (step) => trash.recordStep(batchId, step), warnings, { strict: true })
         } catch {
           fatal = true
           warnings.add('recovery-needed', null)
         }
+        // A batch wholly back with every registry step done is closed: later recoveries skip it.
+        const done = fatal ? null : closeIfDone(trash, batchId)
+        const owes = done !== null && done.owed.length > 0
         warnings.merge(result.warnings)
         const registryFailed = warnings.list.some((w) => w.code === 'registry-step-failed' || w.code === 'recovery-needed')
         const final = {
           batchId: result.batchId,
           trashDir: result.trashDir,
-          state: worst(result.state, fatal || registryFailed ? 'needs-recovery' : 'complete'),
+          state: worst(result.state, fatal || registryFailed || owes ? 'needs-recovery' : 'complete'),
           moved: { ...result.moved },
           skipped: result.skipped,
           warnings: warnings.list,
@@ -1088,24 +1286,117 @@ function createCore(options) {
     })
   }
 
-  async function trashList(request) {
-    if (config === null) throw remote(ERROR.trashUnusable, settings.problem)
-    const snap = await snapshot({ fresh: request.fresh === true })
-    const { root } = snap
-    if (root === null) return { trashDir: config.trashDir, batches: [] }
+  /**
+   * Recover now, for a fresh Trash tab read that found registry steps owed:
+   * only when no mutation runs here and the trash lock is free; never fails
+   * the read. Returns whether it ran.
+   */
+  async function recoverForRead(root) {
+    if (state.mutating !== null) return false
+    try {
+      await mutate('recover', async () => {
+        const trash = engineFor(root)
+        const lock = acquire(trash)
+        try {
+          return await recoverLocked(trash, warningList())
+        } finally {
+          lock.release()
+        }
+      })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** The engine's list with, per batch, the number of registry steps it still owes (owedSteps). */
+  function listOwed(root) {
     let list
     try {
-      list = engineFor(root).list()
+      list = engineFor(root).list({ detail: true })
     } catch (error) {
       throw toRemote(error)
     }
-    // A batch that holds nothing and needs nothing (fully restored, or nothing
-    // moved) is not listed: the Trash tab shows what the trash holds.
+    const registry = registryView()
+    return { trashDir: list.trashDir, batches: list.batches.map((b) => ({ ...b, owed: owedSteps(b.detail, registry).length })) }
+  }
+
+  async function trashList(request) {
+    if (config === null) throw remote(ERROR.trashUnusable, settings.problem)
+    const fresh = request.fresh === true
+    const snap = await snapshot({ fresh })
+    const { root } = snap
+    if (root === null) return { trashDir: config.trashDir, batches: [] }
+    let list = listOwed(root)
+    // A fresh read (Refresh) finishes the registry steps a batch still owes; a plain read only reports them.
+    if (fresh && snap.capabilities.prune && list.batches.some((b) => b.owed > 0) && (await recoverForRead(root))) list = listOwed(root)
+    // A batch that owes registry steps is needs-recovery and stays listed. One that holds nothing and owes
+    // nothing (fully restored, or nothing moved) is not listed: the Trash tab shows what the trash holds.
     const batches = list.batches
+      .map((b) => ({ ...b, state: b.owed > 0 && b.state === 'complete' ? 'needs-recovery' : b.state }))
       .filter((b) => !(b.state === 'complete' && b.sessions === 0))
       .map(({ batchId, createdAt, units, sessions, bytes, state: batchStateOf }) => ({ batchId, createdAt, units, sessions, bytes, state: batchStateOf }))
     return { trashDir: list.trashDir, batches }
   }
+
+  // --- recovery at start ------------------------------------------------------
+  //
+  // A crash leaves registry steps (or a split unit) for recover(). It runs
+  // once when the service starts, so nothing waits for the next user action:
+  // best effort (a failure is logged, never thrown; the next mutation runs
+  // recover() anyway), one run shared by every caller, and every call waits
+  // for it, so a call made right after the start is never busy because of it.
+  // Without a batch in the trash there is nothing to recover and the store is
+  // not read. While the host services are not there yet, the next call tries
+  // again.
+
+  const startup = { promise: null }
+
+  /** Whether the trash folder holds a batch (an lstat, then one readdir of a real folder; a missing folder holds none). */
+  function trashHoldsBatches() {
+    try {
+      const stat = fs.lstatSync(config.trashDir)
+      if (stat.isSymbolicLink() || !stat.isDirectory()) return false
+      return fs.readdirSync(config.trashDir).some((name) => isBatchId(name))
+    } catch {
+      return false
+    }
+  }
+
+  async function startupRecovery() {
+    try {
+      if (config === null || !adapter.lockProbeSupported) return
+      if (!backendReady()) {
+        startup.promise = null
+        return
+      }
+      if (!trashHoldsBatches()) return
+      const report = await mutate('recover', async () => {
+        const { trash } = await mutationContext({ needStoreRoot: false })
+        const lock = acquire(trash)
+        try {
+          return await recoverLocked(trash, warningList())
+        } finally {
+          lock.release()
+        }
+      })
+      const steps = report.batches.reduce((sum, b) => sum + b.steps, 0)
+      const moved = report.batches.reduce((sum, b) => sum + b.moved, 0)
+      const appended = report.batches.reduce((sum, b) => sum + b.appended, 0)
+      if (steps > 0 || moved > 0 || appended > 0) {
+        adapter.warn(`sessions-manager: recovery at start finished an interrupted operation (${report.batches.length} batches, ${moved} moves back, ${steps} registry steps)`)
+      }
+    } catch (error) {
+      logOnce(`recovery at start did not run (${errorToken(error)}); the next change runs it`)
+    }
+  }
+
+  /** The recovery at start: one shared promise that never rejects. */
+  function ensureStartup() {
+    startup.promise ??= startupRecovery()
+    return startup.promise
+  }
+  if (options.startupRecover !== false) setImmediate(ensureStartup)
 
   const handlers = {
     async overview(request) {
@@ -1140,14 +1431,18 @@ function createCore(options) {
       } catch (error) {
         throw toRemote(error)
       }
+      if (options.startupRecover !== false) await ensureStartup()
       try {
         return await handlers[name](request)
       } catch (error) {
         throw toRemote(error)
       }
     },
+    /** The recovery at start (it runs once; this returns its promise, which never rejects). */
+    startup: () => (options.startupRecover !== false ? ensureStartup() : Promise.resolve()),
     /** Reconcile the trash and the registry now (not a Remote method). */
-    recover() {
+    async recover() {
+      if (options.startupRecover !== false) await ensureStartup()
       return mutate('recover', async () => {
         const { trash } = await mutationContext({ needStoreRoot: false })
         const lock = acquire(trash)

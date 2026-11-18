@@ -620,7 +620,8 @@ const pickCapabilities = (index, capabilities) => {
  * sessions tree in its trash).
  * `storeDir`: the persistence location the Host knows; else the store root;
  * null when there is neither. `largest[].events` is null when the backend gives
- * no event count.
+ * no event count. `totals.archivedMissing`: archived ids of the registry with
+ * no stored log (index.missing); `totals.archived` counts stored sessions only.
  * @param {StoreIndex} index
  * @param {{ capabilities?: { prune: boolean, reason: string | null }, storeDir?: string }} [options]
  */
@@ -652,6 +653,7 @@ export function overview(index, options = {}) {
       reclaimableBytes: summary.reclaimable.bytes,
       reclaimableUnits: summary.reclaimable.units,
       blockedUnits: summary.reclaimable.blockedUnits,
+      archivedMissing: summary.total.missing,
     },
     indexLoad: summary.health.tier === 'warn' ? 'high' : 'normal',
     workspaces: summary.workspaces.map(({ share, ...entry }) => entry),

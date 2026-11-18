@@ -98,6 +98,7 @@ The planner's open questions, answered by the lead on the user's behalf. The use
 | D17 | The first live run happens on a copied profile and store; then the real store. |
 | D18 | Prune is available only where the lock probe works (macOS). On Linux and Windows the dashboard is read-only: `capabilities.prune` is false with reason `sessions-manager/unsupported-platform`. |
 | D19 | A restore puts a session back only into its exact recorded folder. If the destination exists, even as an empty folder, the unit is `conflict` (a rename onto an existing empty folder would silently replace it). Project directories are never moved or removed (a missing one makes the host's session listing fail for the whole store). |
+| D20 | Crash recovery runs once when the Host starts and when a fresh Trash read finds steps still owed. It only finishes interrupted work (moves back toward the store, registry steps); it never prunes, restores on its own or deletes. A batch that is wholly back in the store with no step owed gets a `closed` journal line and is skipped afterwards, so recovery cost does not grow with the number of old batches. Restore puts a batch's ids back in their recorded relative order in the archived and pinned lists, but the registry cannot place an id at a given position, so they come back as the most recently archived and pinned. |
 
 ## Not in v1
 

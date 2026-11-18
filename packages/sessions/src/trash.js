@@ -12,7 +12,11 @@
 //   <batchId>/manifest.json  the full intent, created with 'wx' and fsynced
 //                            before the first rename
 //   <batchId>/journal.jsonl  one O_APPEND|O_NOFOLLOW line per state change; the
-//                            state of a batch is a fold of these lines
+//                            state of a batch is a fold of these lines. A batch
+//                            whose last line is `closed` is wholly back in the
+//                            store with nothing left to do: recover() and
+//                            list() skip it after one read of the journal's
+//                            tail, and it stays on disk until a purge
 //   <batchId>/sessions/<workspaceDir>/<id>/   a session folder in the trash
 //   .staging-<batchId>/      a batch being created; renamed to <batchId> once its
 //                            manifest and first journal line are on disk
@@ -40,7 +44,8 @@
 //   store by other means (a newer batch pruned it again, the host took it
 //   away): it is not lost to this batch, and nothing is journaled for it, so a
 //   restored batch's journal is never written by a later batch's operations.
-// - Only purge() deletes, and only <trashDir>/<batchId>.
+// - Only purge() deletes, and only <trashDir>/<batchId>. A closed batch is
+//   never deleted by closing it: it stays as it is, unlisted.
 // - `session.lock` inside a session folder is the host's kernel-lock target:
 //   it travels with its folder and is never read, written or replaced here.
 // - Every file-system call goes through the injected `fs` object (the tests
@@ -68,6 +73,8 @@ export const MANIFEST_KIND = 'dsh-plugin-sessions/trash-batch'
 export const FORMAT_VERSION = 1
 /** An unreadable `.lock` younger than this may be a lock being written: it counts as held. */
 export const LOCK_GRACE_MS = 60_000
+/** The tail of a journal read to find its `closed` line: far longer than that line. */
+export const CLOSED_TAIL_BYTES = 512
 export const REGISTRY_STEPS = Object.freeze(['unpin', 'detach', 'unarchive', 'attach', 'insert', 'archive', 'pin'])
 export const STEP_OUTCOMES = Object.freeze(['ok', 'failed', 'skipped'])
 /**
@@ -95,6 +102,8 @@ const FSYNC_UNSUPPORTED = new Set(['EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EISDIR', 
 const NEWLINE = Buffer.from('\n')
 const LOCK_TOKEN = /^[0-9a-f]{16,64}$/
 const ERROR_TOKEN = /^[A-Za-z0-9_.:-]{1,64}$/
+/** The file part of a persistence revision: dev:ino:size:mtimeNs:ctimeNs, decimal. */
+const REVISION_FILE_PART = /^[0-9]{1,40}(?::[0-9]{1,40}){4}$/
 // C0 and C1 controls, Bidi_Control characters, line and paragraph separators, and both separators.
 const UNSAFE_SEGMENT = /[\p{Cc}\p{Bidi_Control}\u2028\u2029/\\]/u
 
@@ -182,8 +191,10 @@ const UNIT_OPS = new Set(['unit-moved', 'unit-skipped', 'unit-failed', 'unit-res
 
 /**
  * The state of a batch as a fold of its journal records over its manifest.
- * Every session starts in the store; unknown ops are ignored.
- * @param {{ sessions: { id: string }[], units: { rootId: string }[] }} manifest
+ * Every session starts in the store; unknown ops are ignored. `logs`: the
+ * last log facts journaled for each session (`logs` lines: the log as it was
+ * moved into the trash). `closed`: the last record is this batch's `closed`.
+ * @param {{ batchId?: string, sessions: { id: string }[], units: { rootId: string }[] }} manifest
  * @param {object[]} records
  */
 export function foldJournal(manifest, records) {
@@ -193,6 +204,7 @@ export function foldJournal(manifest, records) {
   const units = new Map()
   const steps = []
   const createdFolders = []
+  const logs = new Map()
   let openOp = null
   const set = (id, where) => { if (ids.has(id)) location.set(id, where) }
   for (const record of records) {
@@ -215,12 +227,45 @@ export function foldJournal(manifest, records) {
             : { step: record.step, id: record.id, outcome: record.outcome })
         }
         break
+      case 'logs':
+        for (const item of Array.isArray(record.sessions) ? record.sessions : []) {
+          if (isLogFacts(item) && ids.has(item.id)) logs.set(item.id, { name: item.name, revision: item.revision, sizeBytes: item.sizeBytes })
+        }
+        break
       default:
         if (UNIT_OPS.has(record.op) && roots.has(record.rootId)) units.set(record.rootId, record.op)
     }
   }
-  return { location, openOp, units, steps, createdFolders }
+  const last = records.at(-1)
+  const closed = last?.op === 'closed' && typeof last.batchId === 'string' && last.batchId === manifest.batchId
+  return { location, openOp, units, steps, createdFolders, logs, closed }
 }
+
+/** One entry of a `logs` line: a session id, the log file name, the revision file part and the size of the log. */
+function isLogFacts(item) {
+  return isObject(item) && isSafeSessionId(item.id) && isSafeSegment(item.name) && typeof item.revision === 'string'
+    && REVISION_FILE_PART.test(item.revision) && isCount(item.sizeBytes)
+}
+
+/** Where a unit is: one place for all its members, `split` (store and trash), or `conflict`. */
+function unitLocationOf(unit, fold) {
+  const where = new Set(unit.memberIds.map((id) => fold.location.get(id)))
+  return where.size === 1 ? [...where][0] : where.has('store') && where.has('trash') ? 'split' : 'conflict'
+}
+
+/**
+ * What the Host needs to find the registry steps a batch still owes (src/service.js): each unit and
+ * session with its journal location, the manifest's registry marks, the journaled registry steps.
+ */
+function detailOf(manifest, fold) {
+  return {
+    openOp: fold.openOp,
+    units: manifest.units.map((unit) => ({ rootId: unit.rootId, memberIds: [...unit.memberIds], location: unitLocationOf(unit, fold) })),
+    sessions: manifest.sessions.map((s) => ({ id: s.id, workspaceId: s.workspaceId, archived: s.archived, pinned: s.pinned, location: fold.location.get(s.id) })),
+    steps: fold.steps,
+  }
+}
+const NO_DETAIL = Object.freeze({ openOp: null, units: Object.freeze([]), sessions: Object.freeze([]), steps: Object.freeze([]) })
 
 /** complete, needs-recovery (an open operation or a unit split between store and trash) or conflict (conflict, lost, unsafe entry). */
 export function batchState(manifest, fold) {
@@ -361,6 +406,13 @@ function stepRecord(step) {
   if (step.error !== undefined && (typeof step.error !== 'string' || !ERROR_TOKEN.test(step.error))) throw new TypeError('a step error is a short code')
   return step.error === undefined ? { op: 'step', step: step.step, id: step.id, outcome: step.outcome }
     : { op: 'step', step: step.step, id: step.id, outcome: step.outcome, error: step.error }
+}
+
+function logsRecord(list) {
+  if (!Array.isArray(list) || list.length === 0 || !list.every(isLogFacts)) {
+    throw new TypeError('log facts need a list of { id, name (the log file), revision (dev:ino:size:mtimeNs:ctimeNs), sizeBytes }')
+  }
+  return { op: 'logs', sessions: list.map((item) => ({ id: item.id, name: item.name, revision: item.revision, sizeBytes: item.sizeBytes })) }
 }
 
 function isLockRecord(value) {
@@ -666,6 +718,38 @@ export function createTrash(options) {
   }
 
   const journalOf = (dir) => (fields) => appendLine(path.join(dir, JOURNAL_FILE), record(fields))
+
+  /**
+   * Whether the last journal line of the batch in `dir` is its `closed` line:
+   * one read of the journal's tail (open, fstat, read, close), whatever the
+   * size of the batch. A torn last line, a line after `closed` or a closed
+   * line of another batch id is not closed. Never throws.
+   */
+  function closedAt(dir, batchId) {
+    let fd
+    try {
+      fd = fs.openSync(path.join(dir, JOURNAL_FILE), READ_FLAGS)
+    } catch {
+      return false
+    }
+    try {
+      const stat = fs.fstatSync(fd)
+      if (!stat.isFile() || stat.size < 2) return false
+      const length = Math.min(stat.size, CLOSED_TAIL_BYTES)
+      const buffer = Buffer.alloc(length)
+      const read = fs.readSync(fd, buffer, 0, length, stat.size - length)
+      if (read !== length || buffer[length - 1] !== NEWLINE[0]) return false
+      const text = buffer.toString('utf8', 0, length - 1)
+      const start = text.lastIndexOf('\n')
+      if (start < 0 && stat.size > length) return false
+      const value = JSON.parse(text.slice(start + 1))
+      return isObject(value) && value.v === FORMAT_VERSION && value.op === 'closed' && value.batchId === batchId
+    } catch {
+      return false
+    } finally {
+      try { fs.closeSync(fd) } catch { /* already closed */ }
+    }
+  }
   const tryJournal = (journal, fields) => {
     try {
       journal(fields)
@@ -960,16 +1044,21 @@ export function createTrash(options) {
    * to the store, the conflicting and lost ids; plus the purge folders
    * (`tombstones`: finish them with purge()), staging folders (`orphans`: a
    * crash before the batch existed; they hold no session) and batches that
-   * failed their checks (`problems`). A second run with no change in between
-   * appends nothing and renames nothing.
+   * failed their checks (`problems`). A closed batch is skipped after one read
+   * of its journal's tail and only counted (`closed`). A second run with no
+   * change in between appends nothing and renames nothing.
    */
   function recover() {
     return withLock(() => {
-      const report = { batches: [], tombstones: [], orphans: [], problems: [] }
+      const report = { batches: [], tombstones: [], orphans: [], problems: [], closed: 0 }
       if (trashRoot({ create: false }) === null) return report
       for (const name of fs.readdirSync(trashDir).sort()) {
         if (isBatchId(name)) {
           if (active.has(name)) continue
+          if (closedAt(path.join(trashDir, name), name)) {
+            report.closed += 1
+            continue
+          }
           let batch
           try {
             batch = loadBatchAt(path.join(trashDir, name), name)
@@ -1272,6 +1361,13 @@ export function createTrash(options) {
       recordStep(step) {
         if (closed) throw new TypeError(`batch ${batchId} is finished`)
         const line = stepRecord(step)
+        assertHeld()
+        journal(line)
+      },
+      /** Journal the log facts of moved sessions (one `logs` line): what a restore must find back. */
+      recordLogs(list) {
+        if (closed) throw new TypeError(`batch ${batchId} is finished`)
+        const line = logsRecord(list)
         assertHeld()
         journal(line)
       },
@@ -1657,15 +1753,20 @@ export function createTrash(options) {
    * the sessions the journal places in the trash or in conflict, see heldOf);
    * state is the journal fold.
    * An interrupted purge is listed as needs-recovery with zero counts. Folders
-   * that fail their checks are not listed (recover() reports them).
+   * that fail their checks are not listed (recover() reports them), nor are
+   * closed batches (one read of the journal's tail each).
+   * @param {{ detail?: boolean }} [options] `detail`: each row also carries
+   *   `detail` (detailOf), which is not part of the TrashList contract
    */
-  function list() {
+  function list(options = {}) {
+    const withDetail = options?.detail === true
     if (trashRoot({ create: false }) === null) return { trashDir, batches: [] }
     const names = fs.readdirSync(trashDir).sort()
     const present = new Set(names)
     const batches = []
     for (const name of names) {
       if (isBatchId(name)) {
+        if (closedAt(path.join(trashDir, name), name)) continue
         let batch
         try {
           batch = loadBatchAt(path.join(trashDir, name), name)
@@ -1676,10 +1777,12 @@ export function createTrash(options) {
         if (batch === null) continue
         try {
           const fold = readFold(batch)
-          batches.push({ batchId: name, createdAt: batch.manifest.createdAt, ...heldOf(batch.manifest, fold), state: batchState(batch.manifest, fold) })
+          const row = { batchId: name, createdAt: batch.manifest.createdAt, ...heldOf(batch.manifest, fold), state: batchState(batch.manifest, fold) }
+          batches.push(withDetail ? { ...row, detail: detailOf(batch.manifest, fold) } : row)
         } catch (error) {
           if (!(error instanceof PathError) && !(error instanceof TrashError)) throw error
-          batches.push({ batchId: name, createdAt: batch.manifest.createdAt, units: 0, sessions: 0, bytes: 0, state: 'conflict' })
+          const row = { batchId: name, createdAt: batch.manifest.createdAt, units: 0, sessions: 0, bytes: 0, state: 'conflict' }
+          batches.push(withDetail ? { ...row, detail: NO_DETAIL } : row)
         }
       } else if (name.startsWith(PURGE_PREFIX)) {
         const batchId = name.slice(PURGE_PREFIX.length)
@@ -1691,7 +1794,8 @@ export function createTrash(options) {
         try {
           createdAt = readManifest(folder, batchId).createdAt
         } catch { /* partly deleted */ }
-        batches.push({ batchId, createdAt, units: 0, sessions: 0, bytes: 0, state: 'needs-recovery' })
+        const row = { batchId, createdAt, units: 0, sessions: 0, bytes: 0, state: 'needs-recovery' }
+        batches.push(withDetail ? { ...row, detail: NO_DETAIL } : row)
       }
     }
     batches.sort((a, b) => b.createdAt - a.createdAt || (a.batchId < b.batchId ? 1 : a.batchId > b.batchId ? -1 : 0))
@@ -1703,10 +1807,7 @@ export function createTrash(options) {
     const batch = loadBatch(batchId)
     const fold = readFold(batch)
     const { manifest } = batch
-    const unitLocation = (unit) => {
-      const where = new Set(unit.memberIds.map((id) => fold.location.get(id)))
-      return where.size === 1 ? [...where][0] : where.has('store') && where.has('trash') ? 'split' : 'conflict'
-    }
+    const unitLocation = (unit) => unitLocationOf(unit, fold)
     return {
       batchId,
       createdAt: manifest.createdAt,
@@ -1717,6 +1818,8 @@ export function createTrash(options) {
       units: manifest.units.map((unit) => ({ ...unit, memberIds: [...unit.memberIds], location: unitLocation(unit) })),
       sessions: manifest.sessions.map((s) => ({ ...publicEntry(s), unsafe: s.unsafe, location: fold.location.get(s.id) })),
       steps: fold.steps,
+      logs: [...fold.logs].map(([id, facts]) => ({ id, ...facts })),
+      closed: fold.closed,
       createdFolders: fold.createdFolders,
       skippedLines: fold.skippedLines,
     }
@@ -1729,6 +1832,38 @@ export function createTrash(options) {
     return withLock(() => {
       const batch = loadBatch(batchId)
       journalOf(batch.dir)(line)
+    })
+  }
+
+  /** Journal the log facts of sessions in a batch (a recovery that finds them missing after a crash). */
+  function recordLogs(batchId, list) {
+    batchFolder(batchId)
+    const line = logsRecord(list)
+    return withLock(() => {
+      const batch = loadBatch(batchId)
+      journalOf(batch.dir)(line)
+    })
+  }
+
+  /**
+   * Close a batch: after one verifying pass (recoverBatch), append its
+   * `closed` line when the journal places every session in the store and no
+   * operation is open. The caller (the Host) closes a batch only when its
+   * registry steps are done too. Returns whether the batch is closed now; a
+   * closed batch is left as it is. Moves and deletes nothing.
+   */
+  function close(batchId) {
+    batchFolder(batchId)
+    return withLock(() => {
+      if (active.has(batchId)) return false
+      const batch = loadBatch(batchId)
+      if (closedAt(batch.dir, batchId)) return true
+      recoverBatch(batch)
+      const fold = readFold(batch)
+      if (fold.openOp !== null) return false
+      if (batch.manifest.sessions.some((s) => s.unsafe || fold.location.get(s.id) !== 'store')) return false
+      journalOf(batch.dir)({ op: 'closed', batchId })
+      return true
     })
   }
 
@@ -1768,5 +1903,9 @@ export function createTrash(options) {
     list,
     inspect,
     recordStep,
+    recordLogs,
+    close,
+    /** Whether a batch is closed (one read of its journal's tail). */
+    isClosed: (batchId) => isBatchId(batchId) && closedAt(path.join(trashDir, batchId), batchId),
   })
 }

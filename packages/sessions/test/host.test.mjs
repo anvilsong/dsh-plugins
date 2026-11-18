@@ -315,7 +315,10 @@ function makeCtx(world, proc, extra = {}) {
 
 /**
  * One service instance: a new "process" with its own identity, so the trash lock of a dead one is stale.
- * `adapterFs(fs)` wraps the adapter's file system; `wrapAdapter(adapter)` replaces members of the host adapter.
+ * `adapterFs(fs)` wraps the adapter's file system; `wrapAdapter(adapter)` replaces members of the host adapter;
+ * `wrapFs(fs)` wraps the service's file system. The recovery a service runs when it starts is off here unless
+ * `startupRecover` is true (the crash tests read the report of their own recover() call); the plugin entry and the
+ * sandbox of the integration tests run it.
  */
 function start(world, options = {}) {
   const proc = makeProcess(world, options)
@@ -323,14 +326,41 @@ function start(world, options = {}) {
   const made = createHostAdapter(ctx, { platform: options.platform, fs: options.adapterFs ? options.adapterFs(proc.adapterFs) : proc.adapterFs })
   const adapter = options.wrapAdapter ? options.wrapAdapter(made) : made
   const settings = resolveSettings(options.config ?? {}, { home: world.home })
+  const fs = options.fs ?? proc.fs
   const service = new SessionsManagerService(ctx, {
     adapter,
     settings,
-    fs: options.fs ?? proc.fs,
+    fs: options.wrapFs ? options.wrapFs(fs) : fs,
     clock: options.clock,
+    startupRecover: options.startupRecover === true,
     trashOptions: { identity: { pid: ++pidCount, startedAt: 1, host: HOST }, isAlive: options.isAlive ?? (() => false) },
   })
   return { service, proc, ctx, adapter }
+}
+
+/** An fs wrapper that counts every call and runs `before(name, args)` first. */
+function countingFs(before = () => {}) {
+  const counter = { calls: 0, names: new Map() }
+  counter.wrap = (fs) => new Proxy(fs, {
+    get(target, key) {
+      const value = target[key]
+      if (typeof value !== 'function') return value
+      return (...args) => {
+        counter.calls += 1
+        counter.names.set(key, (counter.names.get(key) ?? 0) + 1)
+        before(key, args)
+        return value.apply(target, args)
+      }
+    },
+  })
+  return counter
+}
+
+const journalOf = (world, batchId) => readFileSync(path.join(world.trashDir, batchId, 'journal.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+const isHintsWrite = (name, args) => name === 'openSync' && typeof args[0] === 'string' && path.basename(args[0]) === HINTS_FILE && (args[1] & constants.O_CREAT) !== 0
+const revisionOf = (file) => {
+  const stat = statSync(file, { bigint: true })
+  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`
 }
 
 const deferred = () => {
@@ -1327,21 +1357,30 @@ test('restore keeps a unit in trash on workspace-missing and conflict, and never
 })
 
 test('a log that is back but differs from the recorded one is not attached by restore; recover() accepts it', { skip: NOT_DARWIN }, async () => {
-  const world = makeWorld()
-  const original = registryOf(world)
-  const { service } = start(world)
-  const { result } = await prune(service, { scope: 'selection', rootIds: ['b1'] })
-  const file = path.join(world.trashDir, result.batchId, HINTS_FILE)
-  const hints = JSON.parse(readFileSync(file, 'utf8'))
-  hints.sessions[0].revision = '1:2:3:4:5'
-  chmodSync(file, 0o600)
-  writeFileSync(file, JSON.stringify(hints))
-  const back = await service.restore({ batchId: result.batchId })
-  assert.deepEqual(back.warnings, [{ code: 'recovery-needed', sessionId: 'b1' }])
-  assert.equal(back.state, 'needs-recovery')
-  assert.equal(world.workspaces[0].sessionIds.includes('b1'), false)
-  await service.recover()
-  assert.deepEqual(registryOf(world), original)
+  for (const recorded of ['the log facts journaled at the move', 'the hint of a batch an older build wrote (no logs line)']) {
+    const world = makeWorld()
+    const original = registryOf(world)
+    const { service } = start(world)
+    const { result } = await prune(service, { scope: 'selection', rootIds: ['b1'] })
+    const journal = path.join(world.trashDir, result.batchId, 'journal.jsonl')
+    if (recorded.startsWith('the log facts')) {
+      appendFileSync(journal, `${JSON.stringify({ v: 1, ts: Date.now(), op: 'logs', sessions: [{ id: 'b1', name: LOG, revision: '1:2:3:4:5', sizeBytes: 3 }] })}\n`)
+    } else {
+      writeFileSync(journal, journalOf(world, result.batchId).filter((r) => r.op !== 'logs').map((r) => `${JSON.stringify(r)}\n`).join(''))
+      const file = path.join(world.trashDir, result.batchId, HINTS_FILE)
+      const hints = JSON.parse(readFileSync(file, 'utf8'))
+      hints.sessions[0].revision = '1:2:3:4:5'
+      delete hints.sessions[0].logName
+      chmodSync(file, 0o600)
+      writeFileSync(file, JSON.stringify(hints))
+    }
+    const back = await service.restore({ batchId: result.batchId })
+    assert.deepEqual(back.warnings, [{ code: 'recovery-needed', sessionId: 'b1' }], recorded)
+    assert.equal(back.state, 'needs-recovery', recorded)
+    assert.equal(world.workspaces[0].sessionIds.includes('b1'), false, recorded)
+    await service.recover()
+    assert.deepEqual(registryOf(world), original, recorded)
+  }
 })
 
 test('unarchive runs the host unarchive for archived ids only', { skip: NOT_DARWIN }, async () => {
@@ -1507,4 +1546,280 @@ test('host files: no registry file, projection-cache folder, session open, sessi
   }
   const others = ['service.js', 'index.host.js'].map((name) => readFileSync(fileURLToPath(new URL(`../src/${name}`, import.meta.url)), 'utf8'))
   for (const code of others) assert.equal(/ctx\.get\(|sessionPersistence|workspaceRegistry|sessionProjectionCache|profileContext/.test(strip(code)), false, 'only the adapter touches host services')
+})
+
+// ---------------------------------------------------------------------------
+// 10. Findings of the prune dry run (T16)
+// ---------------------------------------------------------------------------
+
+const trashRows = (list) => list.batches.map((b) => [b.batchId, b.units, b.sessions, b.state])
+const trashCopy = (world, batchId, project, id) => path.join(world.trashDir, batchId, 'sessions', project, id, LOG)
+
+test('F1: a log that grows after the re-read and before its move (its writer gone before the lock probe) is recorded as moved; the Undo then completes fully', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  const order = world.workspaces.find((w) => w.id === 'w1').sessionIds.slice()
+  let grown = 0
+  const { service } = start(world, {
+    wrapFs: (fs) => countingFs((name, args) => {
+      // The hints are written after the re-read of every fact and before the first rename.
+      if (grown === 0 && isHintsWrite(name, args)) {
+        for (const id of ['a1', 'c1']) appendFileSync(path.join(world.store, 'p1', id, LOG), Buffer.from(` grown ${id}`))
+        grown += 1
+      }
+    }).wrap(fs),
+  })
+  const { result } = await prune(service, { scope: 'selection', rootIds: ['a1'] })
+  assert.equal(grown, 1, 'the log grew inside the apply window')
+  assert.equal(result.state, 'complete', JSON.stringify(result))
+  assert.equal(result.moved.sessions, 3, 'the move goes ahead: the log is unlocked and the session is not live')
+
+  // The journal records the log as it was moved; the registry hints keep the re-read revision.
+  const logs = journalOf(world, result.batchId).filter((r) => r.op === 'logs').flatMap((r) => r.sessions)
+  for (const [id, project] of [['a1', 'p1'], ['c1', 'p1'], ['a2', 'p2']]) {
+    const file = trashCopy(world, result.batchId, project, id)
+    assert.deepEqual(logs.find((entry) => entry.id === id), { id, name: LOG, revision: revisionOf(file), sizeBytes: statSync(file).size }, id)
+  }
+  const hints = JSON.parse(readFileSync(path.join(world.trashDir, result.batchId, HINTS_FILE), 'utf8'))
+  assert.notEqual(hints.sessions.find((h) => h.id === 'a1').revision, logs.find((entry) => entry.id === 'a1').revision, 'the hint is the pre-move revision')
+
+  // Undo: attach, order, archive and pin, as before the prune.
+  const back = await service.restore({ batchId: result.batchId })
+  assertApplyResult(back)
+  assert.deepEqual([back.state, back.warnings], ['complete', []], JSON.stringify(back))
+  assert.deepEqual(registryOf(world), original)
+  assert.deepEqual(world.workspaces.find((w) => w.id === 'w1').sessionIds, order)
+  assert.deepEqual((await service.trash({ fresh: true })).batches, [], 'nothing is left in the Trash tab')
+})
+
+test('F1: a log that changes while it is in the trash is still refused by the Undo; the Trash tab shows the batch until recovery has attached it', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  const { service } = start(world)
+  const { result } = await prune(service, { scope: 'selection', rootIds: ['b1'] })
+  appendFileSync(trashCopy(world, result.batchId, 'p2', 'b1'), Buffer.from('written in the trash'))
+  const back = await service.restore({ batchId: result.batchId })
+  assert.deepEqual([back.state, back.warnings], ['needs-recovery', [{ code: 'recovery-needed', sessionId: 'b1' }]])
+  assert.equal(world.workspaces[0].sessionIds.includes('b1'), false, 'not attached')
+  assert.equal(world.archived.includes('b1'), false, 'not archived')
+  assert.ok(places(world).get('b1')[0] === 'store', 'the folder itself is back')
+  const calls = world.calls.length
+  assert.deepEqual(trashRows(await service.trash({})), [[result.batchId, 0, 0, 'needs-recovery']], 'listed while its registry steps wait')
+  assert.equal(world.calls.length, calls, 'a plain read runs no registry step')
+  // Recovery accepts it (the session may be in use by now), and the batch leaves the tab.
+  assert.deepEqual((await service.trash({ fresh: true })).batches, [])
+  assert.deepEqual(registryOf(world), original)
+})
+
+test('O1: restore gives back the recorded order of the batch\'s archived ids (archive appends) and pinned ids (pin prepends)', { skip: NOT_DARWIN }, async () => {
+  const layout = [
+    { id: 'k1', project: 'p1', ws: 'w1', pinned: true },
+    { id: 'a1', project: 'p1', ws: 'w1', archived: true },
+    { id: 'c1', project: 'p1', ws: 'w1', parent: 'a1', origin: 'subagent', pinned: true },
+    { id: 'c2', project: 'p1', ws: 'w1', parent: 'a1', origin: 'subagent', pinned: true },
+    { id: 'kx', project: 'p2', ws: 'w1', archived: true },
+    { id: 'b1', project: 'p2', ws: 'w1', archived: true },
+    { id: 'd1', project: 'p3', ws: 'w2', archived: true },
+  ]
+  const world = makeWorld(layout)
+  world.live.add('kx') // stays archived: its unit is blocked
+  world.archived.splice(0, world.archived.length, 'd1', 'b1', 'kx', 'a1')
+  world.pinned.splice(0, world.pinned.length, 'c2', 'k1', 'c1')
+  const before = { archived: [...world.archived], pinned: [...world.pinned] }
+  const { service } = start(world)
+  const { result } = await prune(service)
+  assert.deepEqual(result.moved.units, 3)
+  assert.deepEqual([world.archived, world.pinned], [['kx'], ['k1']])
+  const hints = JSON.parse(readFileSync(path.join(world.trashDir, result.batchId, HINTS_FILE), 'utf8'))
+  assert.deepEqual(Object.fromEntries(hints.sessions.map((h) => [h.id, [h.archivedAt, h.pinnedAt]])), {
+    a1: [3, null], c1: [null, 2], c2: [null, 0], b1: [1, null], d1: [0, null],
+  })
+  const back = await service.restore({ batchId: result.batchId })
+  assert.equal(back.state, 'complete', JSON.stringify(back))
+  // The batch's own ids come back in their recorded relative order. kx was never moved, so it keeps its place,
+  // and the batch's ids come back as the most recently archived and pinned (README, known limits).
+  assert.deepEqual(world.archived, ['kx', 'd1', 'b1', 'a1'])
+  assert.deepEqual(world.pinned, ['c2', 'c1', 'k1'])
+  assert.deepEqual(new Set(world.archived), new Set(before.archived))
+  assert.deepEqual(new Set(world.pinned), new Set(before.pinned))
+
+  // When every archived and pinned id of the registry was in the batch, the exact order comes back.
+  const all = makeWorld()
+  all.archived.reverse()
+  const exact = { archived: [...all.archived], pinned: [...all.pinned] }
+  const second = start(all)
+  const { result: pruned } = await prune(second.service)
+  assert.equal((await second.service.restore({ batchId: pruned.batchId })).state, 'complete')
+  assert.deepEqual({ archived: all.archived, pinned: all.pinned }, exact)
+})
+
+test('F2: a detach the registry refuses keeps the batch needs-recovery in the Trash tab, with its counts; a plain read runs nothing, a fresh read recovers it', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  world.fail.add('detach')
+  const { service } = start(world)
+  const { result } = await prune(service, { scope: 'selection', rootIds: ['b1'] })
+  world.fail.clear()
+  assert.equal(result.state, 'needs-recovery')
+  assert.ok(world.workspaces[0].sessionIds.includes('b1'), 'the workspace still holds an id whose folder is in the trash')
+  const calls = world.calls.length
+  assert.deepEqual(trashRows(await service.trash({})), [[result.batchId, 1, 1, 'needs-recovery']])
+  assert.equal(world.calls.length, calls, 'a plain read runs no registry step')
+  assert.deepEqual(trashRows(await service.trash({ fresh: true })), [[result.batchId, 1, 1, 'complete']], 'a fresh read finished the detach')
+  assert.equal(world.workspaces[0].sessionIds.includes('b1'), false)
+  assertRegistryConsistent(world, original)
+  assert.ok(auditOps(world).includes('recover'))
+})
+
+test('F2: an attach the registry refuses during a restore keeps the batch listed as needs-recovery until recovery has attached it', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  const { service } = start(world)
+  const { result } = await prune(service, { scope: 'selection', rootIds: ['b1'] })
+  world.fail.add('attach')
+  const back = await service.restore({ batchId: result.batchId })
+  assert.equal(back.state, 'needs-recovery')
+  assert.deepEqual(trashRows(await service.trash({})), [[result.batchId, 0, 0, 'needs-recovery']], 'not hidden as complete and empty')
+  assert.deepEqual(trashRows(await service.trash({ fresh: true })), [[result.batchId, 0, 0, 'needs-recovery']], 'the registry still refuses')
+  const report = await service.recover()
+  assert.deepEqual(report.batches.map((b) => [b.batchId, b.state]), [[result.batchId, 'needs-recovery']], 'recover() reports the step it still owes')
+  assert.notEqual(journalOf(world, result.batchId).at(-1).op, 'closed')
+  world.fail.clear()
+  assert.deepEqual((await service.trash({ fresh: true })).batches, [])
+  assert.deepEqual(registryOf(world), original)
+  assert.equal(journalOf(world, result.batchId).at(-1).op, 'closed', 'recovery closed the batch once its steps were done')
+})
+
+test('F2: recovery runs once when the service starts, never throws, logs, and every call waits for it', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  world.fail.add('unarchive')
+  const { result } = await prune(start(world).service)
+  world.fail.clear()
+  assert.equal(result.state, 'needs-recovery')
+  assert.equal(world.archived.some((id) => PRUNED.includes(id)), true, 'a crash-like leftover: archived ids whose folders are in the trash')
+
+  // A new start completes the steps without any call.
+  const next = start(world, { startupRecover: true })
+  const first = next.service.core.startup()
+  assert.equal(next.service.core.startup(), first, 'single flight')
+  await first
+  assertRegistryConsistent(world, original)
+  assert.ok(world.logs.some((line) => /recovery at start/.test(line)), world.logs.join('\n'))
+  const calls = world.calls.length
+  await next.service.core.startup()
+  assert.equal(world.calls.length, calls, 'once')
+  assertTrashList(await next.service.trash({}))
+
+  // A call made right after the start waits for it instead of getting busy.
+  assert.equal((await next.service.restore({ batchId: result.batchId })).state, 'complete')
+  world.fail.add('unarchive')
+  const { result: again } = await prune(start(world).service, { scope: 'selection', rootIds: ['b1'] })
+  world.fail.clear()
+  assert.equal(again.state, 'needs-recovery')
+  const third = start(world, { startupRecover: true })
+  assert.deepEqual(trashRows(await third.service.trash({})).map((row) => row.at(-1)), ['complete'])
+  assertRegistryConsistent(world, original)
+
+  // It never throws: an unwritable audit log turns it into a logged line; no trash at all is no work.
+  chmodSync(world.auditFile, 0o400)
+  try {
+    const broken = start(world, { startupRecover: true })
+    await broken.service.core.startup()
+    assert.ok(world.logs.some((line) => /recovery at start did not/.test(line)), world.logs.join('\n'))
+  } finally {
+    chmodSync(world.auditFile, 0o600)
+  }
+  const bare = makeWorld()
+  const idle = start(bare, { startupRecover: true })
+  await idle.service.core.startup()
+  assert.equal(bare.listCalls, 0, 'no trash: the store is not even read')
+  assert.equal(existsSync(bare.trashDir), false, 'and no trash folder is created')
+})
+
+test('F4: a restore with nothing left to do closes its batch; recover() then skips it and it stays on disk, unlisted', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const { service } = start(world)
+  const { result } = await prune(service)
+  const back = await service.restore({ batchId: result.batchId })
+  assert.equal(back.state, 'complete')
+  const journal = journalOf(world, result.batchId)
+  assert.deepEqual([journal.at(-1).op, journal.at(-1).batchId], ['closed', result.batchId])
+  assert.equal(journal.filter((r) => r.op === 'closed').length, 1)
+  const report = await service.recover()
+  assert.deepEqual([report.closed, report.batches], [1, []])
+  assert.ok(existsSync(path.join(world.trashDir, result.batchId, 'manifest.json')), 'nothing is deleted')
+  assert.deepEqual((await service.trash({ fresh: true })).batches, [])
+  // A second restore of a closed batch changes nothing and writes nothing.
+  const lines = journal.length
+  world.calls.length = 0
+  assert.equal((await service.restore({ batchId: result.batchId })).state, 'complete')
+  assert.deepEqual(world.calls, [])
+  assert.equal(journalOf(world, result.batchId).length, lines)
+})
+
+test('closed batch cost: recover() spends the same few fs calls on each closed batch, however many there are and whatever they held', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const counter = countingFs()
+  const { service } = start(world, { wrapFs: (fs) => counter.wrap(fs) })
+  const measure = async () => {
+    const before = counter.calls
+    const report = await service.recover()
+    return { calls: counter.calls - before, report }
+  }
+  const costs = []
+  let last = null
+  for (let round = 0; round < 5; round += 1) {
+    const { result } = await prune(service, round % 2 === 0 ? { scope: 'all' } : { scope: 'selection', rootIds: ['b1'] })
+    assert.equal((await service.restore({ batchId: result.batchId })).state, 'complete')
+    const { calls, report } = await measure()
+    assert.deepEqual([report.closed, report.batches.length], [round + 1, 0])
+    if (last !== null) costs.push(calls - last)
+    last = calls
+  }
+  assert.deepEqual(costs, [4, 4, 4, 4], `fs calls per added closed batch: ${JSON.stringify(costs)}`)
+})
+
+test('F4 upgrade: a fully restored batch of an older build (no closed line, no log facts, no order hints) is closed after one verifying pass, then skipped', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  const { service } = start(world)
+  const { result } = await prune(service)
+  // The older build wrote neither logs lines nor the new hint fields.
+  const journalFile = path.join(world.trashDir, result.batchId, 'journal.jsonl')
+  const hintsFile = path.join(world.trashDir, result.batchId, HINTS_FILE)
+  writeFileSync(journalFile, journalOf(world, result.batchId).filter((r) => r.op !== 'logs').map((r) => `${JSON.stringify(r)}\n`).join(''))
+  const hints = JSON.parse(readFileSync(hintsFile, 'utf8'))
+  for (const hint of hints.sessions) for (const key of ['logName', 'archivedAt', 'pinnedAt']) delete hint[key]
+  chmodSync(hintsFile, 0o600)
+  writeFileSync(hintsFile, `${JSON.stringify(hints)}\n`)
+  const back = await service.restore({ batchId: result.batchId })
+  assert.equal(back.state, 'complete', JSON.stringify(back))
+  assert.deepEqual(registryOf(world), original)
+  // Its closed line is lost (an older build never wrote one).
+  writeFileSync(journalFile, journalOf(world, result.batchId).filter((r) => r.op !== 'closed').map((r) => `${JSON.stringify(r)}\n`).join(''))
+  const first = await service.recover()
+  assert.deepEqual([first.closed, first.batches.map((b) => [b.batchId, b.state])], [0, [[result.batchId, 'complete']]], 'one verifying pass')
+  assert.equal(journalOf(world, result.batchId).at(-1).op, 'closed')
+  const second = await service.recover()
+  assert.deepEqual([second.closed, second.batches], [1, []])
+  assert.deepEqual(registryOf(world), original)
+})
+
+test('F1: log facts a crash left unrecorded (between a move and its logs line) are taken from the trash copy by recover()', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  const { service } = start(world)
+  const { result } = await prune(service, { scope: 'selection', rootIds: ['a1'] })
+  const journalFile = path.join(world.trashDir, result.batchId, 'journal.jsonl')
+  writeFileSync(journalFile, journalOf(world, result.batchId).filter((r) => r.op !== 'logs').map((r) => `${JSON.stringify(r)}\n`).join(''))
+  await service.recover()
+  const logs = journalOf(world, result.batchId).filter((r) => r.op === 'logs').flatMap((r) => r.sessions)
+  assert.deepEqual(logs.map((entry) => entry.id).sort(), ['a1', 'a2', 'c1'])
+  assert.equal(logs.find((entry) => entry.id === 'a1').revision, revisionOf(trashCopy(world, result.batchId, 'p1', 'a1')))
+  const lines = journalOf(world, result.batchId).length
+  await service.recover()
+  assert.equal(journalOf(world, result.batchId).length, lines, 'filled once')
+  assert.equal((await service.restore({ batchId: result.batchId })).state, 'complete')
+  assert.deepEqual(registryOf(world), original)
 })

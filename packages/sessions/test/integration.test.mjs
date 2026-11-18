@@ -48,7 +48,7 @@ import { HINTS_FILE } from '../src/service.js'
 import { buildIndex, overview as overviewOf } from '../src/store-index.js'
 import {
   AGENT, assertAuditClean, assertWorld, batchFolders, createSandbox, folderBytes, gateViolations, holdForeignLock, hostFacts, installAuditGate,
-  installDecoys, LOG_FILE, projectName, releaseForeignLock, resetGateViolations, SECRET, startProcess, uninstallAuditGate,
+  installDecoys, LOG_FILE, projectName, registryAfterRestore, releaseForeignLock, resetGateViolations, SECRET, startProcess, uninstallAuditGate,
 } from './helpers/sandbox-store.mjs'
 
 const decoys = await installDecoys()
@@ -299,7 +299,7 @@ async function endToEnd({ split }) {
   assert.deepEqual(back.moved, result.moved)
   assert.deepEqual(back.skipped, [])
   assert.deepEqual(world.storeTree(), world.original.tree, 'the store tree is byte-identical to the one before the prune')
-  assert.deepEqual(world.registrySnapshot(), world.original.registry, 'workspace order, archive and pin sets are back')
+  assert.deepEqual(world.registrySnapshot(), registryAfterRestore(world.original.registry, [ready.flatMap((u) => u.members)]), 'workspace order, archive and pin lists are back')
   step('restore', ['restore-start', 'restore-end'])
   assert.deepEqual((await proc.call('trash', {})).batches, [], 'a fully restored batch is not listed')
 
@@ -662,14 +662,21 @@ test('time-of-check races: a member that turns live, gets a fresh lock or is una
   assert.equal(world.registryLog.some(([, id]) => RACE_FOLDERS.includes(id)), false, 'no registry step for a skipped unit')
 })
 
-test('time-of-check races inside apply, between the re-read and the renames: the synchronous precheck catches them', { skip: NOT_DARWIN }, async () => {
-  const world = await sandbox()
+/**
+ * The write of the applied batch's hints file: it comes after the re-read and the manifest, before the first
+ * rename. An open of registry.json alone is not enough: recover() reads the hints of older batches first.
+ */
+const isHintsWrite = ({ source, name, paths, args }) => source === 'service' && name === 'openSync' && path.basename(paths[0] ?? '') === HINTS_FILE
+  && (args[1] & nodeFs.constants.O_CREAT) !== 0
+
+/** The races of raceChanges(), made inside apply at the write of its hints; the synchronous precheck must catch every one. */
+async function racesInsideApply(world, { onFs = () => {} } = {}) {
   let before = null
   const proc = startProcess(world, {
     hooks: {
-      beforeFs: ({ source, name, paths }) => {
-        // The hints file is written after the re-read and the manifest, before the first rename.
-        if (before === null && source === 'service' && name === 'openSync' && path.basename(paths[0]) === HINTS_FILE) {
+      beforeFs: (call) => {
+        onFs(call)
+        if (before === null && isHintsWrite(call)) {
           raceChanges(world)
           before = snap(world)
         }
@@ -688,6 +695,29 @@ test('time-of-check races inside apply, between the re-read and the renames: the
   assert.equal(result.moved.units, 1)
   assertUnitUntouched(world, RACE_FOLDERS, before, 'race inside apply')
   assert.equal(world.registryLog.some(([, id]) => RACE_FOLDERS.includes(id)), false, 'no registry step for a skipped unit')
+  return result
+}
+
+test('time-of-check races inside apply, between the re-read and the renames: the synchronous precheck catches them', { skip: NOT_DARWIN }, async () => {
+  await racesInsideApply(await sandbox())
+})
+
+test('the inside-apply hooks target the batch being applied: with a closed batch and a batch still in the trash before it, the races still land inside the apply', { skip: NOT_DARWIN }, async () => {
+  const world = await sandbox()
+  const proc = startProcess(world)
+  const closed = await proc.call('apply', await planFor(proc, ['tree-b']))
+  assert.equal((await proc.call('restore', { batchId: closed.batchId })).state, 'complete')
+  assert.equal(lastJournalOp(world, closed.batchId), 'closed')
+  await proc.call('apply', await planFor(proc, ['tree-c']))
+  // Before the new batch's hints are written, recover() reads the hints of the batch still in the trash.
+  let olderReads = 0
+  await racesInsideApply(world, {
+    onFs: ({ source, name, paths, args }) => {
+      if (source === 'service' && name === 'openSync' && path.basename(paths[0] ?? '') === HINTS_FILE && (args[1] & nodeFs.constants.O_CREAT) === 0) olderReads += 1
+    },
+  })
+  assert.ok(olderReads > 0, 'an older batch\'s hints were read first: a hook on the first open would have fired too early')
+  assert.equal(lastJournalOp(world, closed.batchId), 'closed', 'the closed batch was left alone')
 })
 
 test('a member that turns live or gets locked after its root was renamed rolls the whole unit back', { skip: NOT_DARWIN }, async () => {
@@ -819,11 +849,12 @@ test('two services on one trash folder: while one applies, the other host gets b
     release()
     const result = await running
     assert.equal(result.state, 'complete', `${label}: ${JSON.stringify(result)}`)
+    const pruned = world.idsInTrash()
     // Once the lock is released, the other host can mutate.
     const back = await b.call('restore', { batchId: result.batchId })
     assert.equal(back.state, 'complete', label)
     assert.deepEqual(world.storeTree(), world.original.tree, `${label}: byte-identical after the other host restored`)
-    assert.deepEqual(world.registrySnapshot(), world.original.registry, label)
+    assert.deepEqual(world.registrySnapshot(), registryAfterRestore(world.original.registry, [pruned]), label)
     a.stop()
     b.stop()
   }
@@ -884,8 +915,8 @@ test('symlinks swapped in between plan and apply, or after the re-read, are neve
   let inWindow = false
   const proc = startProcess(world, {
     hooks: {
-      beforeFs: ({ source, name, paths }) => {
-        if (inWindow || source !== 'service' || name !== 'openSync' || path.basename(paths[0]) !== HINTS_FILE) return
+      beforeFs: (call) => {
+        if (inWindow || !isHintsWrite(call)) return
         inWindow = true
         swap(world.dirOf('race-g'), path.join(world.elsewhere, 'race-g'))
         swap(path.dirname(world.dirOf('solo-root')), path.join(world.elsewhere, 'epsilon-project'))
@@ -917,8 +948,9 @@ test('a session folder swapped for a symlink during the lock probe is refused, n
   let swapped = false
   const proc = startProcess(world, {
     hooks: {
-      beforeFs: ({ source, name, paths }) => {
-        if (source === 'service' && name === 'openSync' && path.basename(paths[0]) === HINTS_FILE) armed = true
+      beforeFs: (call) => {
+        const { source, name, paths } = call
+        if (isHintsWrite(call)) armed = true
         if (armed && !swapped && source === 'adapter' && name === 'readdirSync' && paths[0] === target) {
           swapped = true
           nodeFs.renameSync(target, path.join(world.elsewhere, 'race-h'))
@@ -980,6 +1012,7 @@ test('restore into a missing project folder creates exactly that folder (0700); 
   const proc = startProcess(world)
   const plan = await proc.call('plan', { scope: 'selection', rootIds: ['tree-c'] })
   const result = await proc.call('apply', { planId: plan.planId, confirmCount: plan.totals.readySessions })
+  const first = world.idsInTrash()
   const project = path.dirname(world.dirOf('tree-c'))
   const neighbours = nodeFs.readdirSync(project)
   assert.ok(neighbours.length > 0, 'the project folder keeps its other sessions')
@@ -995,11 +1028,12 @@ test('restore into a missing project folder creates exactly that folder (0700); 
   const projectName = path.basename(project)
   assert.deepEqual(world.storeTree().filter((l) => !l.startsWith(`d ${projectName} `)), world.original.tree.filter((l) => !l.startsWith(`d ${projectName} `)))
   assert.deepEqual(strip(world.storeTree()), strip(world.original.tree), 'only the project folder itself is new')
-  assert.deepEqual(world.registrySnapshot(), world.original.registry)
+  assert.deepEqual(world.registrySnapshot(), registryAfterRestore(world.original.registry, [first]))
 
   // A sessions tree that is gone: the restore fails with a contract error and creates nothing.
   const plan2 = await proc.call('plan', { scope: 'selection', rootIds: ['tree-b'] })
   const result2 = await proc.call('apply', { planId: plan2.planId, confirmCount: 1 })
+  const second = world.idsInTrash()
   nodeFs.renameSync(world.store, path.join(world.elsewhere, 'store'))
   nodeFs.mkdirSync(world.store)
   const code = await proc.codeOf('restore', { batchId: result2.batchId })
@@ -1008,7 +1042,7 @@ test('restore into a missing project folder creates exactly that folder (0700); 
   nodeFs.rmdirSync(world.store)
   nodeFs.renameSync(path.join(world.elsewhere, 'store'), world.store)
   assert.equal((await proc.call('restore', { batchId: result2.batchId })).state, 'complete')
-  assert.deepEqual(world.registrySnapshot(), world.original.registry)
+  assert.deepEqual(world.registrySnapshot(), registryAfterRestore(world.original.registry, [first, second]))
 })
 
 test('forged and symlinked batches in the trash folder: restore and purge never follow them and never touch the store', { skip: NOT_DARWIN }, async () => {
@@ -1105,6 +1139,100 @@ test('a failing backend listing reaches the caller as sessions-manager/store-unr
 })
 
 // ---------------------------------------------------------------------------
+// 9b. The prune dry run's findings, replayed on the sandbox (T16)
+// ---------------------------------------------------------------------------
+
+const planFor = async (proc, rootIds) => {
+  const plan = await proc.call('plan', { scope: 'selection', rootIds })
+  return { planId: plan.planId, confirmCount: plan.totals.readySessions }
+}
+const journalRecords = (world, batchId) => nodeFs.readFileSync(path.join(world.trashDir, batchId, 'journal.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+const lastJournalOp = (world, batchId) => journalRecords(world, batchId).at(-1).op
+const trashRows = (list) => list.batches.map((b) => [b.batchId, b.units, b.sessions, b.state])
+
+test('dry run F1: a log touched after the re-read and before its rename (no lock held) is moved; the Undo gives the session back to its workspace, archived', { skip: NOT_DARWIN }, async () => {
+  const world = await sandbox({ layout: 'compact' })
+  let fired = false
+  const proc = startProcess(world, {
+    hooks: {
+      beforeFs: (call) => {
+        if (fired || !isHintsWrite(call)) return
+        fired = true
+        const now = new Date()
+        nodeFs.utimesSync(path.join(world.dirOf('tree-a'), LOG_FILE), now, now)
+      },
+    },
+  })
+  const result = await proc.call('apply', await planFor(proc, ['tree-a']))
+  assert.ok(fired)
+  assert.equal(result.state, 'complete')
+  const pruned = world.idsInTrash()
+  const back = await proc.call('restore', { batchId: result.batchId })
+  assert.deepEqual([back.state, back.warnings], ['complete', []], JSON.stringify(back))
+  assert.deepEqual((await proc.call('trash', { fresh: true })).batches, [])
+  assert.deepEqual(world.registrySnapshot(), registryAfterRestore(world.original.registry, [pruned]), 'in its workspace, at its place, archived, pinned')
+  const view = await proc.call('overview', { fresh: true })
+  assert.equal(view.workspaces.some((w) => w.id === null && w.folder === world.entries.get('tree-a').project), false, 'no Unassigned row for the restored tree')
+  assertWorld(world, { label: 'after the Undo' })
+})
+
+test('dry run F2: a registry that refuses one detach, then one attach: the Trash tab says needs-recovery with its counts until recovery has done the step', { skip: NOT_DARWIN }, async () => {
+  const world = await sandbox({ layout: 'compact' })
+  world.failRegistry.set('detach', (id) => id === 'tree-a')
+  const p = startProcess(world)
+  const plan = await p.call('plan', { scope: 'all' })
+  const result = await p.call('apply', { planId: plan.planId, confirmCount: plan.totals.readySessions })
+  world.failRegistry.clear()
+  assert.equal(result.state, 'needs-recovery')
+  const pruned = world.idsInTrash()
+  assert.deepEqual(trashRows(await p.call('trash', {})), [[result.batchId, result.moved.units, result.moved.sessions, 'needs-recovery']])
+  assert.ok(world.registry.workspaces.some((w) => w.sessionIds.includes('tree-a')), 'a plain read runs no registry step')
+
+  // A new start finishes the step before any user action.
+  const q = startProcess(world)
+  await q.service.core.startup()
+  assertWorld(world, { label: 'after the recovery at start' })
+  assert.deepEqual(trashRows(await q.call('trash', {})), [[result.batchId, result.moved.units, result.moved.sessions, 'complete']])
+
+  // An attach refused during the Undo: the batch stays listed, holding nothing but owing the attach.
+  world.failRegistry.set('attach', (id) => id === 'tree-b')
+  const back = await q.call('restore', { batchId: result.batchId })
+  assert.equal(back.state, 'needs-recovery')
+  assert.deepEqual(trashRows(await q.call('trash', {})), [[result.batchId, 0, 0, 'needs-recovery']])
+  assert.deepEqual(trashRows(await q.call('trash', { fresh: true })), [[result.batchId, 0, 0, 'needs-recovery']], 'still refused')
+  world.failRegistry.clear()
+  assert.deepEqual((await q.call('trash', { fresh: true })).batches, [], 'a fresh read finished the attach')
+  assert.deepEqual(world.storeTree(), world.original.tree)
+  assert.deepEqual(world.registrySnapshot(), registryAfterRestore(world.original.registry, [pruned]))
+  assert.equal(lastJournalOp(world, result.batchId), 'closed')
+})
+
+test('dry run F4: restored batches are closed; the cost of recover() and of a one-unit apply grows by a fixed 4 fs calls per closed batch', { skip: NOT_DARWIN }, async () => {
+  const world = await sandbox({ layout: 'compact' })
+  const p = startProcess(world, { fsync: false })
+  const recoverCosts = []
+  const applyCosts = []
+  for (let round = 0; round < 6; round += 1) {
+    let before = p.fsCount
+    const result = await p.call('apply', await planFor(p, ['tree-c']))
+    applyCosts.push(p.fsCount - before)
+    assert.equal(result.state, 'complete')
+    assert.equal((await p.call('restore', { batchId: result.batchId })).state, 'complete')
+    before = p.fsCount
+    const report = await p.recover()
+    recoverCosts.push(p.fsCount - before)
+    assert.deepEqual([report.closed, report.batches.length], [round + 1, 0])
+  }
+  const steps = (list) => list.slice(1).map((value, i) => value - list[i])
+  assert.deepEqual(steps(recoverCosts), [4, 4, 4, 4, 4], `recover() fs calls: ${JSON.stringify(recoverCosts)}`)
+  // The first apply also creates the trash folder; from the second one on, only the closed batches add to it.
+  assert.deepEqual(steps(applyCosts.slice(1)), [4, 4, 4, 4], `apply fs calls: ${JSON.stringify(applyCosts)}`)
+  assert.equal(batchFolders(world).length, 6, 'closed batches stay on disk')
+  assert.deepEqual((await p.call('trash', { fresh: true })).batches, [], 'and unlisted')
+  assert.deepEqual(world.storeTree(), world.original.tree)
+})
+
+// ---------------------------------------------------------------------------
 // 10. The plugin entry, loaded as the host loads it
 // ---------------------------------------------------------------------------
 
@@ -1121,9 +1249,10 @@ test('the plugin entry loaded with ctx.plugin(): overview, plan, apply, restore 
   assert.equal(result.state, 'complete')
   assert.equal(result.trashDir, world.trashDir, 'the trash is under profileContext.home')
   assertWorld(world, { label: 'entry apply' })
+  const pruned = world.idsInTrash()
   assert.equal((await proc.call('restore', { batchId: result.batchId })).state, 'complete')
   assert.deepEqual(world.storeTree(), world.original.tree)
-  assert.deepEqual(world.registrySnapshot(), world.original.registry)
+  assert.deepEqual(world.registrySnapshot(), registryAfterRestore(world.original.registry, [pruned]))
 })
 
 // ---------------------------------------------------------------------------

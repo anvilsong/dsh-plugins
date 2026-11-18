@@ -749,3 +749,32 @@ test('sizes and relative times: binary units, today, yesterday, N days ago', asy
   assert.match(text, /c\/fake\/c.*5 GB.*3 days ago/)
   assert.equal(byClass(root, 'sm-row-head').length, 2)
 })
+
+test('O2: the Archived card shows a small line for archived ids without a stored log, only when there are any (en, zh, marker)', async () => {
+  for (const [missing, shown] of [[0, false], [1, true], [7, true]]) {
+    const value = overviewFixture()
+    value.totals.archivedMissing = missing
+    assertOverview(value)
+    for (const mode of ['en', 'zh', 'marker']) {
+      const env = await ready({ locale: createLocale({ mode }), api: createApi({ overview: async () => ({ ok: true, value }) }) })
+      const root = await page(env)
+      const archived = card(root, 'archived')
+      const line = findAllIn(archived, (node) => node.props?.['data-fact'] === 'archived-missing')
+      assert.equal(line.length, shown ? 1 : 0, `${mode} ${missing}`)
+      if (!shown) continue
+      assert.equal(line[0].props.className, 'sm-hint', 'a small secondary line')
+      if (mode === 'marker') {
+        assertNoLiterals(root, dataStrings(value))
+        continue
+      }
+      const table = env.locale.dictionaries(NAMESPACE)[mode]
+      const key = missing === 1 ? 'card.archived.missingOne' : 'card.archived.missing'
+      assert.equal(textOf(line[0]), table[key].replace('{n}', String(missing)), `${mode} ${missing}`)
+    }
+  }
+  const en = loadClient({ locale: createLocale() })
+  await settle()
+  const table = en.locale.dictionaries(NAMESPACE).en
+  assert.match(table['card.archived.missing'], /registry/i)
+  assert.match(table['card.archived.missing'], /harmless/i)
+})

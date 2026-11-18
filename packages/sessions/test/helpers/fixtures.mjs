@@ -145,7 +145,7 @@ export const overviewFixture = () => ({
   config: { allowPermanentDelete: true, recentActivityMinutes: 30, listLimit: 500, refreshMs: 0, indexWarnBytes: 256 * MB },
   totals: {
     sessions: 426, live: 3, archived: 80, children: 312, unreadable: 1, bytes: 579 * MB, archivedBytes: 239 * MB,
-    archivedRoots: 80, archivedChildren: 126, reclaimableBytes: 437 * MB, reclaimableUnits: 206, blockedUnits: 0,
+    archivedRoots: 80, archivedChildren: 126, reclaimableBytes: 437 * MB, reclaimableUnits: 206, blockedUnits: 0, archivedMissing: 1,
   },
   indexLoad: 'high',
   workspaces: [

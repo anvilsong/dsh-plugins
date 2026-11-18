@@ -150,9 +150,10 @@ const OVERVIEW = object({
   config: object({
     allowPermanentDelete: bool, recentActivityMinutes: int, listLimit: int, refreshMs: int, indexWarnBytes: int,
   }),
+  // archivedMissing: ids the registry marks archived that have no stored log (harmless leftovers; not in `archived`).
   totals: object({
     sessions: int, live: int, archived: int, children: int, unreadable: int, bytes: int, archivedBytes: int,
-    archivedRoots: int, archivedChildren: int, reclaimableBytes: int, reclaimableUnits: int, blockedUnits: int,
+    archivedRoots: int, archivedChildren: int, reclaimableBytes: int, reclaimableUnits: int, blockedUnits: int, archivedMissing: int,
   }),
   indexLoad: oneOf(INDEX_LOADS),
   workspaces: array(object({

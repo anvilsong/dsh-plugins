@@ -15,7 +15,7 @@ import { createHostAdapter } from '../src/host-adapter.js'
 import * as hostEntry from '../src/index.host.js'
 import { resolveSettings, SessionsManagerService } from '../src/service.js'
 import { CLIENT_SOURCE, createLocale, loadClient, plain, settle } from './helpers/client-harness.mjs'
-import { assertWorld, batchFolders, createSandbox, startProcess } from './helpers/sandbox-store.mjs'
+import { assertWorld, batchFolders, createSandbox, registryAfterRestore, startProcess } from './helpers/sandbox-store.mjs'
 
 const DARWIN = process.platform === 'darwin'
 const NOT_DARWIN = DARWIN ? false : 'prune and the session lock probe exist only on darwin'
@@ -218,6 +218,7 @@ test('audit failures: apply-start fails closed after the checks; later lines bec
     assert.ok(result.warnings.some((w) => w.code === 'audit-failed'), JSON.stringify(result.warnings))
     assert.equal(result.state, 'complete', 'an audit warning never changes the outcome')
     assertWorld(world, { label: 'apply with a failing audit' })
+    const pruned = world.idsInTrash()
     writable(world)
 
     // 3. restore-start cannot be written: nothing comes back.
@@ -247,7 +248,7 @@ test('audit failures: apply-start fails closed after the checks; later lines bec
     const back = await startProcess(world, FAST).call('restore', { batchId: result.batchId })
     assert.equal(back.state, 'complete')
     assert.deepEqual(world.storeTree(), world.original.tree)
-    assert.deepEqual(world.registrySnapshot(), world.original.registry)
+    assert.deepEqual(world.registrySnapshot(), registryAfterRestore(world.original.registry, [pruned]))
   } finally {
     writable(world)
     await world.cleanup()
@@ -292,6 +293,7 @@ test('a plan cannot be replayed: not after its apply, not after an undo, not aft
   try {
     const p = startProcess(world, FAST)
     const { plan, result } = await pruneAll(p)
+    const pruned = world.idsInTrash()
     const replay = { planId: plan.planId, confirmCount: plan.totals.readySessions }
     assert.equal(await p.codeOf('apply', replay), ERROR.planExpired)
     const back = await p.call('restore', { batchId: result.batchId })
@@ -300,7 +302,7 @@ test('a plan cannot be replayed: not after its apply, not after an undo, not aft
     const fresh = await p.call('plan', { scope: 'all' })
     assert.equal(await startProcess(world, FAST).codeOf('apply', { planId: fresh.planId, confirmCount: fresh.totals.readySessions }), ERROR.planExpired, 'a plan belongs to the process that issued it')
     assert.deepEqual(world.storeTree(), world.original.tree)
-    assert.deepEqual(world.registrySnapshot(), world.original.registry)
+    assert.deepEqual(world.registrySnapshot(), registryAfterRestore(world.original.registry, [pruned]))
   } finally {
     await world.cleanup()
   }

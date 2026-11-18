@@ -282,6 +282,7 @@ test('overview totals: the five cards over the reference store', async () => {
     reclaimableBytes: 15 * MB, // a1 (14) and gk (1)
     reclaimableUnits: 2,
     blockedUnits: 5,
+    archivedMissing: 2, // gone and gone2: archived in the registry, no stored log (index.missing)
   })
   assert.equal(dto.indexLoad, 'normal')
 
