@@ -1844,7 +1844,7 @@ test('recovery at start: a registry call that never settles holds no call past t
     const view = await within(next.service.overview({}), BOUND + 3000)
     assert.notEqual(view, TIMED_OUT, 'overview answers once the bound has passed')
     assertOverview(view)
-    const still = () => linesOf(world, /recovery at start is still running/)
+    const still = () => linesOf(world, /recovery at start has taken 1000 ms so far/)
     assert.equal(still().length, 1, world.logs.join('\n'))
     // Past the bound a call does not wait again.
     assert.notEqual(await within(next.service.overview({ fresh: true }), BOUND / 2), TIMED_OUT, 'no second wait')
