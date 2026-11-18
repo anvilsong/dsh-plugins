@@ -479,7 +479,7 @@ it. There is no rotation; the guards read the whole ledger, so revisit this if
 3. For plans:
    - A refuted task stays off the board unless the lead fixes it from the
      verifier's cited fact.
-   - An unverifiable task goes up one level.
+   - An unverifiable task keeps its level, except that a mechanical one goes up to ordinary; the doubt is copied into its description.
    - A plan is discarded if a root task's premise is refuted or more than a
      third of its tasks are refuted.
    - The lead confirms levels with the router's rules: doubt goes up, never

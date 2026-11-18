@@ -2520,6 +2520,26 @@ test('dispose: fails open children once, removes hooks and registrations, keeps 
 // 5. The plugin-owned ledger: deps.ledger, fail closed, containment, two hosts.
 // (Unit and cross-process tests of src/ledger.js are in ledger.test.mjs.)
 
+test('policy: an unverifiable plan task keeps its level, except that a mechanical one becomes ordinary', () => {
+  // The model router never raises work that clearly meets a lower level's
+  // criteria for safety, so the planner text must not raise every unverifiable
+  // task one step. Only a mechanical task, whose "no judgment" criterion a
+  // doubted premise puts in question, goes up (to ordinary).
+  const text = ADVISOR_WORKFLOW
+  const rule = text.split('\n').find((line) => line.includes('Unverifiable task:'))
+  assert.ok(rule, 'the plan rule names the unverifiable case')
+  assert.doesNotMatch(text, /raise its level one step/, 'no blanket one-step raise')
+  assert.match(rule, /accept it and copy the doubt into its description/)
+  assert.match(rule, /keep its confirmed level/)
+  assert.match(rule, /a task the plan calls mechanical becomes ordinary/)
+  assert.equal(text.split('Unverifiable task:').length - 1, 1, 'the rule appears once')
+  // The level rule next to it still resolves doubt upward and never to mechanical.
+  assert.match(text, /raise when in doubt, never lower substantive work to mechanical/)
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+  assert.doesNotMatch(readme, /An unverifiable task goes up one level/)
+  assert.match(readme, /An unverifiable task keeps its level, except that a mechanical one goes up to ordinary/)
+})
+
 test('policy: advisorWorkflow names the absolute ledger and replies paths; ADVISOR_WORKFLOW keeps placeholders', () => {
   const dataDir = path.join(TMP, 'workflow-data')
   const ledger = createLedger(dataDir)
