@@ -2672,3 +2672,80 @@ test('automatic effort: a click on the checked Default row is an explicit Defaul
     assert.deepEqual(quiet.storage.log, [], `${name}: nothing written`)
   }
 })
+
+// ---- Inline errors: a slot without a failure channel ----
+
+const ROUTE_REFUSED = 'Advisor model anthropic/claude-fable-5-2 is no longer authorized for this session; choose another with /advisor model.'
+// The cell's inline error, as the Advisor switch renders it: the .adv-error node.
+const inlineError = (output) => find(output, (node) => node.props.className === 'adv-error')
+
+// The Advisor switch's own inline error after a refused change, in a slot
+// without reportFailure: the reference for the cells' element.
+async function switchInlineError(text) {
+  const runtime = createRuntime()
+  const registrations = loadWithRuntime(runtime, { execute: async () => ({ kind: 'error', text }) })
+  const view = { active: false, verifierModel: null, advisorModel: null, pending: false, pendingTarget: null, pendingSince: null, failure: null }
+  const wrapper = registrations[0]({ useProjection: () => view })
+  const mounted = runtime.mount(wrapper.type)
+  const output = mounted.render(wrapper.props)
+  find(output, (node) => node.type === 'Switch').props.onChange(true)
+  await ticks()
+  return inlineError(mounted.render())
+}
+
+test('route cells: without a failure channel a refused change shows its message in the cell, as the Advisor switch does, and the next successful change clears it', async () => {
+  const reference = await switchInlineError('switch refused')
+  assert.ok(reference, 'the Advisor switch shows its error inline')
+  for (const cell of ['advisor', 'verifier']) {
+    let refuse = true
+    const harness = cellHarness({
+      cell,
+      props: { reportFailure: undefined },
+      execute: () => (refuse ? { kind: 'error', text: ROUTE_REFUSED } : { kind: 'success' }),
+    })
+    assert.equal(inlineError(harness.rerender()), undefined, `${cell}: nothing before a change`)
+
+    // The command line itself is refused: the cell reverts and says why.
+    await harness.pickModel(FABLE)
+    const refused = inlineError(harness.rerender())
+    assert.ok(refused, `${cell}: the refusal is shown in the cell`)
+    assert.equal(textOf(refused), ROUTE_REFUSED, `${cell}: the Host text verbatim`)
+    assert.deepEqual({ ...refused.props }, { ...reference.props }, `${cell}: the switch's class and accessibility attributes (role alert)`)
+    assert.equal(refused.props.role, 'alert')
+    assert.deepEqual(harness.reports, [], `${cell}: there is no channel to report to`)
+    assert.equal(harness.desired(), null, `${cell}: the cell reverts`)
+    assert.equal(textOf(harness.cellValue()), 'Inherit')
+
+    // The next successful change clears it, as the switch's does.
+    refuse = false
+    await harness.pickModel(OPUS)
+    assert.equal(inlineError(harness.rerender()), undefined, `${cell}: cleared by the next successful change`)
+
+    // A rejection the Host records for this cell's pending change shows the same way.
+    harness.fail(BUSY)
+    const recorded = inlineError(harness.rerender())
+    assert.ok(recorded, `${cell}: a recorded rejection is shown in the cell`)
+    assert.equal(textOf(recorded), BUSY)
+    assert.deepEqual({ ...recorded.props }, { ...reference.props })
+    assert.equal(harness.desired(), null)
+    await harness.pickModel(FABLE)
+    assert.equal(inlineError(harness.rerender()), undefined, `${cell}: and cleared again by the next change`)
+    assert.deepEqual(harness.reports, [])
+  }
+})
+
+test('route cells: with a failure channel a refused change goes to the channel and is not shown in the cell', async () => {
+  for (const cell of ['advisor', 'verifier']) {
+    let refuse = true
+    const harness = cellHarness({ cell, execute: () => (refuse ? { kind: 'error', text: ROUTE_REFUSED } : { kind: 'success' }) })
+    await harness.pickModel(FABLE)
+    assert.deepEqual(harness.reports, [ROUTE_REFUSED], `${cell}: reported to the channel`)
+    assert.equal(inlineError(harness.rerender()), undefined, `${cell}: not rendered inline`)
+    assert.equal(harness.desired(), null)
+    refuse = false
+    await harness.pickModel(OPUS)
+    harness.fail(BUSY)
+    assert.deepEqual(harness.reports, [ROUTE_REFUSED, BUSY], `${cell}: a recorded rejection goes to the channel too`)
+    assert.equal(inlineError(harness.rerender()), undefined)
+  }
+})

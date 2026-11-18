@@ -460,6 +460,26 @@ function harness(options = {}) {
   }
   const call = (name, args, opts = {}) => hostDenial({ name, arguments: args, agent: pick(opts, lead) })
   const delegate = (args = {}, opts = {}) => call(opts.tool ?? 'subagent', { name: PLANNER, description: 'Plan', prompt: 'Sanitized briefing.', ...args }, opts)
+  // One delegation as the Host pipeline runs it: the guards see an execution
+  // carrying its executor token, and tools/result later gets that same object.
+  let callCount = 0
+  function delegation(args = {}, opts = {}) {
+    callCount++
+    const exec = {
+      callId: `call_${callCount}`,
+      rootCallId: `call_${callCount}`,
+      token: Symbol(`call_${callCount}`),
+      name: opts.tool ?? 'subagent',
+      arguments: Object.freeze({ name: PLANNER, description: 'Plan', prompt: 'Sanitized briefing.', ...args }),
+      agent: pick(opts, lead),
+    }
+    return { exec, denial: hostDenial(exec) }
+  }
+  // tools/result: the frozen execution and its final result, as two arguments.
+  const toolResult = (exec, result) => {
+    if (exec !== null && typeof exec === 'object' && !Object.isFrozen(exec)) Object.freeze(exec)
+    for (const fn of [...(listeners.get('tools/result') ?? [])]) fn(exec, result)
+  }
   function run(c, name, args, opts = {}) {
     const exec = { name, arguments: args, agent: pick(opts, c.agent), toolSet: opts.toolSet }
     const denial = hostDenial(exec)
@@ -488,7 +508,7 @@ function harness(options = {}) {
   const reasons = () => lines().map((line) => [line.status, line.failure_reason])
   return {
     state, ctx, lead, mate, dir, ledger, deps, logs, boundary, hostGuards, listeners, hostGrep,
-    child, start, end, agentDisposed, brief, call, delegate, run, submit, dispose, lines, terminal, statuses, reasons,
+    child, start, end, agentDisposed, brief, call, delegate, delegation, toolResult, run, submit, dispose, lines, terminal, statuses, reasons,
   }
 }
 
@@ -1670,6 +1690,170 @@ test('delegation: an invalid reserved child takes no slot and consumes its id', 
   assert.equal(h.delegate({ name: PLANNER_B }), undefined)
 })
 
+// Final outcomes as the Host's tool pipeline hands them to tools/result.
+const toolFailure = (message, info) => Object.freeze({
+  isError: true,
+  error: { message, ...(info === undefined ? {} : { info }) },
+  content: [{ type: 'text', text: `Error: ${message}` }],
+})
+const SPAWN_REFUSED = toolFailure('unsupported reasoning_effort "max" for anthropic/claude-haiku-5-5')
+const INVALID_ARGS = toolFailure('subagent: "prompt" must be a string')
+const ABORTED_BEFORE_DISPATCH = toolFailure('tool call aborted before dispatch', { name: 'AbortError', code: 'ABORTED_BEFORE_DISPATCH' })
+const ABORTED_AFTER_BODY = toolFailure('tool call aborted', { name: 'AbortError', code: 'ABORTED' })
+const SPAWNED = Object.freeze({ isError: false, value: { name: PLANNER }, content: [{ type: 'text', text: `Started ${PLANNER}.` }] })
+const PLANNER_C = 'advisor-planner-fedcba987654'
+const STARTING = /^Another advisor child is starting for this session; only one may run at a time\.$/
+
+test('delegation: a delegation that ends without a child, failed or cancelled, frees its start reservation at once', async (t) => {
+  for (const [label, outcome] of [['spawn refused', SPAWN_REFUSED], ['invalid arguments', INVALID_ARGS], ['cancelled before dispatch', ABORTED_BEFORE_DISPATCH], ['cancelled', ABORTED_AFTER_BODY]]) {
+    const h = harness()
+    t.after(h.dispose)
+    const first = h.delegation()
+    assert.equal(first.denial, undefined, `${label}: reserves PLAN_ID`)
+    assert.match(h.delegate({ name: PLANNER_B }), STARTING, `${label}: another id is refused while the call is in flight`)
+    h.toolResult(first.exec, outcome)
+    // No child exists, so neither a same-name retry nor a new id waits 60 s.
+    const retry = h.delegation()
+    assert.equal(retry.denial, undefined, `${label}: a same-name retry passes`)
+    h.toolResult(retry.exec, outcome)
+    assert.equal(h.delegate({ name: CONSULT_B }), undefined, `${label}: a new id passes as soon as the call ended`)
+    assert.deepEqual(h.lines(), [], `${label}: a delegation without a child writes no line`)
+  }
+})
+
+test('delegation: a delegation that created its child works as before: subagent/start clears the reservation and the call\'s result frees nothing else', async (t) => {
+  const h = harness()
+  t.after(h.dispose)
+  const first = h.delegation()
+  assert.equal(first.denial, undefined)
+  const c = h.child()
+  h.start(c) // the spawn emits subagent/start before its tool call returns
+  h.brief(c, 'Sanitized briefing.')
+  h.toolResult(first.exec, SPAWNED)
+  assert.deepEqual(h.boundary.livePlanners.get(h.lead.id), { planId: PLAN_ID, agentId: 'planner-1', name: PLANNER })
+  assert.match(h.delegate({ name: PLANNER_B }), /^Advisor child advisor-planner-abcdef012345 is still running/)
+  // A late failure for that call (cancelled after its child started) frees nothing.
+  h.toolResult(first.exec, ABORTED_AFTER_BODY)
+  assert.match(h.delegate({ name: PLANNER_B }), /is still running/)
+  assert.ok(await h.submit(c, plan()), 'the child still records its plan')
+  h.end(c)
+  await settle()
+  assert.deepEqual(h.statuses(), ['started', 'ok'])
+  assert.match(h.delegate(), /already used/)
+  // The next delegation reserves; the earlier call's late result cannot free it.
+  const next = h.delegation({ name: PLANNER_B })
+  assert.equal(next.denial, undefined)
+  h.toolResult(first.exec, SPAWN_REFUSED)
+  assert.match(h.delegate({ name: PLANNER_C }), STARTING)
+  h.toolResult(next.exec, SPAWN_REFUSED)
+  assert.equal(h.delegate({ name: PLANNER_C }), undefined, 'only its own failure frees it')
+
+  // A successful call leaves its reservation to the child's start.
+  const s = harness()
+  t.after(s.dispose)
+  const spawned = s.delegation()
+  s.toolResult(spawned.exec, SPAWNED)
+  assert.match(s.delegate({ name: PLANNER_B }), STARTING, 'only the child\'s start, or the 60 s expiry, frees it')
+  const child = s.child()
+  s.start(child)
+  assert.equal(s.boundary.livePlanners.get(s.lead.id)?.agentId, 'planner-1')
+  assert.match(s.delegate({ name: PLANNER_B }), /is still running/)
+})
+
+test('delegation: a second concurrent delegation is still refused while the first is in flight, and the refused call\'s result frees nothing', (t) => {
+  const h = harness()
+  t.after(h.dispose)
+  const first = h.delegation()
+  assert.equal(first.denial, undefined)
+  const second = h.delegation({ name: PLANNER_B })
+  assert.match(second.denial, STARTING)
+  h.toolResult(second.exec, toolFailure(second.denial))
+  const third = h.delegation({ name: PLANNER_C })
+  assert.match(third.denial, STARTING, 'the refused call cannot free the first call\'s reservation')
+  h.toolResult(third.exec, toolFailure(third.denial))
+  // A teammate's refused call of the same name frees nothing either.
+  const mates = h.delegation({}, { agent: h.mate })
+  assert.match(mates.denial, /^Only the lead can start an advisor child\.$/)
+  h.toolResult(mates.exec, toolFailure(mates.denial))
+  assert.match(h.delegate({ name: PLANNER_B }), STARTING)
+  // Only the first call's own end frees it.
+  h.toolResult(first.exec, SPAWN_REFUSED)
+  assert.equal(h.delegate({ name: PLANNER_B }), undefined)
+})
+
+test('delegation: a same-name retry that fails first does not free the reservation while the first call is still spawning', (t) => {
+  const h = harness()
+  t.after(h.dispose)
+  const first = h.delegation()
+  const retry = h.delegation()
+  assert.equal(retry.denial, undefined, 'a same-name retry passes while the first call is in flight')
+  // The retry is refused by the Host (duplicate name) while the first call is still spawning.
+  h.toolResult(retry.exec, SPAWN_REFUSED)
+  assert.match(h.delegate({ name: PLANNER_C }), STARTING, 'the first call still holds the one slot')
+  // The first call ends without a child too: now the slot is free.
+  h.toolResult(first.exec, SPAWN_REFUSED)
+  const next = h.delegation({ name: PLANNER_C })
+  assert.equal(next.denial, undefined, 'freed once every holder has ended without a child')
+})
+
+test('delegation: a stale or repeated release for an earlier call cannot free a later call\'s reservation', (t) => {
+  const h = harness()
+  t.after(h.dispose)
+  // A same-name retry while the first call is in flight takes the reservation over.
+  const first = h.delegation()
+  const retry = h.delegation()
+  assert.equal(retry.denial, undefined, 'a same-name retry passes')
+  h.toolResult(first.exec, SPAWN_REFUSED)
+  assert.match(h.delegate({ name: PLANNER_B }), STARTING, 'the first call\'s failure leaves the retry\'s reservation')
+  h.toolResult(retry.exec, SPAWN_REFUSED)
+  const next = h.delegation({ name: PLANNER_B })
+  assert.equal(next.denial, undefined, 'freed by the call that held it')
+  // Late or repeated results of the earlier calls free nothing.
+  h.toolResult(first.exec, SPAWN_REFUSED)
+  h.toolResult(retry.exec, ABORTED_AFTER_BODY)
+  assert.match(h.delegate({ name: PLANNER_C }), STARTING)
+  // Nor does an execution that only looks like the holder: same name, agent
+  // and call id, another executor token.
+  h.toolResult({ ...next.exec, token: Symbol('another call') }, SPAWN_REFUSED)
+  assert.match(h.delegate({ name: PLANNER_C }), STARTING)
+  // The executor token names the call: a copy that keeps it is that call.
+  h.toolResult({ ...next.exec }, SPAWN_REFUSED)
+  const last = h.delegation({ name: PLANNER_C })
+  assert.equal(last.denial, undefined, 'freed through a copy that keeps the executor token')
+  // Repeated releases of the ended call are idempotent and free nothing later.
+  h.toolResult(next.exec, SPAWN_REFUSED)
+  h.toolResult({ ...next.exec }, ABORTED_AFTER_BODY)
+  assert.match(h.delegate(), STARTING, 'a repeated release of an ended call frees nothing later')
+})
+
+test('delegation: the 60 s expiry stays the backstop when no result arrives or the observer gets odd input', (t) => {
+  const h = harness()
+  t.after(h.dispose)
+  const first = h.delegation()
+  assert.equal(first.denial, undefined)
+  const torn = () => { throw new Error('torn down') }
+  const odd = [
+    [undefined, undefined], [null, null], ['subagent', SPAWN_REFUSED], [first.exec, undefined], [first.exec, null], [first.exec, {}],
+    [first.exec, { isError: 'true' }], [first.exec, SPAWNED], [{ name: 'subagent' }, SPAWN_REFUSED],
+    [{ ...first.exec, agent: undefined }, SPAWN_REFUSED], [{ ...first.exec, agent: h.mate }, SPAWN_REFUSED],
+    [{ ...first.exec, name: 'subagent_fork' }, SPAWN_REFUSED], [{ ...first.exec, arguments: { name: PLANNER_B } }, SPAWN_REFUSED],
+    [{ ...first.exec, arguments: null }, SPAWN_REFUSED],
+    [Object.defineProperty({}, 'name', { get: torn }), SPAWN_REFUSED],
+    [{ ...first.exec, get agent() { return torn() } }, SPAWN_REFUSED],
+    [first.exec, Object.defineProperty({}, 'isError', { get: torn })],
+  ]
+  for (const [exec, result] of odd) assert.doesNotThrow(() => h.toolResult(exec, result))
+  assert.match(h.delegate({ name: PLANNER_B }), STARTING, 'nothing odd frees it')
+  h.state.clock += 59_999
+  assert.match(h.delegate({ name: PLANNER_B }), STARTING)
+  h.state.clock += 1
+  const late = h.delegation({ name: PLANNER_B })
+  assert.equal(late.denial, undefined, 'the reservation still expires after 60 s')
+  // The observer is live: the real end of that call frees it.
+  h.toolResult(late.exec, SPAWN_REFUSED)
+  assert.equal(h.delegate({ name: PLANNER_C }), undefined)
+})
+
 test('host guard: advisor children cannot be messaged and unknown advisor-* children are refused', (t) => {
   const h = harness()
   t.after(h.dispose)
@@ -2662,14 +2846,28 @@ test('caps: the wall-clock cap fails and cancels a running child; a submit clear
   assert.match(h.run(c, 'read', { file_path: 'src/a.js' }), /This advisor child has stopped/)
   assert.equal(h.boundary.livePlanners.size, 0, 'a failed child releases the slot')
 
-  const quick = harness({ maxMs: 40 })
+  // The cap must still be pending when the submit lands, so it is wide enough for a loaded machine
+  // (the submit takes milliseconds) and the wait after it is longer than the cap.
+  const quick = harness({ maxMs: 250 })
   t.after(quick.dispose)
   const c2 = startConsult(quick)
   await quick.submit(c2, advice())
-  await sleep(100)
+  await sleep(500)
   assert.equal(c2.agent.cancelled, 0)
   await settle()
   assert.deepEqual(quick.statuses(), ['started', 'ok'])
+})
+
+test('text: the README says the caps count within the Host process, so a child resumed after a Host restart gets a fresh budget', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+  const section = readme.slice(readme.indexOf('### What the Host records'), readme.indexOf('### Data directory'))
+  assert.ok(section.startsWith('### What the Host records'))
+  // Wrapping aside, the exact sentences, next to the caps they qualify.
+  const flat = section.replace(/\s+/g, ' ')
+  const caps = 'A child that ends, times out (30 minutes), exceeds 150 tool calls, or is stopped without a result gets a `status: failed` line with `failure_reason`.'
+  const caveat = 'The time, tool-call and invalid-submission caps count from when the Host process that runs the child started or resumed it, not from the child\'s first start: a child resumed after a Host restart gets a fresh budget, and its `duration_s`, `tool_calls` and `submit_attempts` count only from the resume.'
+  assert.ok(flat.includes(`${caps} ${caveat}`), 'the caveat follows the caps')
+  assert.equal(readme.replace(/\s+/g, ' ').split(caveat).length - 1, 1, 'it appears once')
 })
 
 test('hash pinning: the verifier for a recorded plan or advice starts only while the reply file is unchanged', async (t) => {

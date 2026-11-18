@@ -626,7 +626,8 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = React.useState(false)
       // The setting this cell sent that the session does not show yet.
       const [desired, setDesired] = React.useState(null)
-      const { busy, run, report } = useCommand(props)
+      // `error` holds a failure only when the slot gives no reportFailure.
+      const { busy, error, run, report } = useCommand(props)
       useDirectoryUpdates(props.ctx, props.sessionId)
       // The Effort group as built when the flyout opened (null: no group),
       // undefined while it is closed: a row that comes or goes while it is
@@ -809,6 +810,8 @@ window.__ModuleLoader__.load({
             : [h('span', { className: 'adv-cell-model' }, value), h('span', { className: 'adv-cell-effort' }, ` · ${valueEffort}`)])),
           h('span', { className: 'adv-chevron' }, saving ? spinnerIcon : chevronIcon),
         ),
+        // As AdvisorOption: shown inline only without the menu's failure channel.
+        error ? h('span', { className: 'adv-error', role: 'alert' }, error) : null,
         open ? h(ModelFlyout, { id: flyoutId, anchor, label: t(config.labelKey), cellRef, onClose: () => setOpen(false) }, (close) => [
           showStale ? h('div', { key: 'stale', className: 'adv-note', role: 'status' }, t(config.staleKey)) : null,
           h(ModelRow, {

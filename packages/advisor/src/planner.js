@@ -818,7 +818,7 @@ export function installPlannerBoundary(ctx, deps) {
   const ledgerReady = [appendLedger, writeReply, idInUse, ledgerEntriesFor].every((fn) => typeof fn === 'function')
   const records = new Map() // child agent id -> record
   const livePlanners = new Map() // root session id -> { planId, agentId }
-  const reservations = new Map() // root session id -> { planId, at }
+  const reservations = new Map() // root session id -> { planId, name, at, calls: Set of the in-flight calls that hold it }
   const plans = new Map() // plan id -> { reply_file, reply_sha256 } recorded by this host
   const writes = new Map() // plan id -> serialized ledger writes
 
@@ -851,6 +851,9 @@ export function installPlannerBoundary(ctx, deps) {
       return undefined
     }
   }
+  // One tool call: the executor's token, which its guards and its
+  // tools/result share; an execution without one is its own identity.
+  const callOf = (exec) => (typeof exec?.token === 'symbol' ? exec.token : exec)
 
   function baseLine(record) {
     return {
@@ -997,9 +1000,33 @@ export function installPlannerBoundary(ctx, deps) {
         : 'Another advisor child is starting for this session; only one may run at a time.'
     }
     if (!(fresh && reservation.name === args.name) && idInUse(id)) return `id ${id} is already used in the ledger or replies; generate a new one.`
-    reservations.set(rootId, { planId: id, name: args.name, at: now() })
+    // Held until the child starts, every call that holds it has ended without one, or 60 s pass.
+    // A same-name retry joins the holders of a fresh reservation; it does not replace them.
+    const held = fresh && reservation.name === args.name ? reservation.calls : new Set()
+    held.add(callOf(exec))
+    reservations.set(rootId, { planId: id, name: args.name, at: now(), calls: held })
     return undefined
   }
+
+  // A delegation that ends without a child (an error or cancelled result)
+  // frees its start reservation at once, so a retry need not wait 60 s. The
+  // spawn publishes subagent/start before its call returns, so a call that
+  // made a child has no reservation left here. A same-name retry shares the
+  // reservation with the call it retries, so each call frees only its own hold
+  // and the reservation goes when the last holder has ended without a child. A
+  // success leaves it to subagent/start, and if this observer never runs the
+  // 60 s expiry still frees it.
+  const disposeResult = ctx.on('tools/result', (exec, result) => {
+    try {
+      if (result?.isError !== true || exec?.name !== 'subagent') return
+      const rootId = exec.agent?.id
+      const reservation = rootId === undefined ? undefined : reservations.get(rootId)
+      if (reservation === undefined || reservation.name !== exec.arguments?.name || !reservation.calls.delete(callOf(exec))) return
+      if (reservation.calls.size === 0) reservations.delete(rootId)
+    } catch (error) {
+      log('warn', `start reservation not released: ${describeError(error)}`)
+    }
+  })
 
   function submitTool(record) {
     const spec = record.spec
@@ -1309,6 +1336,7 @@ export function installPlannerBoundary(ctx, deps) {
     disposeStart()
     disposeEnd()
     disposeDisposed()
+    disposeResult()
     disposeGuard()
   }, { records, plans, livePlanners })
 }

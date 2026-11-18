@@ -374,7 +374,11 @@ create) and appends to `<dataDir>/sessions.jsonl` in the line format below: a
   the briefing arrives.
 
 A child that ends, times out (30 minutes), exceeds 150 tool calls, or is stopped
-without a result gets a `status: failed` line with `failure_reason`.
+without a result gets a `status: failed` line with `failure_reason`. The time,
+tool-call and invalid-submission caps count from when the Host process that
+runs the child started or resumed it, not from the child's first start: a child
+resumed after a Host restart gets a fresh budget, and its `duration_s`,
+`tool_calls` and `submit_attempts` count only from the resume.
 
 Verifiers add `kind: verification` lines, which name the run under
 `verifies` instead of `consult_id`; see
@@ -831,7 +835,7 @@ is written once:
 | `entries` | the number of entries |
 | `confirmed`, `refuted`, `unverifiable` | claim or task entries per status |
 | `other` | entries with ref `other`; with the three counts above it sums to `entries` |
-| `submit_attempts`, `tool_calls`, `duration_s` | report calls checked, tool calls admitted past the verifier's identity checks, and seconds since its first start |
+| `submit_attempts`, `tool_calls`, `duration_s` | report calls checked, tool calls admitted past the verifier's identity checks, and seconds since its first start in this Host process (a verifier resumed after a Host restart counts from the resume) |
 
 For a plan the status counts are per entry, not per task: one task can have
 several entries. There are no token or cost fields for verifiers.
