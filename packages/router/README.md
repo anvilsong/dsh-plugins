@@ -245,8 +245,16 @@ Caveats:
   meets neither Hard criterion is Ordinary. Never relabel substantive work
   Mechanical to save cost. Doubt about whether a level's criteria are met never
   resolves downward, but work that clearly meets a lower level's criteria is not
-  raised for safety. Compare the effect with /router status counts: the
-  per-level line shows which shortlist ran.
+  raised for safety. The `/router status` per-level line shows which shortlist
+  ran, not whether the level was the right one.
+- **Mechanical governs only work the lead chooses to delegate.** Fully specified,
+  checkable work, such as running a named check, is normally run by the lead
+  itself, so `mechanical 0` in `/router status` is the expected reading, not a
+  fault. The tier exists to hold a cheap route behind three strict criteria; a
+  user who wants no cheap route leaves it at Inherit, which is the default. If
+  replays of many sessions that include plan-driven parallel workers still show
+  `mechanical 0`, merge it into Ordinary in the same change as the next router
+  state-version bump (the Advisor's plan levels name Mechanical too).
 - **Inherit by default.** A shortlist applies only when configured. Leave
   inheritance for a named non-cost reason—a capability, tool, context window,
   provider feature, or explicit user preference—or for high-confidence
