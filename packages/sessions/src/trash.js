@@ -16,7 +16,9 @@
 //                            whose last line is `closed` is wholly back in the
 //                            store with nothing left to do: recover() and
 //                            list() skip it after one read of the journal's
-//                            tail, and it stays on disk until a purge
+//                            tail (the Host's check at start, without an
+//                            engine: isClosedBatchFolder), and it stays on
+//                            disk until a purge
 //   <batchId>/sessions/<workspaceDir>/<id>/   a session folder in the trash
 //   .staging-<batchId>/      a batch being created; renamed to <batchId> once its
 //                            manifest and first journal line are on disk
@@ -239,6 +241,64 @@ export function foldJournal(manifest, records) {
   const last = records.at(-1)
   const closed = last?.op === 'closed' && typeof last.batchId === 'string' && last.batchId === manifest.batchId
   return { location, openOp, units, steps, createdFolders, logs, closed }
+}
+
+/**
+ * Whether the journal in the batch folder `dir` ends with this batch's
+ * `closed` line: one read of the journal's tail through `fs` (open read-only
+ * with O_NOFOLLOW, fstat, read, close), whatever the size of the batch. A torn
+ * last line, a line after `closed` or a closed line of another batch id is not
+ * closed. Never throws.
+ */
+function journalEndsClosed(fs, dir, batchId) {
+  let fd
+  try {
+    fd = fs.openSync(path.join(dir, JOURNAL_FILE), READ_FLAGS)
+  } catch {
+    return false
+  }
+  try {
+    const stat = fs.fstatSync(fd)
+    if (!stat.isFile() || stat.size < 2) return false
+    const length = Math.min(stat.size, CLOSED_TAIL_BYTES)
+    const buffer = Buffer.alloc(length)
+    const read = fs.readSync(fd, buffer, 0, length, stat.size - length)
+    if (read !== length || buffer[length - 1] !== NEWLINE[0]) return false
+    const text = buffer.toString('utf8', 0, length - 1)
+    const start = text.lastIndexOf('\n')
+    if (start < 0 && stat.size > length) return false
+    const value = JSON.parse(text.slice(start + 1))
+    return isObject(value) && value.v === FORMAT_VERSION && value.op === 'closed' && value.batchId === batchId
+  } catch {
+    return false
+  } finally {
+    try { fs.closeSync(fd) } catch { /* already closed */ }
+  }
+}
+
+/**
+ * Whether `<trashDir>/<batchId>` is a closed batch, for a caller that holds
+ * neither the trash lock nor an engine (the Host's check before its recovery
+ * at start: a trash that holds only closed batches is nothing to recover).
+ * The folder is lstat'ed first: a symbolic link, a non-folder, a missing or
+ * unreadable folder is not closed, so a recovery looks at it. Then the same
+ * journal-tail read as the engine's (journalEndsClosed). A name that is not a
+ * batch id (a `.purge-` or `.staging-` folder, `..`) is not a closed batch.
+ * At most five fs calls, all through `fs`; reads only, never throws.
+ * @param {object} fs node:fs-compatible sync API
+ * @param {string} trashDir absolute trash folder
+ * @param {string} batchId
+ */
+export function isClosedBatchFolder(fs, trashDir, batchId) {
+  if (typeof trashDir !== 'string' || !path.isAbsolute(trashDir) || !isBatchId(batchId)) return false
+  const dir = path.join(trashDir, batchId)
+  try {
+    const stat = fs.lstatSync(dir)
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return false
+  } catch {
+    return false
+  }
+  return journalEndsClosed(fs, dir, batchId)
 }
 
 /** One entry of a `logs` line: a session id, the log file name, the revision file part and the size of the log. */
@@ -720,36 +780,11 @@ export function createTrash(options) {
   const journalOf = (dir) => (fields) => appendLine(path.join(dir, JOURNAL_FILE), record(fields))
 
   /**
-   * Whether the last journal line of the batch in `dir` is its `closed` line:
-   * one read of the journal's tail (open, fstat, read, close), whatever the
-   * size of the batch. A torn last line, a line after `closed` or a closed
-   * line of another batch id is not closed. Never throws.
+   * Whether the last journal line of the batch in `dir` is its `closed` line
+   * (journalEndsClosed: one read of the journal's tail, four fs calls,
+   * whatever the size of the batch). Never throws.
    */
-  function closedAt(dir, batchId) {
-    let fd
-    try {
-      fd = fs.openSync(path.join(dir, JOURNAL_FILE), READ_FLAGS)
-    } catch {
-      return false
-    }
-    try {
-      const stat = fs.fstatSync(fd)
-      if (!stat.isFile() || stat.size < 2) return false
-      const length = Math.min(stat.size, CLOSED_TAIL_BYTES)
-      const buffer = Buffer.alloc(length)
-      const read = fs.readSync(fd, buffer, 0, length, stat.size - length)
-      if (read !== length || buffer[length - 1] !== NEWLINE[0]) return false
-      const text = buffer.toString('utf8', 0, length - 1)
-      const start = text.lastIndexOf('\n')
-      if (start < 0 && stat.size > length) return false
-      const value = JSON.parse(text.slice(start + 1))
-      return isObject(value) && value.v === FORMAT_VERSION && value.op === 'closed' && value.batchId === batchId
-    } catch {
-      return false
-    } finally {
-      try { fs.closeSync(fd) } catch { /* already closed */ }
-    }
-  }
+  const closedAt = (dir, batchId) => journalEndsClosed(fs, dir, batchId)
   const tryJournal = (journal, fields) => {
     try {
       journal(fields)

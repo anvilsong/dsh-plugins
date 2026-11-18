@@ -24,6 +24,7 @@ import { PathError } from '../src/paths.js'
 import {
   batchState, createTrash, foldJournal, LOCK_GRACE_MS, parseJournal, PURGE_PREFIX, STAGING_PREFIX, TrashError,
 } from '../src/trash.js'
+import * as trashModule from '../src/trash.js'
 
 const TMP = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'sessions-trash-test-')))
 after(() => rmSync(TMP, { recursive: true, force: true }))
@@ -1870,6 +1871,87 @@ test('a closed line that is not the last line, or names another batch, does not 
   assert.deepEqual([report.closed, report.batches.map((b) => b.batchId)], [0, [batchId]], 'a line after the closed line reopens it')
   appendFileSync(journal, '{"v":1,"op":"clo')
   assert.equal(trashFor(world).recover().closed, 0, 'a torn last line is not a closed line')
+})
+
+test('isClosedBatchFolder: the lock-free check the Host makes at start reads the folder lstat and the journal tail only; a torn tail, a line after closed, another batch id, a symlinked, unreadable or missing folder and a non-batch name are not closed; it never throws', () => {
+  const { isClosedBatchFolder } = trashModule
+  assert.equal(typeof isClosedBatchFolder, 'function', 'trash.js exports isClosedBatchFolder')
+  const world = makeWorld('closed-folder')
+  const trash = trashFor(world)
+  const batchId = applyAll(world)
+  const journal = path.join(world.trashDir, batchId, 'journal.jsonl')
+  const check = (name = batchId, fs = nodeFs) => isClosedBatchFolder(fs, world.trashDir, name)
+  assert.equal(check(), false, 'a batch that holds its sessions is not closed')
+  assert.equal(trash.restore(batchId).state, 'complete')
+  assert.equal(check(), false, 'wholly back, but no closed line yet')
+  assert.equal(trash.close(batchId), true)
+  assert.equal(check(), true)
+  assert.equal(trash.isClosed(batchId), true, 'the same answer as the engine')
+
+  // The cost: one lstat of the folder, then the engine's tail read (open read-only and O_NOFOLLOW, fstat, read, close).
+  const events = []
+  const frozen = trashSnapshot(world)
+  assert.equal(check(batchId, instrumentedFs({ root: world.root, events }).fs), true)
+  assert.deepEqual(events.map((e) => e.name), ['lstatSync', 'openSync', 'fstatSync', 'readSync', 'closeSync'])
+  assert.deepEqual(events[0].paths, [path.join(world.trashDir, batchId)])
+  assert.deepEqual(events[1].paths, [journal])
+  assert.equal(events[1].flags & (constants.O_WRONLY | constants.O_RDWR | constants.O_CREAT | constants.O_APPEND), 0, 'read-only')
+  assert.notEqual(events[1].flags & constants.O_NOFOLLOW, 0, 'never through a symlinked journal')
+  assert.deepEqual(trashSnapshot(world), frozen, 'nothing is written')
+
+  // The journal tail, as closedAt() reads it; each case is closed again by the engine afterwards.
+  const cases = [
+    ['a line after the closed line', `${JSON.stringify({ v: 1, ts: 2, op: 'step', step: 'attach', id: 'sa1', outcome: 'ok' })}\n`],
+    ['a closed line of another batch id', `${JSON.stringify({ v: 1, ts: 3, op: 'closed', batchId: 'b-20200101T000000Z-00000000' })}\n`],
+    ['a torn last line after the closed line', '{"v":1,"ts":4,"op":"st'],
+    ['a torn closed line', '{"v":1,"ts":5,"op":"closed","batchId":"'],
+  ]
+  for (const [label, text] of cases) {
+    appendFileSync(journal, text)
+    assert.equal(check(), false, label)
+    assert.equal(trash.isClosed(batchId), false, `${label}: the engine agrees`)
+    assert.equal(trash.close(batchId), true, `${label}: closed again`)
+    assert.equal(check(), true, `${label}: closed again`)
+  }
+
+  // The folder itself: a symbolic link (even to a folder whose journal ends with its closed line), a file,
+  // an unreadable folder and a missing one are not closed, so a recovery looks at them.
+  const elsewhere = path.join(world.root, 'elsewhere-batch')
+  const linkId = 'b-20991231T235959Z-ffffffff'
+  mkdirSync(elsewhere, { mode: 0o700 })
+  writeFileSync(path.join(elsewhere, 'journal.jsonl'), `${JSON.stringify({ v: 1, ts: 1, op: 'closed', batchId: linkId })}\n`, { mode: 0o600 })
+  symlinkSync(elsewhere, path.join(world.trashDir, linkId))
+  assert.equal(check(linkId), false, 'a symlinked batch folder')
+  rmSync(path.join(world.trashDir, linkId))
+  const fileId = 'b-20991231T235959Z-eeeeeeee'
+  writeFileSync(path.join(world.trashDir, fileId), `${JSON.stringify({ v: 1, ts: 1, op: 'closed', batchId: fileId })}\n`, { mode: 0o600 })
+  assert.equal(check(fileId), false, 'a file named like a batch')
+  rmSync(path.join(world.trashDir, fileId))
+  assert.equal(check('b-20991231T235959Z-dddddddd'), false, 'a missing folder')
+  if (process.getuid?.() !== 0) {
+    nodeFs.chmodSync(path.join(world.trashDir, batchId), 0o000)
+    try {
+      assert.equal(check(), false, 'an unreadable folder')
+    } finally {
+      nodeFs.chmodSync(path.join(world.trashDir, batchId), 0o700)
+    }
+    assert.equal(check(), true)
+  }
+
+  // Names that are not batch ids, and arguments of the wrong kind.
+  for (const name of [`${PURGE_PREFIX}${batchId}`, `${STAGING_PREFIX}${batchId}`, '..', `${batchId}/..`, '', null, 7]) {
+    assert.equal(check(name), false, `not a batch id: ${String(name)}`)
+  }
+  assert.equal(isClosedBatchFolder(nodeFs, 'relative/trash', batchId), false, 'a relative trash folder')
+  assert.equal(isClosedBatchFolder(nodeFs, null, batchId), false)
+
+  // It never throws: an fs that throws everywhere, or answers nonsense.
+  const throwing = new Proxy({}, { get: () => () => { throw Object.assign(new Error('EIO'), { code: 'EIO' }) } })
+  assert.equal(check(batchId, throwing), false)
+  assert.equal(check(batchId, { lstatSync: () => ({}) }), false)
+  assert.equal(check(batchId, { ...nodeFs, openSync: () => { throw new Error('EMFILE') } }), false)
+  assert.equal(check(batchId, null), false)
+  assertEachOnce(world, 'closed-folder')
 })
 
 test('log facts: recordLogs() journals what was moved; the fold keeps the last facts per session; bad facts are refused', () => {

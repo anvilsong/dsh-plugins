@@ -22,7 +22,8 @@ schedule, no automatic prune, no expiry. Only recovery runs without a click:
 when the Host starts and whenever the page reads the Trash tab afresh (**Refresh**,
 the timed refresh, and the read the page makes by itself after every change), it can finish an
 interrupted operation (move folders back toward the store, run registry steps
-still owed), never more (see [Recovery](#recovery)). It never opens a session
+still owed), never more; a registry step that fails three times in a row is
+then left for your next change (see [Recovery](#recovery)). It never opens a session
 log body and never calls session search. A session title comes from the host's projection cache (no log read);
 without one, a row shows the short session id.
 
@@ -203,7 +204,8 @@ only to that recorded folder. Project folders and the sessions tree are never
 moved or removed. A batch wholly back in the store with every registry step
 done is **closed**: its journal ends with a `closed` line, the Trash tab hides
 it, and recovery skips it after reading only the end of that journal (a fixed
-four file calls per closed batch, whatever it held). Its small manifest, hints
+four file calls per closed batch, whatever it held; the check at Host start
+adds an lstat of the folder). Its small manifest, hints
 and journal stay in the folder; only **Delete permanently…** (by batch id)
 removes a batch.
 
@@ -302,6 +304,21 @@ session; that tree's registry steps wait), `registry-step-failed`,
   listed as *needs recovery*, and every **Refresh** of the Trash tab runs a
   recovery for it again; while that recovery runs, a change you start gets
   `busy`. Try it again a moment later.
+- **A registry step that keeps failing waits for your next change.** When a
+  registry call fails (`registry-step-failed`: it throws, or an attach resolves
+  without attaching), the batch stays *needs recovery*. The automatic
+  recoveries, at Host start and on a fresh read of the Trash tab, try such a
+  step at most three times in a row for one session; the count is kept per
+  step and per session in the batch journal, and every attempt, by any path,
+  counts. After that they leave the step alone: no registry call, no journal
+  or audit line, and a fresh read then starts no recovery at all for it (the
+  Host logs a line that names the batch and the step only when an automatic
+  recovery reaches it, which after the third failure means at the next Host
+  start, so the row staying *needs recovery* is what you see first). Your next prune,
+  restore or permanent delete, of any batch, tries every owed step again, each
+  time. **Restore batch** on the *needs recovery* row is the simplest: when the
+  steps now succeed it finishes them, and a batch wholly back in the store is
+  then closed. A step that succeeded and is owed again later starts a new count.
 - **Search and caches after a prune.** The plugin calls neither. The search
   index reconciles with the session list before each search, so a pruned
   session drops out of search at the **next search** (not at restart) and is
@@ -339,7 +356,8 @@ session; that tree's registry steps wait), `registry-step-failed`,
   finishes the registry steps: attach, order, archive, pin. That is a Host
   start, the next prune, restore or permanent delete, or any fresh read of the
   Trash tab; the page makes one by itself right after every change, so in
-  practice the steps finish within moments of the restore. The
+  practice the steps finish within moments of the restore (unless a registry
+  call keeps failing: see above). The
   folder is back in the store either way, and the log is never altered.
 - **Archive and pin order after a restore.** The workspace order comes back
   exactly. Of the registry's archive and pin lists, a restore gives back the
@@ -378,8 +396,15 @@ session; that tree's registry steps wait), `registry-step-failed`,
   *conflict*). Recovery runs once when the Host starts the plugin, at the start
   of every prune, restore or permanent delete, and when **Refresh** reads the
   Trash tab while a batch still owes registry steps (a plain read only reports
-  them). At start it runs when the trash holds any batch folder, closed ones
-  included: every such start reads the store once and takes the trash lock. A
+  them). At start it runs only when the trash holds a batch that is not
+  closed; a batch folder that is a symbolic link or cannot be read counts as
+  not closed, and `.staging-*` or `.purge-*` folders alone do not start it.
+  A trash of closed batches only costs the start an lstat and one read of
+  the journal's end per batch: the store is not read and the trash lock is
+  not taken. The start and the Trash tab read are the automatic recoveries:
+  they try a registry step that keeps failing at most three times in a row
+  (see [Limits](#limits-you-should-know)); a prune, restore or permanent
+  delete always tries it again. A
   failure at start is only logged; while the host services it needs are not
   there yet, the next page call starts it. It runs under the trash lock. Every
   page call waits for the one at start, at most 5 seconds: after that the call
@@ -429,7 +454,7 @@ text is ever recorded**. A line over 4 MiB is refused, not cut.
 | `unit-skipped` | a tree refused at its rename step (trees the re-read skips are only counted in `apply-end`) | `batchId`, `planId`, `reasons[]` |
 | `registry-step` | after each tree's registry steps | `batchId`, `counts` (steps, failed), `outcome` |
 | `apply-end` | the end of a prune | `planId`, `batchId`, `counts`, `bytes`, `outcome` |
-| `recover` | when a recovery changed something | `counts` (batches, appended, moved, steps) |
+| `recover` | when a recovery changed something | `counts` (batches, appended, moved, steps: registry steps that ran and did not fail; a recovery whose only work was failed attempts writes no line) |
 | `restore-start`, `restore-end` | a restore | `batchId`, and `counts`, `bytes`, `outcome` at the end |
 | `purge-start`, `purge-end`, `purge-failed` | a permanent delete | `batchId`, and `counts`, `bytes`, `outcome` or `errorCode` |
 

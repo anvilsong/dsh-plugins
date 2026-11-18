@@ -37,8 +37,13 @@
 //   get their restore steps. It never deletes and never moves toward the trash.
 //   It runs before every mutation, once when the service starts (best effort,
 //   logged; every call waits for it, at most STARTUP_WAIT_MS; tried again at
-//   a later call while the host services are missing), and on a fresh Trash
-//   tab read when a batch still owes registry steps.
+//   a later call while the host services are missing; skipped when the trash
+//   holds no batch that is not closed), and on a fresh Trash tab read when a
+//   batch still owes registry steps. The last two are automatic: they no
+//   longer attempt a step that failed AUTO_RETRY_FAILURES times in a row for
+//   that session in that batch (the batch stays needs-recovery; a log line says
+//   so when an automatic recovery next reaches the step); the recovery of a
+//   mutation always attempts every owed step.
 //
 // The trash manifest (src/trash.js) records each member's workspace, parent,
 // archived and pinned marks, but not its position in the workspace order, its
@@ -63,12 +68,21 @@ import { assertRequest, BATCH_ID_PATTERN, ERROR, ERROR_CODES, METHOD_NAMES, NAME
 import { diffPlan, planDigest, selectScope } from './lineage.js'
 import { assertDisjoint, PathError } from './paths.js'
 import { archivedPage, buildIndex, overview as overviewOf } from './store-index.js'
-import { createTrash, isBatchId, MANIFEST_FILE, SESSIONS_FOLDER } from './trash.js'
+import { createTrash, isBatchId, isClosedBatchFolder, MANIFEST_FILE, SESSIONS_FOLDER } from './trash.js'
 
 /** Plans kept in memory; an older one reads as expired. */
 export const PLANS_KEPT = 5
 /** Longest wait of a call for the recovery at start, in ms after that run began (option startupWaitMs). */
 export const STARTUP_WAIT_MS = 5000
+/**
+ * Failed attempts in a row of one registry step of one session in a batch
+ * (its `failed` journal lines since that step's last line that did not fail)
+ * after which the automatic recoveries, at start and on a fresh Trash read,
+ * no longer attempt it. The batch stays needs-recovery, and a Host log line
+ * says so when an automatic recovery next reaches the step. An explicit change (prune, restore, permanent delete, which
+ * recover first, and recover() called in process) always attempts it again.
+ */
+export const AUTO_RETRY_FAILURES = 3
 /** Registry hints of a batch: position, anchors, revision and size of each member. */
 export const HINTS_FILE = 'registry.json'
 export const HINTS_KIND = 'dsh-plugin-sessions/registry-hints'
@@ -534,6 +548,14 @@ function createCore(options) {
     return outcome
   }
 
+  /** Failed attempts in a row of one step in a session's history: its failed lines after its last line that did not fail. */
+  const failuresOf = (history, step) => {
+    let count = 0
+    for (const s of history) if (s.step === step) count = s.outcome === 'failed' ? count + 1 : 0
+    return count
+  }
+  /** Whether the automatic recoveries leave this step alone (AUTO_RETRY_FAILURES). */
+  const autoStopped = (history, step) => failuresOf(history, step) >= AUTO_RETRY_FAILURES
   const detachDone = (history) => history.some((s) => s.step === 'detach' && s.outcome !== 'failed')
   /** The at-prune steps a member in the trash still needs, by the journal and the registry `registry` (isPinned, isArchived). */
   const pruneNeeds = (entry, history, registry) => ({
@@ -569,23 +591,46 @@ function createCore(options) {
     return { isArchived: (id) => archived.has(id), isPinned: (id) => pinned.has(id) }
   }
 
-  /** The at-prune steps one moved member still needs: unpin, detach (recorded workspace), unarchive. */
-  async function completePrune(entry, history, record, warnings) {
+  /**
+   * A step outcome counter: `done` counts the steps that ran and did not fail
+   * (ok or skipped), `failed` the failed attempts.
+   */
+  const tallyOf = () => {
+    const tally = { done: 0, failed: 0 }
+    tally.add = (outcome) => {
+      if (outcome === 'failed') tally.failed += 1
+      else tally.done += 1
+      return outcome
+    }
+    return tally
+  }
+  /**
+   * In an automatic recovery (`held` is set): whether to leave this step
+   * alone because it already failed AUTO_RETRY_FAILURES times in a row; it is
+   * then reported to `held` and stays a registry-step-failed warning.
+   */
+  const holds = (held, history, step, id, warnings) => {
+    if (held === null || !autoStopped(history, step)) return false
+    held(step, id)
+    warnings.add('registry-step-failed', id)
+    return true
+  }
+
+  /**
+   * The at-prune steps one moved member still needs: unpin, detach (recorded
+   * workspace), unarchive. `held`: see holds() (null: every needed step runs).
+   * Returns the step tally (tallyOf).
+   */
+  async function completePrune(entry, history, record, warnings, held = null) {
     const { id } = entry
-    let count = 0
-    if (adapter.isPinned(id)) {
-      await runStep(record, 'unpin', id, () => adapter.unpin(id), warnings)
-      count += 1
+    const tally = tallyOf()
+    const attempt = async (step, fn) => {
+      if (!holds(held, history, step, id, warnings)) tally.add(await runStep(record, step, id, fn, warnings))
     }
-    if (entry.workspaceId !== null && !detachDone(history)) {
-      await runStep(record, 'detach', id, () => adapter.detach(id, entry.workspaceId), warnings)
-      count += 1
-    }
-    if (adapter.isArchived(id)) {
-      await runStep(record, 'unarchive', id, () => adapter.unarchive(id), warnings)
-      count += 1
-    }
-    return count
+    if (adapter.isPinned(id)) await attempt('unpin', () => adapter.unpin(id))
+    if (entry.workspaceId !== null && !detachDone(history)) await attempt('detach', () => adapter.detach(id, entry.workspaceId))
+    if (adapter.isArchived(id)) await attempt('unarchive', () => adapter.unarchive(id))
+    return tally
   }
 
   /** Ids the backend still lists (or cannot answer for): the post-move rule failed for them. */
@@ -650,8 +695,11 @@ function createCore(options) {
    * (strict false) accepts the log, since the session may have been used
    * since, and runs the steps. The folder is back in the store either way and
    * the log is never altered. `logs`: the log facts at the move, by id.
+   * `held` (automatic recoveries only, see holds()): a step that failed
+   * AUTO_RETRY_FAILURES times in a row is left alone; an insert waits for its
+   * attach either way. Returns the step tally (tallyOf).
    */
-  async function completeRestore(entries, histories, hints, logs, record, warnings, { strict }) {
+  async function completeRestore(entries, histories, hints, logs, record, warnings, { strict, held = null }) {
     const items = entries.map((entry) => ({ entry, hint: hints?.get(entry.id) ?? null, history: restorePhase(histories.get(entry.id) ?? []) }))
     items.sort((a, b) => {
       const aw = a.entry.workspaceId
@@ -665,25 +713,24 @@ function createCore(options) {
     const ready = []
     for (const item of items) {
       const needs = restoreNeeds(item.entry, item.history)
-      if (!RESTORE_ORDER.some((step) => needs[step])) continue
+      // The steps this run attempts: the needed ones an automatic recovery does not hold.
+      const run = Object.fromEntries(RESTORE_ORDER.map((step) => [step, needs[step] && !holds(held, item.history, step, item.entry.id, warnings)]))
+      if (needs.attach && !run.attach) run.insert = false
+      if (!RESTORE_ORDER.some((step) => run[step])) continue
       const verdict = await verify(item.entry, item.hint, logs?.get(item.entry.id) ?? null)
       if (verdict === 'missing' || (strict && verdict === 'changed')) {
         warnings.add('recovery-needed', item.entry.id)
         continue
       }
-      ready.push({ ...item, needs })
+      ready.push({ ...item, needs, run })
     }
-    let count = 0
-    for (const { entry, hint, needs } of ready) {
+    const tally = tallyOf()
+    for (const { entry, hint, needs, run } of ready) {
       const { id, workspaceId } = entry
       let attached = !needs.attach && !needs.gone
-      if (needs.attach) {
-        attached = (await runStep(record, 'attach', id, () => adapter.attach(id, workspaceId), warnings)) === 'ok'
-        count += 1
-      }
-      if (attached && needs.insert) {
-        await runStep(record, 'insert', id, () => (hint === null ? 'skipped' : adapter.insertBefore(id, workspaceId, hint.anchors)), warnings)
-        count += 1
+      if (run.attach) attached = tally.add(await runStep(record, 'attach', id, () => adapter.attach(id, workspaceId), warnings)) === 'ok'
+      if (attached && run.insert) {
+        tally.add(await runStep(record, 'insert', id, () => (hint === null ? 'skipped' : adapter.insertBefore(id, workspaceId, hint.anchors)), warnings))
       }
     }
     const byRank = (key, direction) => (a, b) => {
@@ -692,15 +739,13 @@ function createCore(options) {
       if ((ra === null) !== (rb === null)) return ra === null ? 1 : -1
       return (ra === null ? 0 : (ra - rb) * direction) || byString(a.entry.id, b.entry.id)
     }
-    for (const { entry } of ready.filter((item) => item.needs.archive).sort(byRank('archivedAt', 1))) {
-      await runStep(record, 'archive', entry.id, () => adapter.archive(entry.id), warnings)
-      count += 1
+    for (const { entry } of ready.filter((item) => item.run.archive).sort(byRank('archivedAt', 1))) {
+      tally.add(await runStep(record, 'archive', entry.id, () => adapter.archive(entry.id), warnings))
     }
-    for (const { entry } of ready.filter((item) => item.needs.pin).sort(byRank('pinnedAt', -1))) {
-      await runStep(record, 'pin', entry.id, () => (adapter.isArchived(entry.id) ? 'skipped' : adapter.pin(entry.id)), warnings)
-      count += 1
+    for (const { entry } of ready.filter((item) => item.run.pin).sort(byRank('pinnedAt', -1))) {
+      tally.add(await runStep(record, 'pin', entry.id, () => (adapter.isArchived(entry.id) ? 'skipped' : adapter.pin(entry.id)), warnings))
     }
-    return count
+    return tally
   }
 
   /**
@@ -708,6 +753,9 @@ function createCore(options) {
    * list row's detail; `registry`: isPinned, isArchived): prune steps of its
    * units wholly in the trash, restore steps of its members back in the store
    * whose prune steps did something. Exactly what recover() would run.
+   * Each owed step carries `auto`: whether an automatic recovery would still
+   * attempt it (not held after AUTO_RETRY_FAILURES failures in a row, and an
+   * insert not waiting for a held attach).
    */
   function owedSteps(detail, registry) {
     const entries = new Map(detail.sessions.map((s) => [s.id, s]))
@@ -720,10 +768,14 @@ function createCore(options) {
         if (entry === undefined) continue
         if (unit.location === 'trash') {
           const needs = pruneNeeds(entry, history, registry)
-          for (const step of PRUNE_ORDER) if (needs[step]) owed.push({ id, step })
+          for (const step of PRUNE_ORDER) if (needs[step]) owed.push({ id, step, auto: !autoStopped(history, step) })
         } else if (unit.location === 'store' && prunedOk(history)) {
-          const needs = restoreNeeds(entry, restorePhase(history))
-          for (const step of RESTORE_ORDER) if (needs[step]) owed.push({ id, step })
+          const phase = restorePhase(history)
+          const needs = restoreNeeds(entry, phase)
+          const attachHeld = needs.attach && autoStopped(phase, 'attach')
+          for (const step of RESTORE_ORDER) {
+            if (needs[step]) owed.push({ id, step, auto: !autoStopped(phase, step) && !(step === 'insert' && attachHeld) })
+          }
         }
       }
     }
@@ -783,8 +835,12 @@ function createCore(options) {
     return out
   }
 
-  /** Registry steps a crash left undone in one batch (inspect() output). Returns how many ran. */
-  async function completeBatch(trash, info, warnings) {
+  /**
+   * Registry steps a crash left undone in one batch (inspect() output).
+   * `held`: see holds() (null: an explicit recovery, every owed step runs).
+   * Returns how many steps ran and did not fail.
+   */
+  async function completeBatch(trash, info, warnings, held = null) {
     const hints = readHints(fs, trash.trashDir, info.batchId)
     const record = (step) => trash.recordStep(info.batchId, step)
     const entries = new Map(info.sessions.map((s) => [s.id, s]))
@@ -802,7 +858,7 @@ function createCore(options) {
         warnings.add('restart-recommended', null)
         continue
       }
-      for (const entry of members) count += await completePrune(entry, histories.get(entry.id) ?? [], record, warnings)
+      for (const entry of members) count += (await completePrune(entry, histories.get(entry.id) ?? [], record, warnings, held)).done
     }
     const back = []
     for (const unit of info.units) {
@@ -811,12 +867,21 @@ function createCore(options) {
         if (prunedOk(histories.get(id) ?? [])) back.push(entries.get(id))
       }
     }
-    count += await completeRestore(back, histories, hints, logs, record, warnings, { strict: false })
+    count += (await completeRestore(back, histories, hints, logs, record, warnings, { strict: false, held })).done
     return count
   }
 
-  /** recover() with the trash lock held by the caller. */
-  async function recoverLocked(trash, warnings) {
+  /**
+   * recover() with the trash lock held by the caller. `automatic` (the
+   * recovery at start and the one of a fresh Trash read): a registry step that
+   * failed AUTO_RETRY_FAILURES times in a row is not attempted again; the batch
+   * stays needs-recovery, and a Host log line (once per process for the same
+   * batch and steps, when an automatic recovery reaches them) says which steps
+   * wait for an explicit change. The audit `recover` line counts the steps
+   * that ran and did not fail: a run whose only work was failed attempts
+   * writes none.
+   */
+  async function recoverLocked(trash, warnings, { automatic = false } = {}) {
     const report = trash.recover()
     const batches = []
     const problems = [...report.problems]
@@ -829,8 +894,12 @@ function createCore(options) {
         problems.push({ name: item.batchId, code: error?.code ?? 'error' })
         continue
       }
-      const done = await completeBatch(trash, info, warnings)
+      const stopped = new Set()
+      const done = await completeBatch(trash, info, warnings, automatic ? (step) => stopped.add(step) : null)
       steps += done
+      if (stopped.size > 0) {
+        logOnce(`batch ${item.batchId}: automatic recovery no longer retries the registry step ${[...stopped].sort().join(', ')} after ${AUTO_RETRY_FAILURES} failed attempts in a row; the batch stays needs recovery, and the next prune, restore or permanent delete (of any batch) tries it again`)
+      }
       // The state counts the registry steps still owed; a batch with nothing left is closed.
       const after = closeIfDone(trash, item.batchId)
       const owes = after !== null && after.owed.length > 0
@@ -1075,7 +1144,11 @@ function createCore(options) {
         const before = warnings.list.length
         let steps = 0
         try {
-          for (const entry of members) steps += await completePrune(entry, [], (step) => batch.recordStep(step), warnings)
+          // The registry-step audit line counts every attempt of this unit, failed or not.
+          for (const entry of members) {
+            const tally = await completePrune(entry, [], (step) => batch.recordStep(step), warnings)
+            steps += tally.done + tally.failed
+          }
         } catch {
           warnings.add('recovery-needed', unit.rootId)
           fatal = true
@@ -1295,9 +1368,10 @@ function createCore(options) {
   }
 
   /**
-   * Recover now, for a fresh Trash tab read that found registry steps owed:
-   * only when no mutation runs here and the trash lock is free; never fails
-   * the read. Returns whether it ran.
+   * Recover now, for a fresh Trash tab read that found registry steps owed
+   * that an automatic recovery still attempts: only when no mutation runs
+   * here and the trash lock is free; never fails the read. An automatic
+   * recovery (AUTO_RETRY_FAILURES). Returns whether it ran.
    */
   async function recoverForRead(root) {
     if (state.mutating !== null) return false
@@ -1306,7 +1380,7 @@ function createCore(options) {
         const trash = engineFor(root)
         const lock = acquire(trash)
         try {
-          return await recoverLocked(trash, warningList())
+          return await recoverLocked(trash, warningList(), { automatic: true })
         } finally {
           lock.release()
         }
@@ -1317,7 +1391,10 @@ function createCore(options) {
     }
   }
 
-  /** The engine's list with, per batch, the number of registry steps it still owes (owedSteps). */
+  /**
+   * The engine's list with, per batch, the number of registry steps it still
+   * owes (owedSteps) and how many of them an automatic recovery still attempts.
+   */
   function listOwed(root) {
     let list
     try {
@@ -1326,7 +1403,13 @@ function createCore(options) {
       throw toRemote(error)
     }
     const registry = registryView()
-    return { trashDir: list.trashDir, batches: list.batches.map((b) => ({ ...b, owed: owedSteps(b.detail, registry).length })) }
+    return {
+      trashDir: list.trashDir,
+      batches: list.batches.map((b) => {
+        const owed = owedSteps(b.detail, registry)
+        return { ...b, owed: owed.length, retry: owed.filter((o) => o.auto).length }
+      }),
+    }
   }
 
   async function trashList(request) {
@@ -1336,8 +1419,9 @@ function createCore(options) {
     const { root } = snap
     if (root === null) return { trashDir: config.trashDir, batches: [] }
     let list = listOwed(root)
-    // A fresh read (Refresh) finishes the registry steps a batch still owes; a plain read only reports them.
-    if (fresh && snap.capabilities.prune && list.batches.some((b) => b.owed > 0) && (await recoverForRead(root))) list = listOwed(root)
+    // A fresh read (Refresh) finishes the registry steps a batch still owes; a plain read only reports them. Steps
+    // that failed AUTO_RETRY_FAILURES times in a row wait for an explicit change: they alone do not start a recovery.
+    if (fresh && snap.capabilities.prune && list.batches.some((b) => b.retry > 0) && (await recoverForRead(root))) list = listOwed(root)
     // A batch that owes registry steps is needs-recovery and stays listed. One that holds nothing and owes
     // nothing (fully restored, or nothing moved) is not listed: the Trash tab shows what the trash holds.
     const batches = list.batches
@@ -1358,7 +1442,9 @@ function createCore(options) {
   // began (a host call that never settles must not hold every call); past
   // that, calls go ahead, one line is logged, the run keeps going and keeps
   // the mutation slot, so a change gets `busy` until it ends. Without a batch
-  // in the trash there is nothing to recover and the store is not read. While
+  // in the trash that is not closed there is nothing to recover: the store is
+  // not read and the trash lock is not taken (trashHoldsOpenBatches: a closed
+  // batch costs an lstat and one read of its journal's tail). While
   // the host services are not there yet (their plugins are not active yet),
   // the run does nothing and is dropped when it settles, so the next call
   // tries again; a run that did start is never repeated, even one that failed.
@@ -1366,12 +1452,21 @@ function createCore(options) {
   const startupWaitMs = Number.isFinite(options.startupWaitMs) && options.startupWaitMs >= 0 ? options.startupWaitMs : STARTUP_WAIT_MS
   const startup = { run: null, wait: null }
 
-  /** Whether the trash folder holds a batch (an lstat, then one readdir of a real folder; a missing folder holds none). */
-  function trashHoldsBatches() {
+  /**
+   * Whether the trash folder holds a batch that is not closed: an lstat and one
+   * readdir of a real folder (a missing one holds none), then per batch folder
+   * until the first open one, an lstat of that folder and one read of its
+   * journal's tail (trash.js isClosedBatchFolder). Through the injected fs,
+   * without the store root or the trash lock. A batch folder that is a
+   * symbolic link or cannot be read counts as open, so the recovery looks at
+   * it. `.purge-*` and `.staging-*` folders are not batches: recovery only
+   * reports them, so they alone do not start it.
+   */
+  function trashHoldsOpenBatches() {
     try {
       const stat = fs.lstatSync(config.trashDir)
       if (stat.isSymbolicLink() || !stat.isDirectory()) return false
-      return fs.readdirSync(config.trashDir).some((name) => isBatchId(name))
+      return fs.readdirSync(config.trashDir).some((name) => isBatchId(name) && !isClosedBatchFolder(fs, config.trashDir, name))
     } catch {
       return false
     }
@@ -1382,12 +1477,12 @@ function createCore(options) {
     try {
       if (config === null || !adapter.lockProbeSupported) return false
       if (!backendReady()) return true
-      if (!trashHoldsBatches()) return false
+      if (!trashHoldsOpenBatches()) return false
       const report = await mutate('recover', async () => {
         const { trash } = await mutationContext({ needStoreRoot: false })
         const lock = acquire(trash)
         try {
-          return await recoverLocked(trash, warningList())
+          return await recoverLocked(trash, warningList(), { automatic: true })
         } finally {
           lock.release()
         }

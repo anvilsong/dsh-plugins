@@ -38,6 +38,7 @@ import {
 import { createHostAdapter } from '../src/host-adapter.js'
 import * as hostEntry from '../src/index.host.js'
 import { HINTS_FILE, PLANS_KEPT, resolveSettings, SessionsManagerService } from '../src/service.js'
+import * as serviceModule from '../src/service.js'
 import { ROW_KEYS } from '../src/store-index.js'
 
 const TMP = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'sessions-host-test-')))
@@ -93,6 +94,8 @@ function makeWorld(layout = LAYOUT) {
     staleIds: new Set(),
     lastSeen: new Map(),
     fail: new Set(),
+    /** Registry mutation name -> predicate over its arguments: true fails that one call (id-specific failures). */
+    failWhen: {},
     block: {},
     calls: [],
     events: [],
@@ -185,7 +188,7 @@ function makeProcess(world, options = {}) {
     if (proc.dead) return hang()
     if (world.block[name]) await world.block[name].promise
     if (proc.dead) return hang()
-    if (world.fail.has(name)) {
+    if (world.fail.has(name) || world.failWhen?.[name]?.(...args) === true) {
       world.calls.push([`${name}:failed`, ...args])
       throw Object.assign(new Error(`injected ${name} failure`), { code: 'EINJECTED' })
     }
@@ -1678,7 +1681,7 @@ test('F2: a detach the registry refuses keeps the batch needs-recovery in the Tr
   assert.ok(auditOps(world).includes('recover'))
 })
 
-test('F2: an attach the registry refuses during a restore keeps the batch listed as needs-recovery until recovery has attached it', { skip: NOT_DARWIN }, async () => {
+test('F2: an attach the registry refuses during a restore keeps the batch listed as needs-recovery until recovery has attached it; after 3 failed attempts only an explicit change retries it', { skip: NOT_DARWIN }, async () => {
   const world = makeWorld()
   const original = registryOf(world)
   const { service } = start(world)
@@ -1692,6 +1695,13 @@ test('F2: an attach the registry refuses during a restore keeps the batch listed
   assert.deepEqual(report.batches.map((b) => [b.batchId, b.state]), [[result.batchId, 'needs-recovery']], 'recover() reports the step it still owes')
   assert.notEqual(journalOf(world, result.batchId).at(-1).op, 'closed')
   world.fail.clear()
+  // Three failed attempts (the restore call, the fresh read, recover()): a fresh read no longer retries the attach.
+  assert.equal(journalOf(world, result.batchId).filter((r) => r.op === 'step' && r.step === 'attach' && r.outcome === 'failed').length, 3)
+  const calls = world.calls.length
+  assert.deepEqual(trashRows(await service.trash({ fresh: true })), [[result.batchId, 0, 0, 'needs-recovery']], 'automatic retries stopped')
+  assert.equal(world.calls.length, calls)
+  // Restore batch on that row is an explicit change: its recovery attaches, and the batch is closed.
+  assert.equal((await service.restore({ batchId: result.batchId })).state, 'complete')
   assert.deepEqual((await service.trash({ fresh: true })).batches, [])
   assert.deepEqual(registryOf(world), original)
   assert.equal(journalOf(world, result.batchId).at(-1).op, 'closed', 'recovery closed the batch once its steps were done')
@@ -1955,4 +1965,320 @@ test('F1: log facts a crash left unrecorded (between a move and its logs line) a
   assert.equal(journalOf(world, result.batchId).length, lines, 'filled once')
   assert.equal((await service.restore({ batchId: result.batchId })).state, 'complete')
   assert.deepEqual(registryOf(world), original)
+})
+
+// ---------------------------------------------------------------------------
+// 11. Recovery bounds: the start gate skips closed batches; automatic retries
+// of a step that keeps failing stop after AUTO_RETRY_FAILURES failed attempts
+// ---------------------------------------------------------------------------
+
+/** Every file under the trash folder (the lock files included), relative path -> sha256 of its bytes. */
+function trashFiles(world) {
+  const out = {}
+  const walk = (dir, rel) => {
+    for (const name of readdirSync(dir).sort()) {
+      const full = path.join(dir, name)
+      const child = rel === '' ? name : `${rel}/${name}`
+      const stat = lstatSync(full)
+      if (stat.isDirectory()) walk(full, child)
+      else out[child] = stat.isFile() ? sha(readFileSync(full)) : 'link'
+    }
+  }
+  if (existsSync(world.trashDir)) walk(world.trashDir, '')
+  return out
+}
+const batchNames = (world) => (existsSync(world.trashDir) ? readdirSync(world.trashDir).filter((name) => BATCH.test(name)).sort() : [])
+/** A start with its recovery on, its service fs counted; `lockTouches` lists every fs call that names the trash lock files. */
+function countedStart(world) {
+  const lockTouches = []
+  const counter = countingFs((name, args) => {
+    for (const arg of args.slice(0, 2)) if (typeof arg === 'string' && /\.lock(\.released)?$/.test(arg)) lockTouches.push([name, path.basename(arg)])
+  })
+  const next = start(world, { startupRecover: true, wrapFs: (fs) => counter.wrap(fs) })
+  return { ...next, counter, lockTouches }
+}
+/** Prune `rootIds` and restore the batch at once: a closed batch. */
+async function closedBatch(service, world, rootIds) {
+  const { result } = await prune(service, { scope: 'selection', rootIds })
+  assert.equal((await service.restore({ batchId: result.batchId })).state, 'complete')
+  assert.equal(journalOf(world, result.batchId).at(-1).op, 'closed')
+  return result.batchId
+}
+
+test('recovery at start: a trash that holds only closed batches is nothing to recover: the start reads no store, takes no trash lock and writes nothing', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  const { service } = start(world)
+  const closed = [await closedBatch(service, world, ['b1']), await closedBatch(service, world, ['a1', 'd1'])]
+  assert.deepEqual(batchNames(world), closed.sort(), 'closed batches stay on disk')
+  const before = { list: world.listCalls, stat: world.statCalls, calls: world.calls.length, audit: auditOps(world).length, files: trashFiles(world) }
+  const next = countedStart(world)
+  await next.service.core.startup()
+  assert.equal(world.listCalls, before.list, 'the store is not read')
+  assert.equal(world.statCalls, before.stat, 'no session is looked up')
+  assert.equal(world.calls.length, before.calls, 'no registry call')
+  assert.deepEqual(next.lockTouches, [], 'the trash lock is not taken')
+  assert.deepEqual(trashFiles(world), before.files, 'nothing in the trash is written, not even the released-lock record')
+  assert.equal(auditOps(world).length, before.audit, 'no audit line')
+  // The whole cost: an lstat and a readdir of the trash folder, then per closed batch an lstat of its folder and one journal-tail read.
+  assert.deepEqual(Object.fromEntries(next.counter.names), { lstatSync: 3, readdirSync: 1, openSync: 2, fstatSync: 2, readSync: 2, closeSync: 2 })
+  assert.equal(next.service.core.inspectState().mutating, null)
+  assert.deepEqual((await next.service.trash({})).batches, [])
+  assert.deepEqual(registryOf(world), original)
+  // A staging folder (a crash before its batch existed) and a purge tombstone are not batches: recovery only reports
+  // them, so they alone start nothing either.
+  for (const name of ['.staging-b-20991231T000000Z-aaaaaaaa', '.purge-b-20991231T000000Z-bbbbbbbb']) mkdirSync(path.join(world.trashDir, name), { mode: 0o700 })
+  const quiet = { list: world.listCalls, files: trashFiles(world) }
+  const again = countedStart(world)
+  await again.service.core.startup()
+  assert.equal(world.listCalls, quiet.list, 'the store is not read')
+  assert.deepEqual(again.lockTouches, [])
+  assert.deepEqual(trashFiles(world), quiet.files)
+})
+
+test('recovery at start: one open batch among closed ones is recovered; once it is closed too, the next start reads nothing', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  const { service } = start(world)
+  await closedBatch(service, world, ['b1'])
+  await closedBatch(service, world, ['d1'])
+  world.fail.add('unarchive')
+  const { result } = await prune(service, { scope: 'selection', rootIds: ['a1'] })
+  world.fail.clear()
+  assert.equal(result.state, 'needs-recovery')
+  assert.equal(batchNames(world).length, 3, 'two closed batches and one open one')
+  assert.ok(world.archived.includes('a1'), 'a crash-like leftover: an archived id whose folder is in the trash')
+  const list = world.listCalls
+  const next = countedStart(world)
+  await next.service.core.startup()
+  assert.ok(world.listCalls > list, 'the start read the store')
+  assert.ok(next.lockTouches.length > 0, 'and took the trash lock')
+  assertRegistryConsistent(world, original)
+  assert.equal(linesOf(world, /recovery at start finished/).length, 1, world.logs.join('\n'))
+  // Undo closes the last batch: the next start has nothing to recover.
+  assert.equal((await service.restore({ batchId: result.batchId })).state, 'complete')
+  assert.equal(journalOf(world, result.batchId).at(-1).op, 'closed')
+  const quiet = { list: world.listCalls, files: trashFiles(world) }
+  const last = countedStart(world)
+  await last.service.core.startup()
+  assert.equal(world.listCalls, quiet.list, 'the store is not read')
+  assert.deepEqual(last.lockTouches, [])
+  assert.deepEqual(trashFiles(world), quiet.files)
+  assert.deepEqual(registryOf(world), original)
+})
+
+test('recovery at start: a closed line followed by a torn fragment is not closed: the start recovers that batch, which closes it again; the next start reads nothing', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  const { service } = start(world)
+  const batchId = await closedBatch(service, world, ['b1'])
+  const journalFile = path.join(world.trashDir, batchId, 'journal.jsonl')
+  appendFileSync(journalFile, '{"v":1,"ts":1,"op":"st')
+  const list = world.listCalls
+  const next = countedStart(world)
+  await next.service.core.startup()
+  assert.ok(world.listCalls > list, 'a torn tail is treated as open: the start read the store')
+  assert.ok(next.lockTouches.length > 0, 'and took the trash lock')
+  // The engine ended the torn fragment before its next line; that fragment stays an unreadable line, skipped by every reader.
+  const lines = readFileSync(journalFile, 'utf8').split('\n').filter(Boolean)
+  assert.equal(lines.at(-2), '{"v":1,"ts":1,"op":"st', 'the fragment is kept, on its own line')
+  const tail = JSON.parse(lines.at(-1))
+  assert.deepEqual([tail.op, tail.batchId], ['closed', batchId], 'recovery closed it again after one verifying pass')
+  assert.deepEqual(registryOf(world), original, 'nothing else changed')
+  const quiet = { list: world.listCalls, files: trashFiles(world) }
+  const last = countedStart(world)
+  await last.service.core.startup()
+  assert.equal(world.listCalls, quiet.list, 'closed again: the next start reads nothing')
+  assert.deepEqual(last.lockTouches, [])
+  assert.deepEqual(trashFiles(world), quiet.files)
+})
+
+/** The bound the tests expect (service.js AUTO_RETRY_FAILURES; one test checks the export). A literal, so a mutated bound cannot stretch a loop. */
+const AUTO_RETRY_FAILURES = 3
+/** Failed journal lines of one registry step of one session in a batch. */
+const failedLines = (world, batchId, step, id) => journalOf(world, batchId).filter((r) => r.op === 'step' && r.step === step && r.id === id && r.outcome === 'failed').length
+const recoverLines = (world) => auditOps(world).filter((op) => op === 'recover').length
+/** The two automatic recoveries, in turn: a new start (its recovery at start, with start() `options`) and a fresh Trash read of `service`. */
+const automaticRecoveries = (world, service, options = {}) => [
+  async () => { await start(world, { ...options, startupRecover: true }).service.core.startup() },
+  async () => { assertTrashList(await service.trash({ fresh: true })) },
+]
+
+test('bounded retries: a detach that always fails is attempted by the automatic recoveries (start, fresh Trash read) until it has 3 failed journal lines; then they leave it alone, the batch stays needs-recovery and a log line says so; an explicit change still retries it and, once the registry answers, completes it', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  // The prune's own registry steps wait (the backend still lists b1), so every attempt below is a recovery's.
+  world.staleIds.add('b1')
+  const { service } = start(world)
+  const { result } = await prune(service, { scope: 'selection', rootIds: ['b1'] })
+  const { batchId } = result
+  world.staleIds.clear()
+  assert.equal(failedLines(world, batchId, 'detach', 'b1'), 0)
+  world.failWhen.detach = (id) => id === 'b1'
+  const attempts = () => world.calls.filter(([name, id]) => name === 'detach:failed' && id === 'b1').length
+  const automatic = automaticRecoveries(world, service)
+  const seen = []
+  const lengths = []
+  for (let run = 0; run < AUTO_RETRY_FAILURES + 2; run += 1) {
+    await automatic[run % 2]()
+    seen.push([failedLines(world, batchId, 'detach', 'b1'), attempts()])
+    lengths.push(journalOf(world, batchId).length)
+  }
+  assert.deepEqual(seen, [[1, 1], [2, 2], [3, 3], [3, 3], [3, 3]], 'three attempts, then none')
+  assert.deepEqual(lengths.slice(2), [lengths[2], lengths[2], lengths[2]], 'nothing is appended once the retries stopped')
+  assert.equal(world.archived.includes('b1'), false, 'the first recovery did the unarchive')
+  assert.ok(world.workspaces[0].sessionIds.includes('b1'), 'the detach is still owed')
+  assert.deepEqual(trashRows(await service.trash({})), [[batchId, 1, 1, 'needs-recovery']])
+  assert.equal(recoverLines(world), 1, 'one audit recover line: the run whose unarchive succeeded; a failed attempt writes none')
+  const stopped = linesOf(world, /automatic recovery no longer retries/)
+  assert.ok(stopped.length >= 1 && stopped.every((line) => line.includes(batchId) && /\bdetach\b/.test(line)), world.logs.join('\n'))
+  const files = trashFiles(world)
+  assertTrashList(await service.trash({ fresh: true }))
+  assert.deepEqual(trashFiles(world), files, 'with every owed step held, a fresh read starts no recovery: not even the trash lock is taken')
+
+  // recover() called in process is explicit too, and so is every change, which recovers first: each retries it, failing
+  // or not. Here recover(), a prune of another tree, then a permanent delete.
+  const report = await service.recover()
+  assert.ok(report.warnings.some((w) => w.code === 'registry-step-failed' && w.sessionId === 'b1'))
+  assert.equal(failedLines(world, batchId, 'detach', 'b1'), 4)
+  const { result: other } = await prune(service, { scope: 'selection', rootIds: ['d1'] })
+  assert.equal(other.state, 'needs-recovery', 'the retried detach is reported')
+  assert.ok(other.warnings.some((w) => w.code === 'registry-step-failed' && w.sessionId === 'b1'))
+  assert.equal(failedLines(world, batchId, 'detach', 'b1'), 5)
+  assertPurgeResult(await service.purge({ batchId: other.batchId, confirm: other.batchId }))
+  assert.equal(existsSync(path.join(world.trashDir, other.batchId)), false)
+  assert.equal(failedLines(world, batchId, 'detach', 'b1'), 6)
+
+  // The registry answers again. The automatic recoveries still leave the step alone...
+  delete world.failWhen.detach
+  const calls = world.calls.length
+  assert.deepEqual(trashRows(await service.trash({ fresh: true })), [[batchId, 1, 1, 'needs-recovery']])
+  await automatic[0]()
+  assert.equal(world.calls.length, calls, 'no registry call from a fresh read or a start')
+  assert.ok(world.workspaces[0].sessionIds.includes('b1'))
+  // ...and the next explicit change completes it: Restore batch on its row detaches b1 first, then restores it.
+  assert.equal((await service.restore({ batchId })).state, 'complete')
+  assert.deepEqual(world.calls.slice(calls).filter(([, id]) => id === 'b1').map(([name]) => name), ['detach', 'attach', 'insert', 'archive'])
+  assertRegistryConsistent(world, original)
+  assert.equal(journalOf(world, batchId).at(-1).op, 'closed')
+  assert.deepEqual((await service.trash({ fresh: true })).batches, [])
+  assert.equal(failedLines(world, batchId, 'detach', 'b1'), 6)
+  assert.equal(serviceModule.AUTO_RETRY_FAILURES, 3, 'service.js exports the bound')
+})
+
+test('bounded retries are counted per registry step and per session: in a restored tree each failing step (a thrown call or an attach that resolves without attaching) gets its own 3 automatic attempts; an explicit restore still retries them, and once the registry answers, Restore batch completes them and closes the batch', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  // c1's attach resolves without attaching (a non-ok status, 'not-attached'); the other failures are thrown calls.
+  const notAttaching = new Set(['c1'])
+  const options = { wrapAdapter: (adapter) => ({ ...adapter, attach: async (id, ws) => (notAttaching.has(id) ? 'not-attached' : adapter.attach(id, ws)) }) }
+  const { service } = start(world, options)
+  const { result } = await prune(service, { scope: 'selection', rootIds: ['a1'] })
+  const { batchId } = result
+  // c1's log changes in the trash: the restore call itself runs none of c1's steps (strict), so c1's attempts start
+  // one run after a1's. a1's attach fails only in the restore call, so its insert (which needs the attach) starts
+  // one run after its archive.
+  appendFileSync(trashCopy(world, batchId, 'p1', 'c1'), Buffer.from('written in the trash'))
+  const failing = { attach: new Set(['a1']), insert: new Set(['a1']), archive: new Set(['a1']) }
+  world.failWhen = Object.fromEntries(Object.entries(failing).map(([name, ids]) => [name, (id) => ids.has(id)]))
+  const back = await service.restore({ batchId })
+  assert.equal(back.state, 'needs-recovery')
+  const counts = () => ({
+    a1attach: failedLines(world, batchId, 'attach', 'a1'),
+    a1insert: failedLines(world, batchId, 'insert', 'a1'),
+    a1archive: failedLines(world, batchId, 'archive', 'a1'),
+    c1attach: failedLines(world, batchId, 'attach', 'c1'),
+  })
+  assert.deepEqual(counts(), { a1attach: 1, a1insert: 0, a1archive: 1, c1attach: 0 })
+  failing.attach.delete('a1')
+  const automatic = automaticRecoveries(world, service, options)
+  const seen = []
+  const lengths = []
+  const stats = []
+  // Fresh read, start, fresh read, start, fresh read: the third run is a fresh read that must hold a1's archive while it
+  // still retries a1's insert and c1's attach.
+  for (let run = 0; run < AUTO_RETRY_FAILURES + 2; run += 1) {
+    const statsBefore = world.statCalls
+    await automatic[(run + 1) % 2]()
+    seen.push(counts())
+    lengths.push(journalOf(world, batchId).length)
+    stats.push(world.statCalls - statsBefore)
+  }
+  assert.deepEqual(seen, [
+    { a1attach: 1, a1insert: 1, a1archive: 2, c1attach: 1 },
+    { a1attach: 1, a1insert: 2, a1archive: 3, c1attach: 2 },
+    { a1attach: 1, a1insert: 3, a1archive: 3, c1attach: 3 }, // a1's archive stopped; a1's insert and c1's attach go on
+    { a1attach: 1, a1insert: 3, a1archive: 3, c1attach: 3 },
+    { a1attach: 1, a1insert: 3, a1archive: 3, c1attach: 3 },
+  ])
+  assert.deepEqual(lengths.slice(2), [lengths[2], lengths[2], lengths[2]], 'nothing is appended once every retry stopped')
+  assert.deepEqual(stats.slice(3), [0, 0], 'with every owed step held, no session is even looked up')
+  assert.ok(world.workspaces[0].sessionIds.includes('a1'), 'a1 attached at its second attempt')
+  assert.deepEqual([...new Set(journalOf(world, batchId).filter((r) => r.op === 'step' && r.id === 'c1' && r.outcome === 'failed').map((r) => r.error))], ['not-attached'])
+  assert.ok(world.pinned.includes('c1'), 'c1 pinned again: its pin does not wait for its attach')
+  assert.deepEqual(trashRows(await service.trash({})), [[batchId, 0, 0, 'needs-recovery']])
+  assert.equal(recoverLines(world), 1, 'one audit recover line: the run whose attach and pin succeeded')
+  assert.ok(linesOf(world, /automatic recovery no longer retries/).some((line) => line.includes(batchId)), world.logs.join('\n'))
+  // c1's insert has never failed, but it waits for c1's held attach: no step is left for a fresh read to start a recovery for.
+  const files = trashFiles(world)
+  assertTrashList(await service.trash({ fresh: true }))
+  assert.deepEqual(trashFiles(world), files, 'with every owed step held, a fresh read takes not even the trash lock')
+
+  // An explicit restore still retries every owed step once, failing or not, and stays needs-recovery.
+  const retried = await service.restore({ batchId })
+  assert.equal(retried.state, 'needs-recovery')
+  assert.deepEqual(counts(), { a1attach: 1, a1insert: 4, a1archive: 4, c1attach: 4 })
+  assert.equal(recoverLines(world), 1, 'failed attempts write no recover line')
+
+  // The registry answers. A fresh read and a start leave the stopped steps alone; Restore batch completes and closes it.
+  world.failWhen = {}
+  notAttaching.clear()
+  const calls = world.calls.length
+  assert.deepEqual(trashRows(await service.trash({ fresh: true })), [[batchId, 0, 0, 'needs-recovery']])
+  await automatic[0]()
+  assert.equal(world.calls.length, calls, 'no registry call from a fresh read or a start')
+  const done = await service.restore({ batchId })
+  assert.deepEqual([done.state, done.warnings], ['complete', []], JSON.stringify(done))
+  assert.equal(journalOf(world, batchId).at(-1).op, 'closed')
+  assert.deepEqual((await service.trash({ fresh: true })).batches, [])
+  assert.deepEqual(registryOf(world), original)
+  assert.deepEqual(world.workspaces.find((w) => w.id === 'w1').sessionIds, original.workspaces.w1, 'the recorded order is back')
+  assert.equal(recoverLines(world), 2)
+})
+
+test('bounded retries count failed attempts in a row: an unarchive that succeeded and is owed again (a second host brought the archived id back) gets three new automatic attempts', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  world.staleIds.add('b1')
+  const { service } = start(world)
+  const { result } = await prune(service, { scope: 'selection', rootIds: ['b1'] })
+  const { batchId } = result
+  world.staleIds.clear()
+  world.failWhen.unarchive = (id) => id === 'b1'
+  const automatic = automaticRecoveries(world, service)
+  const seen = []
+  for (let run = 0; run < AUTO_RETRY_FAILURES + 1; run += 1) {
+    await automatic[run % 2]()
+    seen.push(failedLines(world, batchId, 'unarchive', 'b1'))
+  }
+  assert.deepEqual(seen, [1, 2, 3, 3])
+  assert.ok(world.archived.includes('b1'))
+  // The registry answers; an explicit change (a prune of another tree) unarchives b1: nothing is owed any more.
+  delete world.failWhen.unarchive
+  await prune(service, { scope: 'selection', rootIds: ['d1'] })
+  assert.equal(world.archived.includes('b1'), false)
+  assert.deepEqual(trashRows(await service.trash({})).find((row) => row[0] === batchId), [batchId, 1, 1, 'complete'])
+  // A second host's write brings the archived id back (last writer wins), and the registry refuses again.
+  world.archived.push('b1')
+  world.failWhen.unarchive = (id) => id === 'b1'
+  assert.deepEqual(trashRows(await service.trash({})).find((row) => row[0] === batchId), [batchId, 1, 1, 'needs-recovery'])
+  const again = []
+  for (let run = 0; run < AUTO_RETRY_FAILURES + 1; run += 1) {
+    await automatic[run % 2]()
+    again.push(failedLines(world, batchId, 'unarchive', 'b1'))
+  }
+  assert.deepEqual(again, [4, 5, 6, 6], 'the count starts again after the step succeeded')
+  delete world.failWhen.unarchive
+  assert.equal((await service.restore({ batchId })).state, 'complete')
+  assertRegistryConsistent(world, original)
 })
