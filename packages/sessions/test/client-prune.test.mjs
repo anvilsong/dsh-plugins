@@ -229,8 +229,8 @@ test('the preview shows roots, descendants, total size, a per-workspace breakdow
   const checks = findAllIn(byId(dialog, 'sm-prune-checks'), (n) => n.type === 'li').map((n) => [n.props['data-code'], textOf(n)])
   assert.deepEqual(checks, [
     ['recent', 'A session in this tree was active recently.2 units'],
-    ['live', 'A session in this tree is open in a live session.1 unit'],
-    ['locked', 'A session folder holds the lock of a running process.1 unit'],
+    ['live', 'A session in this tree is open in the running app. Close it, or restart the host, then try again.1 unit'],
+    ['locked', 'A session folder is locked by a running process, usually the host holding that session open.1 unit'],
   ])
 
   const excluded = findAllIn(byId(dialog, 'sm-prune-excluded'), (n) => n.type === 'li' && n.props['data-root'])
@@ -238,8 +238,8 @@ test('the preview shows roots, descendants, total size, a per-workspace breakdow
   assert.match(textOf(byId(dialog, 'sm-prune-excluded')), /^Excluded \(3\)/)
   const last = textOf(excluded[2])
   assert.match(last, /s0040.*alpha.*3 sessions · 3 MB/)
-  assert.match(last, /A session in this tree is open in a live session\. \(s0041, s0042\)/)
-  assert.match(last, /A session folder holds the lock of a running process\. \(s0042\)/)
+  assert.match(last, /A session in this tree is open in the running app\. Close it, or restart the host, then try again\. \(s0041, s0042\)/)
+  assert.match(last, /A session folder is locked by a running process, usually the host holding that session open\. \(s0042\)/)
   assert.match(textOf(excluded[0]), /Unassigned/)
   assert.equal(buttonIn(dialog, 'Continue').props.disabled, undefined)
 

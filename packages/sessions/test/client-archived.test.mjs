@@ -297,6 +297,22 @@ const GROUPED = [
   row('fade0000-0006', { title: 'Beta work', workspaceId: 'ws-beta', bytes: MB, childCount: 0, lastActivityAt: NOW - 2 * 3_600_000, ageDays: 0 }),
 ]
 
+test('a short id drops the session- prefix of real ids, so a row without a title and its reasons stay readable', async () => {
+  // Real ids are `session-<uuid>`: the first 8 characters of that are just "session-".
+  const id = 'session-a292405c-daa9-4d40-a409-d02b5d8f983e'
+  const { root } = await openArchived({
+    api: pagesApi([pageOf([row(id, { title: null, blocked: true, reasons: [{ code: 'live', sessionId: id }, { code: 'locked', sessionId: id }] })])]),
+  })
+  const cells = cellsOf(rowNode(root, id)).map(textOf)
+  assert.equal(cells[1], 'a292405calpha', 'the short id is the first 8 characters after the prefix')
+  assert.equal(findAllIn(rowNode(root, id), (n) => n.props?.title === id).length, 1, 'the full id still rides the title')
+  const blocked = findAllIn(rowNode(root, id), (n) => n.props?.className === 'sm-tag' && textOf(n) === 'blocked')[0]
+  const description = root.find((n) => n.props?.id === blocked.props['aria-describedby'])
+  for (const item of findAllIn(description, (n) => n.type === 'li').map(textOf)) {
+    assert.match(item, /\(a292405c\)$/, item)
+  }
+})
+
 test('rows are grouped by workspace in Host order and show title or short id, workspace, size, children, activity, age and badges', async () => {
   const { root } = await openArchived({ api: pagesApi([pageOf(GROUPED)]) })
   const list = table(root)
@@ -325,7 +341,7 @@ test('rows are grouped by workspace in Host order and show title or short id, wo
   const description = root.find((n) => n.props?.id === blocked.props['aria-describedby'])
   assert.ok(description, 'the badge points at its description')
   assert.deepEqual(findAllIn(description, (n) => n.type === 'li').map(textOf), [
-    'A session in this tree is open in a live session. (e5f6a7b8, c0ffee04)',
+    'A session in this tree is open in the running app. Close it, or restart the host, then try again. (e5f6a7b8, c0ffee04)',
     'A descendant is a kept top-level session (a fork). (c0ffee03)',
   ])
   assert.equal(blocked.props.title, findAllIn(description, (n) => n.type === 'li').map(textOf).join(' '))
@@ -497,7 +513,7 @@ test('multi-select: a selection bar; Unarchive selected asks once for more than 
   assert.equal(result.props.role, 'alert')
   assert.match(textOf(result), /Unarchived 1 session/)
   assert.match(textOf(result), /Not unarchived \(1\):/)
-  assert.deepEqual(findAllIn(result, (n) => n.type === 'li').map(textOf), ['s0004: A session in this tree is open in a live session.'])
+  assert.deepEqual(findAllIn(result, (n) => n.type === 'li').map(textOf), ['s0004: A session in this tree is open in the running app. Close it, or restart the host, then try again.'])
   assert.equal(findAllIn(result, (n) => n.type === 'li')[0].props.title, 's0004')
   assert.deepEqual(plain(root.componentProps('ArchivedTab')[0].shell.archivedView.selection), ['s0004'], 'the failed id stays selected for a retry')
   await env.advance(0)

@@ -349,8 +349,8 @@ window.__ModuleLoader__.load({
       'purge.finalDetail': 'Delete {sessions} ({size}) of batch {id} for good? They cannot be restored.',
       'purge.confirm': 'Yes, delete for good',
       'purge.running': 'Deleting batch {id} for good…',
-      'refusal.live': 'A session in this tree is open in a live session.',
-      'refusal.locked': 'A session folder holds the lock of a running process.',
+      'refusal.live': 'A session in this tree is open in the running app. Close it, or restart the host, then try again.',
+      'refusal.locked': 'A session folder is locked by a running process, usually the host holding that session open.',
       'refusal.recent': 'A session in this tree was active recently.',
       'refusal.kept-descendant': 'A descendant is a kept top-level session (a fork).',
       'refusal.parent-kept': 'The parent of the root is kept.',
@@ -661,8 +661,8 @@ window.__ModuleLoader__.load({
       'purge.finalDetail': '要永久删除批次 {id} 中的 {sessions}（{size}）吗？它们将无法恢复。',
       'purge.confirm': '是，永久删除',
       'purge.running': '正在永久删除批次 {id}…',
-      'refusal.live': '此树中有会话正在运行。',
-      'refusal.locked': '会话文件夹被一个运行中的进程锁定。',
+      'refusal.live': '此树中有会话在运行中的应用里处于打开状态。请先关闭它（或重启主机），再重试。',
+      'refusal.locked': '会话文件夹被一个运行中的进程锁定，通常是正在打开该会话的主机。',
       'refusal.recent': '此树中有会话最近仍有活动。',
       'refusal.kept-descendant': '某个后代是被保留的顶层会话（分叉）。',
       'refusal.parent-kept': '根会话的父会话被保留。',
@@ -927,7 +927,8 @@ window.__ModuleLoader__.load({
     }
     const pad = (n) => String(n).padStart(2, '0')
     const formatClock = (ms) => { const at = new Date(ms); return `${pad(at.getHours())}:${pad(at.getMinutes())}` }
-    const shortId = (id) => String(id).slice(0, 8)
+    // Real ids are `session-<uuid>`; the first 8 characters of that are just "session-".
+    const shortId = (id) => String(id).replace(/^session-/, '').slice(0, 8)
 
     /** Localized text for a Remote error ({ code, message }). */
     function errorText(tr, error) {
