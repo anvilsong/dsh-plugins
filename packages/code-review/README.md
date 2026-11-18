@@ -132,6 +132,14 @@ cannot close the queued workflow spec or open another one.
   prompt rule: the tests check the wording, not that models follow it.
 - Every round reviews the full scope; there are no diff-only rounds and no stored
   state between reviews.
+- The queued task carries the scope, and in patch mode the whole patch, once, in
+  `args.scope`. The finder and refuter prompts in the task are templates with one
+  `{{SCOPE_JSON}}` placeholder, and the workflow script builds the real prompts
+  from `args.scope` when it runs. The prompts the agents receive are unchanged;
+  the task is about 1.1 times the size of the patch plus about 15 KB of fixed text
+  (a 68 KB patch gave a 90 KB task; JSON escaping of a patch full of backslashes
+  can add up to about 40%), which keeps a large patch relayable. A task that lost its scope or one of the placeholders
+  fails before any agent starts; it never reviews with a blank scope.
 - At most 50 files and 4,000 changed lines (added plus deleted). In a git
   workspace the counts come from `git diff --numstat` against the pinned commit,
   and git counts the lines of untracked files; the host does not read them. A
