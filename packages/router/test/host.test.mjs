@@ -126,9 +126,29 @@ const manualState = (selections) => ({
 })
 
 test('the POLICY constant is pinned to the per-entry effort text, and the level-wide policy is gone', () => {
-  assert.equal(POLICY.length, 3252)
-  assert.equal(createHash('sha256').update(POLICY).digest('hex'), 'cd72decfd9303d828fca43bfd4bf4aa2726ecbd06612e3601d3d84b453c3d490')
+  assert.equal(POLICY.length, 3769)
+  assert.equal(createHash('sha256').update(POLICY).digest('hex'), '3205ccce8b3f15cecf6590b553496498641772388447c2281368458a3186f67d')
   for (const name of ['EFFORT_POLICY', 'ROUTER_EFFORTS', 'effortsOf']) assert.equal(name in host, false, name)
+})
+
+test('the first POLICY bullet states the symmetric level rule, and no other bullet gained or lost a line', () => {
+  const lines = POLICY.split('\n')
+  assert.equal(lines.length, 10, 'one header line and nine bullets')
+  assert.equal(lines.filter((line) => line.startsWith('- ')).length, 9)
+  const first = lines[1]
+  assert.match(first, /^- Ordinary is the default bucket\./)
+  assert.match(first, /Mechanical requires all three criteria: fully specified work, no judgment, and a deterministically checkable result;/)
+  assert.match(first, /work that meets all three is Mechanical,/)
+  assert.match(first, /for example running a named check and reporting its output, applying a fully specified edit, or collecting named files or logs\./)
+  assert.match(first, /Hard judgment requires a verification\/judgment stage \(review, critique, or refutation\) or high ambiguity combined with costly-to-undo output;/)
+  assert.match(first, /costly-to-undo output alone, or ambiguity alone, is not enough,/)
+  assert.match(first, /running a named check and reporting its output is not a verification stage\./)
+  assert.match(first, /Work that meets neither Hard criterion is Ordinary\./)
+  assert.match(first, /Never relabel substantive work Mechanical to save cost\./)
+  assert.match(first, /Doubt about whether a level's criteria are met never resolves downward,/)
+  assert.match(first, /work that clearly meets a lower level's criteria is never raised for safety\.$/)
+  assert.doesNotMatch(POLICY, /enforc|advisory|guard|Host check|level setting/i)
+  assert.doesNotMatch(POLICY, /cheapest adequate/)
 })
 
 test('shortlist lines list each authorized entry with its effort', () => {
@@ -417,7 +437,7 @@ test('the observe-only audit is a third, host-only projection; the router projec
   assert.equal(sha256(z.toJSONSchema(modelRoutes.stateSchema)), 'c352ac16993a9cd5383cbc882f5dbcce803a842326068254728998787007ded2')
   assert.deepEqual(Array.from(host.inject), ['systemPrompt', 'sessionProjections'], 'no tools service, so no guard')
   assert.equal('tools' in h.ctx, false, 'apply runs without ctx.tools')
-  assert.equal(createHash('sha256').update(POLICY).digest('hex'), 'cd72decfd9303d828fca43bfd4bf4aa2726ecbd06612e3601d3d84b453c3d490')
+  assert.equal(createHash('sha256').update(POLICY).digest('hex'), '3205ccce8b3f15cecf6590b553496498641772388447c2281368458a3186f67d')
   assert.deepEqual(h.warnings, [])
 })
 

@@ -235,9 +235,18 @@ Caveats:
 ## Routing rules
 
 - **Ordinary is the default.** Mechanical requires all three: fully specified
-  work, no judgment, and a deterministically checkable result. Hard judgment
-  requires verification/judgment or high ambiguity with costly-to-undo output.
-  Doubt never resolves downward.
+  work, no judgment, and a deterministically checkable result. Work that meets
+  all three is Mechanical, for example running a named check and reporting its
+  output, applying a fully specified edit, or collecting named files or logs.
+  Hard needs a verification/judgment stage (review, critique, or refutation) or
+  high ambiguity together with costly-to-undo output; costly-to-undo output
+  alone, or ambiguity alone, is not enough, and running a named check and
+  reporting its output is not a verification stage. Work that
+  meets neither Hard criterion is Ordinary. Never relabel substantive work
+  Mechanical to save cost. Doubt about whether a level's criteria are met never
+  resolves downward, but work that clearly meets a lower level's criteria is not
+  raised for safety. Compare the effect with /router status counts: the
+  per-level line shows which shortlist ran.
 - **Inherit by default.** A shortlist applies only when configured. Leave
   inheritance for a named non-cost reason—a capability, tool, context window,
   provider feature, or explicit user preference—or for high-confidence
