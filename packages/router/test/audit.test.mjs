@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 import { apply } from '../src/index.host.js'
 import {
-  AUDIT_VERDICTS, auditStatusLine, classifyDelegation, foldAudit, initAudit, isAdvisorReservedName, ROUTE_TEXT_MAX,
+  attributeLevel, AUDIT_LEVELS, AUDIT_VERDICTS, auditStatusLine, classifyDelegation, foldAudit, initAudit, isAdvisorReservedName, ROUTE_TEXT_MAX,
 } from '../src/audit.js'
 import { foldRouter, INITIAL_ROUTER_STATE } from '../src/state.js'
 
@@ -14,6 +19,11 @@ const GONE = { provider: 'gone', model: 'retired' }
 const AUTHORIZED = [OPUS, HAIKU, FLASH]
 const label = (route) => `${route.provider}/${route.model}`
 const ZERO = Object.freeze(Object.fromEntries(AUDIT_VERDICTS.map((verdict) => [verdict, 0])))
+const LEVELS_ZERO = Object.freeze({ mechanical: 0, ordinary: 0, hard: 0, shared: 0 })
+// The fields audit v2 adds to the state, as initAudit gives them.
+const V2_INITIAL = Object.freeze({ levels: LEVELS_ZERO, reserved: 0, discovery: Object.freeze({ turns: 0, listed: 0 }), listTurn: null, lastRequestTurn: null })
+/** The v1 part of a state: what decides and records a verdict. */
+const verdictState = ({ counts, total, lastEffortMatch }) => ({ counts, total, lastEffortMatch })
 
 // Real-shaped events: `tool/call` data is { turn, step, callId, name, arguments }
 // with `arguments` the model's raw JSON string; events carry a time.
@@ -270,14 +280,16 @@ test('retry: effort omitted on the same route directly after its effort match in
     [call(spawn(routed(FLASH)), { turn: 4 }), 'an effort-less match'],
     [call(spawn(routed(GONE)), { turn: 4 }), 'unlisted'],
   ]) assert.equal(verdictOf(foldAudit(matched, between), opus(undefined, 4)), 'effort_omitted', why)
-  // Requests the audit does not count leave it in place.
+  // Requests the audit does not classify leave it in place (v2 only counts the
+  // reserved child and records the list call's turn).
   const skipped = fold([
     call({}, { turn: 4, name: 'list_subagent_models' }),
     call(spawn(routed(OPUS, 'xhigh'), { name: 'advisor-verifier-0123456789ab' }), { turn: 4 }),
     call(spawn(routed(OPUS)), { turn: 4, name: 'subagent_fork' }),
     event('tool/result', { turn: 4, step: 1, message: { role: 'tool', content: [] } }),
   ], matched)
-  assert.equal(skipped, matched)
+  assert.deepEqual(verdictState(skipped), verdictState(matched))
+  assert.deepEqual(skipped, { ...matched, reserved: matched.reserved + 1, listTurn: 4 })
   assert.equal(verdictOf(skipped, opus(undefined, 4)), 'retry')
   // An effort match without a turn number records nothing to retry.
   const unnumbered = foldAudit(base, call(spawn(routed(OPUS, 'xhigh')), { turn: undefined }))
@@ -309,16 +321,20 @@ test('advisor-reserved children and other delegation tools are not audited', () 
     'advisor-verifier', 'advisor-planner', 'advisor-consult', 'advisor-verifier-typo', 'advisor-planner-',
   ]) {
     assert.equal(isAdvisorReservedName(name), true, name)
-    assert.equal(foldAudit(base, call(spawn(unlisted, { name }))), base, name)
-    assert.equal(foldAudit(base, call({ name })), base, `${name} without a route`)
+    // Never classified: only the reserved count moves (audit v2).
+    assert.deepEqual(foldAudit(base, call(spawn(unlisted, { name }))), { ...base, reserved: 1 }, name)
+    assert.deepEqual(foldAudit(base, call({ name })), { ...base, reserved: 1 }, `${name} without a route`)
   }
   for (const name of ['advisor-verifiers', 'advisor-other-0123456789ab', 'my-advisor-verifier-0123456789ab', 'Advisor-verifier-0123456789ab', 'advisor-', 'worker', 5, null]) {
     assert.equal(isAdvisorReservedName(name), false, String(name))
     assert.equal(verdictOf(base, call(spawn(unlisted, { name }))), 'unlisted_closed', String(name))
   }
-  for (const name of ['subagent_fork', 'subagent_codex', 'subagent_claude_code', 'spawn_teammate', 'Subagent', 'subagent ', 'list_subagent_models', 'bash', undefined, null]) {
+  for (const name of ['subagent_fork', 'subagent_codex', 'subagent_claude_code', 'spawn_teammate', 'Subagent', 'subagent ', 'bash', undefined, null]) {
     assert.equal(foldAudit(base, call(spawn(unlisted), { name })), base, String(name))
+    assert.equal(foldAudit(base, call(spawn(unlisted, { name: 'advisor-verifier-x' }), { name })), base, `${String(name)}, reserved name`)
   }
+  // A list call is no request: it only records its turn for discovery (audit v2).
+  assert.deepEqual(foldAudit(base, call(spawn(unlisted), { name: 'list_subagent_models' })), { ...base, listTurn: 1 })
 })
 
 test('arguments that are no JSON object, partial or empty routes, and wrong types are malformed', () => {
@@ -438,9 +454,16 @@ test('events the audit does not read return the same state reference', () => {
     [base, event('command/done', { kind: 'success' })],
     [base, policy([GONE])],
     [base, call(spawn(routed(OPUS, 'xhigh')), { name: 'bash' })],
-    [base, call(spawn(routed(OPUS, 'xhigh'), { name: 'advisor-consult-0123456789ab' }))],
+    [off, call(spawn(routed(OPUS, 'xhigh'), { name: 'advisor-consult-0123456789ab' }))], // reserved children count only while on
     [off, call(spawn(routed(OPUS, 'xhigh')))],
     [off, call('{')],
+    // A list call without a finite turn, or in the turn already recorded.
+    [base, call({}, { name: 'list_subagent_models', turn: '1' })],
+    [base, call({}, { name: 'list_subagent_models', turn: undefined })],
+    [base, call({}, { name: 'list_subagent_models', turn: Number.NaN })],
+    [foldAudit(base, call({}, { name: 'list_subagent_models', turn: 3 })), call({}, { name: 'list_subagent_models', turn: 3 })],
+    [base, call({}, { name: 'List_subagent_models', turn: 2 })],
+    [base, call({}, { name: 'list_subagent_models ', turn: 2 })],
     // Commands whose id the router state could not hold are not folded.
     [base, event('command/run', { name: 'router', args: 'off', commandId: 7 })],
     [base, { type: 'command/run', time: 5, data: { name: 'router', args: 'off' } }],
@@ -455,6 +478,11 @@ test('events the audit does not read return the same state reference', () => {
     [base, { type: 'command/run', data: { get name() { throw new Error('hostile name') } } }],
   ]
   for (const [index, [state, value]] of cases.entries()) assert.equal(foldAudit(state, value), state, `case ${index}`)
+  // Hostile list calls.
+  for (const value of [
+    { type: 'tool/call', data: { name: 'list_subagent_models', get turn() { throw new Error('hostile turn') } } },
+    { type: 'tool/call', data: { get name() { throw new Error('hostile name') }, turn: 2 } },
+  ]) assert.equal(foldAudit(base, value), base)
 })
 
 test('the fold never reads the clock: a command without a time folds as time 0, the same on every replay', () => {
@@ -555,6 +583,12 @@ test('a replay folds the same log to the same state; a checkpoint plus its suffi
   const once = fold(log, routerAudit.init())
   assert.deepEqual(nonZero(once), { inherit: 1, match: 2, retry: 1, effort_mismatch: 1, effort_omitted: 1, unlisted_closed: 1, unlisted_open: 1, malformed: 1 })
   assert.equal(once.total, 9)
+  // v2: Opus match, retry and omission are Hard's; Haiku is Ordinary's; Flash is on Mechanical and Hard.
+  assert.deepEqual(once.levels, { mechanical: 0, ordinary: 1, hard: 3, shared: 1 })
+  assert.equal(once.reserved, 1)
+  assert.deepEqual(once.discovery, { turns: 2, listed: 1 })
+  assert.equal(once.listTurn, 2)
+  assert.equal(once.lastRequestTurn, 4)
   assert.deepEqual(fold(log, routerAudit.init()), once)
   for (let cut = 0; cut <= log.length; cut++) {
     // A persisted checkpoint is plain JSON validated by the state schema.
@@ -574,21 +608,24 @@ test('the embedded router state is foldRouter over the same events, prefix by pr
   assert.equal(audit.router.mode, 'manual')
 })
 
-test('the registered unit: routerAudit, stateVersion 1, host-only, its schema embedding the router state schema', async () => {
+test('the registered unit: routerAudit, stateVersion 2, host-only, its schema embedding the router state schema', async () => {
   const units = await definitions()
   const unit = units.routerAudit
   assert.deepEqual(Object.keys(units), ['router', 'routerModelRoutes', 'routerAudit'])
   assert.equal(unit.key, 'routerAudit')
-  assert.equal(unit.stateVersion, 1, 'bump routerAudit stateVersion together with the router stateVersion')
+  // 2: audit v2 (levels, reserved, discovery); the router itself stays at 5.
+  assert.equal(unit.stateVersion, 2, 'bump routerAudit stateVersion together with the router stateVersion')
   assert.equal(units.router.stateVersion, 5, 'bump routerAudit stateVersion together with the router stateVersion')
   assert.equal('wire' in unit, false, 'host-only: never sent to the Client')
   assert.equal(unit.apply, foldAudit)
   assert.equal(unit.stateSchema.shape.router, units.router.stateSchema, 'the router part is validated by the router schema itself')
   const initial = unit.init({ id: 'header' }, 0)
-  assert.deepEqual(initial, { router: INITIAL_ROUTER_STATE, authorized: null, counts: ZERO, total: 0, lastEffortMatch: null })
+  assert.deepEqual(initial, { router: INITIAL_ROUTER_STATE, authorized: null, counts: ZERO, total: 0, lastEffortMatch: null, ...V2_INITIAL })
   const again = unit.init()
   assert.notEqual(again, initial)
   assert.notEqual(again.counts, initial.counts)
+  assert.notEqual(again.levels, initial.levels)
+  assert.notEqual(again.discovery, initial.discovery)
   assert.notEqual(again.router.selections, initial.router.selections)
   assert.notEqual(again.router.selections, INITIAL_ROUTER_STATE.selections)
   assert.deepEqual(unit.stateSchema.parse(initial), initial)
@@ -613,7 +650,28 @@ test('the registered unit: routerAudit, stateVersion 1, host-only, its schema em
     ['an empty authorized model', { ...withMatch, authorized: [{ provider: 'anthropic', model: '' }] }],
     ['authorized that is no list', { ...withMatch, authorized: 'all' }],
     ['a missing authorized list', (({ authorized, ...rest }) => rest)(withMatch)], // eslint-disable-line no-unused-vars
+    // v2 fields are required and bounded like the counts.
+    ['a negative level count', { ...withMatch, levels: { ...LEVELS_ZERO, hard: -1 } }],
+    ['a fractional level count', { ...withMatch, levels: { ...LEVELS_ZERO, shared: 0.5 } }],
+    ['a missing shared count', { ...withMatch, levels: { mechanical: 0, ordinary: 0, hard: 1 } }],
+    ['levels that are no object', { ...withMatch, levels: [0, 0, 1, 0] }],
+    ['a reserved count as text', { ...withMatch, reserved: '1' }],
+    ['a negative reserved count', { ...withMatch, reserved: -1 }],
+    ['a missing listed count', { ...withMatch, discovery: { turns: 1 } }],
+    ['a fractional turns count', { ...withMatch, discovery: { turns: 1.5, listed: 0 } }],
+    ['a list turn as text', { ...withMatch, listTurn: '3' }],
+    ['an infinite list turn', { ...withMatch, listTurn: Infinity }],
+    ['a request turn that is NaN', { ...withMatch, lastRequestTurn: Number.NaN }],
+    ...['levels', 'reserved', 'discovery', 'listTurn', 'lastRequestTurn'].map((key) => [`a missing ${key}`, Object.fromEntries(Object.entries(withMatch).filter(([name]) => name !== key))]),
   ]) assert.equal(unit.stateSchema.safeParse(bad).success, false, name)
+  // A cached v1 row (the v1 fields only) is no v2 state: the Host discards it and refolds the log.
+  const v1Row = JSON.parse(JSON.stringify(verdictState(withMatch)))
+  for (const row of [
+    { router: withMatch.router, authorized: withMatch.authorized, ...v1Row },
+    { router: INITIAL_ROUTER_STATE, authorized: null, counts: ZERO, total: 0, lastEffortMatch: null },
+  ]) assert.equal(unit.stateSchema.safeParse(row).success, false, 'a v1-shaped state is rejected')
+  const turns = { ...withMatch, listTurn: 2, lastRequestTurn: 1.5 }
+  assert.deepEqual(unit.stateSchema.parse(JSON.parse(JSON.stringify(turns))), turns, 'finite turn numbers round-trip')
 })
 
 test('the fold never throws, never reads the clock, and yields schema-valid state over 20 000 random events', async () => {
@@ -678,7 +736,7 @@ test('the fold never throws, never reads the clock, and yields schema-valid stat
         if (random() < 0.3) args.prompt = TASK.prompt
         data = {
           turn: pick([1, 1, 2, 2, 3, undefined, '2', 1.5, null]), step: 1, callId: `f${index}`,
-          name: pick(['subagent', 'subagent', 'subagent', 'subagent', 'subagent_fork', 'bash', 'Subagent', undefined]),
+          name: pick(['subagent', 'subagent', 'subagent', 'subagent', 'subagent_fork', 'bash', 'Subagent', undefined, 'list_subagent_models']),
           arguments: random() < 0.9 ? JSON.stringify(args) : pick(raw),
         }
         previous = { args, data }
@@ -701,6 +759,8 @@ test('the fold never throws, never reads the clock, and yields schema-valid stat
   const start = fold(session({ levels: BASE_LEVELS }))
   let state = start
   const seen = new Set()
+  const seenLevels = new Set()
+  let listedSteps = 0
   Date.now = () => { reads++; throw new Error('the audit fold must not read the clock') }
   try {
     for (const entry of events) {
@@ -709,11 +769,28 @@ test('the fold never throws, never reads the clock, and yields schema-valid stat
       assert.equal(JSON.stringify(state), before, 'the fold never mutates its input')
       if (next === state) continue
       assert.deepEqual(schema.parse(next), next)
+      assert.deepEqual(schema.parse(JSON.parse(JSON.stringify(next))), next, 'a JSON round trip keeps the state')
       assert.equal(next.total, AUDIT_VERDICTS.reduce((sum, verdict) => sum + next.counts[verdict], 0))
       for (const verdict of AUDIT_VERDICTS) if (next.counts[verdict] > state.counts[verdict]) seen.add(verdict)
       if (next.lastEffortMatch !== null) {
         assert.ok(next.lastEffortMatch.provider.length <= ROUTE_TEXT_MAX && next.lastEffortMatch.model.length <= ROUTE_TEXT_MAX)
       }
+      // v2: exactly the requests whose route a level shows are attributed, once.
+      const shownRoute = (value) => value.counts.match + value.counts.retry + value.counts.effort_mismatch + value.counts.effort_omitted
+      assert.equal(AUDIT_LEVELS.reduce((sum, level) => sum + next.levels[level], 0), shownRoute(next))
+      for (const level of AUDIT_LEVELS) if (next.levels[level] > state.levels[level]) seenLevels.add(level)
+      // A reserved child moves nothing else; a counted request never moves it.
+      if (next.reserved !== state.reserved) {
+        assert.equal(next.reserved, state.reserved + 1)
+        assert.deepEqual({ ...next, reserved: state.reserved }, state)
+      }
+      assert.ok(next.discovery.listed <= next.discovery.turns)
+      assert.ok(next.discovery.turns - state.discovery.turns <= 1 && next.discovery.listed - state.discovery.listed <= 1)
+      if (next.discovery.turns > state.discovery.turns) {
+        assert.equal(next.total, state.total + 1, 'only a counted request opens a turn')
+        assert.ok(Number.isFinite(next.lastRequestTurn) && next.lastRequestTurn !== state.lastRequestTurn)
+      }
+      if (next.discovery.listed > state.discovery.listed) listedSteps++
       state = next
     }
   } finally {
@@ -721,6 +798,9 @@ test('the fold never throws, never reads the clock, and yields schema-valid stat
   }
   assert.equal(reads, 0, 'Date.now was never called')
   assert.deepEqual([...seen].sort(), [...AUDIT_VERDICTS].sort(), 'the random log reaches every verdict')
+  assert.deepEqual([...seenLevels].sort(), [...AUDIT_LEVELS].sort(), 'the random log reaches every level and shared')
+  assert.ok(state.reserved > 100, `${state.reserved} reserved children counted`)
+  assert.ok(listedSteps > 10 && state.discovery.turns > state.discovery.listed, `${state.discovery.listed} of ${state.discovery.turns} turns listed`)
   assert.ok(state.total > 1_000, `${state.total} requests counted`)
   assert.ok(JSON.stringify(state).length < 10_000, 'the state stays bounded')
   assert.equal(({}).polluted, undefined)
@@ -736,13 +816,18 @@ test('the fold never throws, never reads the clock, and yields schema-valid stat
 
 test('the status line lists the observed total and the non-zero verdicts in a fixed order', () => {
   const state = (counts) => ({ ...initAudit(), counts: { ...ZERO, ...counts }, total: Object.values(counts).reduce((sum, count) => sum + count, 0) })
+  // The first line is the v1 line, byte for byte; v2 appends its second line after one newline.
+  const first = (status) => status.split('\n')[0]
+  const ZERO_SECOND = 'Shortlist that ran (route shown by): mechanical 0, ordinary 0, hard 0, shared 0. Advisor-reserved subagent requests: 0. Listed models first in 0 of 0 turns with routed requests.'
   assert.equal(auditStatusLine(() => state({ effort_mismatch: 1, match: 9, inherit: 2 })),
-    'Observed subagent requests while Router was on: 12 (inherit 2, match 9, effort_mismatch 1). Observe only; nothing is blocked.')
-  assert.equal(auditStatusLine(() => state(Object.fromEntries(AUDIT_VERDICTS.map((verdict, index) => [verdict, index + 1])))),
+    `Observed subagent requests while Router was on: 12 (inherit 2, match 9, effort_mismatch 1). Observe only; nothing is blocked.\n${ZERO_SECOND}`)
+  assert.equal(first(auditStatusLine(() => state(Object.fromEntries(AUDIT_VERDICTS.map((verdict, index) => [verdict, index + 1]))))),
     'Observed subagent requests while Router was on: 45 (inherit 1, match 2, retry 3, effort_mismatch 4, effort_omitted 5, unlisted_closed 6, unlisted_open 7, no_shortlist 8, malformed 9). Observe only; nothing is blocked.')
-  assert.equal(auditStatusLine(() => state({ malformed: 1 })), 'Observed subagent requests while Router was on: 1 (malformed 1). Observe only; nothing is blocked.')
-  assert.equal(auditStatusLine(() => fold(realisticLog())),
-    'Observed subagent requests while Router was on: 9 (inherit 1, match 2, retry 1, effort_mismatch 1, effort_omitted 1, unlisted_closed 1, unlisted_open 1, malformed 1). Observe only; nothing is blocked.')
+  assert.equal(first(auditStatusLine(() => state({ malformed: 1 }))), 'Observed subagent requests while Router was on: 1 (malformed 1). Observe only; nothing is blocked.')
+  assert.equal(auditStatusLine(() => fold(realisticLog())), [
+    'Observed subagent requests while Router was on: 9 (inherit 1, match 2, retry 1, effort_mismatch 1, effort_omitted 1, unlisted_closed 1, unlisted_open 1, malformed 1). Observe only; nothing is blocked.',
+    'Shortlist that ran (route shown by): mechanical 0, ordinary 1, hard 3, shared 1. Advisor-reserved subagent requests: 1. Listed models first in 1 of 2 turns with routed requests.',
+  ].join('\n'))
   // Nothing observed, or no audit state: no line.
   for (const [name, read] of [
     ['initial', () => initAudit()], ['undefined', () => undefined], ['null', () => null], ['a route list', () => [OPUS]], ['text', () => 'total'], ['a number', () => 5],
@@ -768,5 +853,534 @@ test('audit.js stays observe-only: no clock, file, tool, prompt or Client access
   assert.deepEqual([...source.matchAll(/^import .* from '([^']+)'$/gm)].map((match) => match[1]), ['zod', './state.js'])
   for (const forbidden of [/Date/, /performance/, /hrtime/, /node:/, /process\./, /require\(/, /import\(/, /\.guard\(/, /systemPrompt/, /\bwire\b/, /inject/]) {
     assert.doesNotMatch(source, forbidden)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Audit v2: per-level counts by shown route, Advisor-reserved children, discovery.
+
+/** The level an event adds one to, or null when it adds to none. */
+function levelOf(state, toolCall) {
+  const next = foldAudit(state, toolCall)
+  const changed = AUDIT_LEVELS.filter((level) => next.levels[level] !== state.levels[level])
+  assert.ok(changed.length <= 1, JSON.stringify(next.levels))
+  if (changed.length === 0) return null
+  assert.equal(next.levels[changed[0]], state.levels[changed[0]] + 1)
+  return changed[0]
+}
+const list = (turn, data = {}) => call({}, { turn, name: 'list_subagent_models', ...data })
+const reservedChild = (turn = 1, name = 'advisor-verifier-0123456789ab') => call(spawn(routed(OPUS, 'xhigh'), { name }), { turn })
+function deepFreeze(value) {
+  if (typeof value === 'object' && value !== null) {
+    for (const key of Reflect.ownKeys(value)) deepFreeze(value[key])
+    Object.freeze(value)
+  }
+  return value
+}
+
+test('levels: a request is attributed to the one level that shows its route, shared when several do, none when no level does', () => {
+  const base = fold(session({ levels: BASE_LEVELS }))
+  assert.deepEqual(base.levels, LEVELS_ZERO)
+  assert.deepEqual(AUDIT_LEVELS, ['mechanical', 'ordinary', 'hard', 'shared'])
+  for (const [args, verdict, level, why] of [
+    [spawn(routed(HAIKU)), 'match', 'ordinary', 'one level'],
+    [spawn(routed(OPUS, 'xhigh')), 'match', 'hard', 'one level, with its effort'],
+    [routed(OPUS, 'xhigh'), 'match', 'hard', 'no name, description or prompt needed'],
+    [spawn(routed(OPUS, 'high')), 'effort_mismatch', 'hard', 'the effort is ignored'],
+    [spawn(routed(OPUS, 'XHIGH')), 'effort_mismatch', 'hard', 'any effort'],
+    [spawn(routed(OPUS)), 'effort_omitted', 'hard', 'an omitted effort is ignored'],
+    [spawn(routed(HAIKU, 'low')), 'effort_mismatch', 'ordinary', 'an effort for an entry without one'],
+    [spawn(routed(FLASH, 'low')), 'match', 'shared', 'Mechanical shows Flash with effort low, Hard without one'],
+    [spawn(routed(FLASH)), 'match', 'shared', 'the same route without an effort'],
+    [spawn(routed(FLASH, 'max')), 'effort_mismatch', 'shared', 'shared whatever the effort'],
+    [spawn(routed(GONE, 'max')), 'unlisted_closed', null, 'no level shows it: its verdict already counts it'],
+    [spawn(routed({ provider: 'Anthropic', model: OPUS.model }, 'xhigh')), 'unlisted_closed', null, 'the provider compares exactly'],
+    [spawn(routed({ provider: OPUS.provider, model: `${OPUS.model} ` })), 'unlisted_closed', null, 'the model compares exactly'],
+    [spawn(), 'inherit', null, 'inherit names no route'],
+    [spawn({}, { agent_preset: 'reviewer' }), 'inherit', null, 'a preset only'],
+    [spawn({ ...routed(OPUS), reasoning_effort: 3 }), 'malformed', null, 'a shown route with an effort that is no text'],
+    [spawn({ ...routed(OPUS), reasoning_effort: '' }), 'malformed', null, 'a shown route with an empty effort'],
+    [spawn({ ...routed(OPUS), reasoning_effort: null }), 'malformed', null, 'a shown route with a null effort'],
+    [spawn({ provider: OPUS.provider }), 'malformed', null, 'a provider alone'],
+    ['{', 'malformed', null, 'no JSON'],
+    [`[${JSON.stringify(routed(OPUS))}]`, 'malformed', null, 'a list'],
+  ]) {
+    const toolCall = call(args)
+    assert.equal(verdictOf(base, toolCall), verdict, why)
+    assert.equal(levelOf(base, toolCall), level, why)
+  }
+  // A retry is attributed like the match before it.
+  const matched = foldAudit(base, call(spawn(routed(OPUS, 'xhigh')), { turn: 4 }))
+  assert.equal(verdictOf(matched, call(spawn(routed(OPUS)), { turn: 4 })), 'retry')
+  assert.equal(levelOf(matched, call(spawn(routed(OPUS)), { turn: 4 })), 'hard')
+  // One model in two levels with different efforts is shared, whichever effort the request carries.
+  const twice = fold(session({ levels: { mechanical: `${label(OPUS)} effort=low`, hard: `${label(OPUS)} effort=xhigh` } }))
+  for (const effort of ['low', 'xhigh', 'high', undefined]) assert.equal(levelOf(twice, call(spawn(routed(OPUS, effort)))), 'shared', String(effort))
+  // Three levels showing it are still one shared request.
+  const everywhere = fold(session({ levels: { mechanical: label(HAIKU), ordinary: label(HAIKU), hard: label(HAIKU) } }))
+  assert.deepEqual(foldAudit(everywhere, call(spawn(routed(HAIKU)))).levels, { ...LEVELS_ZERO, shared: 1 })
+})
+
+test('levels: only prompt-visible entries attribute; before the session policy is recorded every saved entry does', () => {
+  const levels = { mechanical: `${label(GONE)} effort=low`, ordinary: label(HAIKU), hard: `${label(GONE)},${label(OPUS)} effort=xhigh` }
+  const known = fold(session({ levels }))
+  // Gone is saved in Mechanical and Hard but not authorized: no level shows it (Mechanical reads Inherit).
+  assert.equal(verdictOf(known, call(spawn(routed(GONE, 'low')))), 'unlisted_open')
+  assert.equal(levelOf(known, call(spawn(routed(GONE, 'low')))), null, 'an unauthorized saved route is not shown')
+  assert.equal(levelOf(known, call(spawn(routed(OPUS, 'xhigh')))), 'hard')
+  const unknown = fold(session({ authorized: null, levels }))
+  assert.equal(levelOf(unknown, call(spawn(routed(GONE, 'low')))), 'shared', 'authorization not recorded: every saved entry is shown')
+  assert.equal(levelOf(fold([policy(AUTHORIZED)], unknown), call(spawn(routed(GONE, 'low')))), null, 'until the policy is recorded')
+  // A provider or a model alone is not authorized.
+  const BEDROCK_OPUS = { provider: 'bedrock', model: OPUS.model }
+  const split = fold(session({ authorized: [OPUS, HAIKU], levels: { mechanical: label(OPUS), hard: `${label(BEDROCK_OPUS)},${label(HAIKU)}` } }))
+  assert.equal(levelOf(split, call(spawn(routed(OPUS)))), 'mechanical', 'Bedrock Opus in Hard is another route')
+  assert.equal(levelOf(split, call(spawn(routed(BEDROCK_OPUS)))), null)
+  assert.equal(levelOf(split, call(spawn(routed(HAIKU)))), 'hard')
+  assert.equal(levelOf(fold(session({ authorized: [], levels })), call(spawn(routed(OPUS, 'xhigh')))), null, 'nothing authorized: nothing shown')
+})
+
+test('levels: each request is attributed with the shortlists in force at its event', () => {
+  const opus = () => call(spawn(routed(OPUS, 'xhigh')))
+  let state = fold(session({ levels: { hard: `${label(OPUS)} effort=xhigh` } }))
+  assert.equal(levelOf(state, opus()), 'hard')
+  const [run, done] = command(`level ordinary ${label(OPUS)}`)
+  state = foldAudit(state, run)
+  assert.equal(levelOf(state, opus()), 'hard', 'a pending change does not apply yet')
+  state = foldAudit(state, done)
+  assert.equal(levelOf(state, opus()), 'shared')
+  state = fold(command(`level mechanical ${label(OPUS)}`, 'error'), state)
+  assert.equal(levelOf(state, opus()), 'shared', 'a rejected change keeps the levels')
+  state = fold(command('level hard inherit'), state)
+  assert.equal(levelOf(state, opus()), 'ordinary')
+  state = fold(command('level ordinary inherit'), state)
+  assert.equal(levelOf(state, opus()), null, 'no level shows it any more')
+  const log = fold([
+    ...session({ levels: { hard: label(OPUS) } }),
+    opus(),
+    ...command(`level ordinary ${label(OPUS)}`),
+    opus(), opus(),
+    ...command('level hard inherit'),
+    opus(),
+    ...command('level ordinary inherit'),
+    opus(),
+  ])
+  assert.deepEqual(log.levels, { mechanical: 0, ordinary: 1, hard: 1, shared: 2 })
+  assert.deepEqual(nonZero(log), { effort_mismatch: 4, no_shortlist: 1 })
+})
+
+test('attributeLevel: provider and model against the entries each level shows, effort ignored, own properties only', () => {
+  const selections = { mechanical: [{ ...FLASH, effort: 'low' }], ordinary: [HAIKU], hard: [{ ...OPUS, effort: 'xhigh' }, FLASH] }
+  const context = { selections, authorized: AUTHORIZED }
+  assert.equal(attributeLevel(routed(OPUS), context), 'hard')
+  assert.equal(attributeLevel(routed(OPUS, 'none of them'), context), 'hard')
+  assert.equal(attributeLevel(routed(HAIKU, 'x'), context), 'ordinary')
+  assert.equal(attributeLevel(routed(FLASH), context), 'shared')
+  assert.equal(attributeLevel(routed(GONE), context), null)
+  assert.equal(attributeLevel(routed(OPUS), { selections, authorized: [HAIKU] }), null)
+  assert.equal(attributeLevel(routed(OPUS), { selections }), 'hard', 'authorization not recorded: every saved entry')
+  for (const args of [undefined, null, 'anthropic/claude-opus-5-5', [OPUS], {}, { provider: OPUS.provider }, { model: OPUS.model }, { provider: '', model: OPUS.model }, { provider: OPUS.provider, model: 5 }]) {
+    assert.equal(attributeLevel(args, context), null, JSON.stringify(args))
+  }
+  for (const bad of [undefined, null, 'all', [], { hard: label(OPUS) }, { hard: [null, 'x', 5] }, Object.create({ hard: [OPUS] })]) {
+    assert.equal(attributeLevel(routed(OPUS), { selections: bad, authorized: null }), null, String(bad))
+  }
+  assert.equal(attributeLevel(routed(OPUS)), null, 'no context')
+  assert.equal(attributeLevel(Object.create(routed(OPUS)), context), null, 'an inherited route is not read')
+  const frozen = deepFreeze({ selections: structuredClone(selections), authorized: structuredClone(AUTHORIZED) })
+  assert.equal(attributeLevel(deepFreeze(routed(FLASH)), frozen), 'shared')
+})
+
+test('reserved: Advisor-reserved subagent requests are counted only while Router is on, never classified, attributed or in total', () => {
+  let state = fold([policy(AUTHORIZED), ...command(`level hard ${label(OPUS)} effort=xhigh`)])
+  assert.equal(state.router.mode, 'off')
+  assert.equal(foldAudit(state, reservedChild()), state, 'Router off: not counted')
+  const [runOn, doneOn] = command('manual')
+  state = foldAudit(state, runOn)
+  assert.equal(foldAudit(state, reservedChild()), state, 'a pending switch is not on yet')
+  state = foldAudit(state, doneOn)
+  for (const name of ['advisor-verifier', 'advisor-planner', 'advisor-consult', 'advisor-planner-', 'advisor-consult-0123456789ab', 'advisor-verifier-typo']) {
+    const next = foldAudit(state, reservedChild(1, name))
+    assert.deepEqual(next, { ...state, reserved: state.reserved + 1 }, `${name}: only the reserved count moves`)
+    state = next
+  }
+  assert.equal(state.reserved, 6)
+  assert.equal(state.total, 0)
+  assert.deepEqual(state.counts, ZERO)
+  assert.deepEqual(state.levels, LEVELS_ZERO)
+  assert.deepEqual(state.discovery, { turns: 0, listed: 0 })
+  // Bare names, with any or no route around them.
+  for (const args of [{ name: 'advisor-consult' }, { name: 'advisor-verifier', provider: 'anthropic' }, { name: 'advisor-planner', reasoning_effort: 7 }]) {
+    assert.deepEqual(foldAudit(state, call(args)), { ...state, reserved: 7 }, JSON.stringify(args))
+  }
+  // Names that are not reserved are requests like any other.
+  for (const name of ['advisor-verifiers', 'advisor-', 'Advisor-verifier-x', 'worker', 5, null]) {
+    assert.equal(verdictOf(state, call(spawn(routed(OPUS, 'xhigh'), { name }))), 'match', String(name))
+  }
+  // Without a JSON object there is no name: malformed, not reserved. An inherited name is not read.
+  assert.equal(verdictOf(state, call('{"name":"advisor-verifier-x"')), 'malformed')
+  assert.equal(verdictOf(state, call('{"__proto__":{"name":"advisor-verifier-x"}}')), 'inherit')
+  // Other delegation tools with a reserved name are not counted at all.
+  for (const name of ['subagent_fork', 'subagent_codex', 'subagent_claude_code', 'spawn_teammate', 'Subagent']) {
+    assert.equal(foldAudit(state, call(spawn({}, { name: 'advisor-verifier-x' }), { name })), state, name)
+  }
+  // A reserved child between an effort match and its retry keeps the retry.
+  const matched = foldAudit(state, call(spawn(routed(OPUS, 'xhigh')), { turn: 4 }))
+  const between = foldAudit(matched, reservedChild(4))
+  assert.deepEqual(between, { ...matched, reserved: 7 })
+  assert.equal(verdictOf(between, call(spawn(routed(OPUS)), { turn: 4 })), 'retry')
+  // After Router is off again nothing more is counted; the count stays.
+  const off = fold(command('off'), between)
+  assert.equal(foldAudit(off, reservedChild()), off)
+  assert.equal(off.reserved, 7)
+})
+
+test('discovery: turns with a counted request, and how many of them listed models before their first one', () => {
+  const on = fold(session({ levels: { hard: `${label(OPUS)} effort=xhigh` } }))
+  const ask = (turn, args = spawn(routed(OPUS, 'xhigh'))) => call(args, { turn })
+  for (const [events, expected, why] of [
+    [[], { turns: 0, listed: 0 }, 'nothing requested'],
+    [[list(1)], { turns: 0, listed: 0 }, 'a list call alone is no turn with a request'],
+    [[list(1), ask(1)], { turns: 1, listed: 1 }, 'listed before the first request of the turn'],
+    [[ask(1), list(1)], { turns: 1, listed: 0 }, 'listed after the first request'],
+    [[ask(1), list(1), ask(1)], { turns: 1, listed: 0 }, 'a later request in the turn does not count the late list call'],
+    [[ask(1), ask(1)], { turns: 1, listed: 0 }, 'no list call'],
+    [[list(1), ask(2)], { turns: 1, listed: 0 }, 'listed in an earlier turn only'],
+    [[list(1), ask(1), ask(2)], { turns: 2, listed: 1 }, 'the next turn needs its own list call'],
+    [[list(1), list(1), ask(1)], { turns: 1, listed: 1 }, 'two list calls'],
+    [[list(2), list(1), ask(2)], { turns: 1, listed: 0 }, 'the latest list call decides'],
+    [[list(1), ask(1), ask(1), ask(1, spawn()), ask(1, '{'), ask(1, spawn(routed(GONE)))], { turns: 1, listed: 1 }, 'several requests in one turn count once, whatever their verdicts'],
+    [[list(1), ask(1), ask(2), list(3), ask(3), ask(3), ask(4)], { turns: 4, listed: 2 }, 'every new turn counts again'],
+    [[list(0), ask(0)], { turns: 1, listed: 1 }, 'turn 0 is a turn'],
+    [[list(4), reservedChild(4)], { turns: 0, listed: 0 }, 'a turn with only an Advisor-reserved request does not count'],
+    [[reservedChild(4), ask(4)], { turns: 1, listed: 0 }, 'a reserved child is no first request'],
+    [[list(4), reservedChild(4), ask(4)], { turns: 1, listed: 1 }, 'a reserved child before the first counted request'],
+    [['4', undefined, null, Number.NaN, Infinity, -Infinity, [4], { turn: 4 }].map((turn) => ask(turn)), { turns: 0, listed: 0 }, 'a request turn that is no finite number is skipped'],
+    [[list('1'), ask(1)], { turns: 1, listed: 0 }, 'a list call turn that is no finite number records nothing'],
+    [[list(1), list(undefined), list('1'), ask(1)], { turns: 1, listed: 1 }, 'an unnumbered list call keeps the latest numbered one'],
+    [[ask(1), ask('2'), ask(1)], { turns: 1, listed: 0 }, 'a skipped turn does not reopen the current one'],
+    [[list(1.5), ask(1.5)], { turns: 1, listed: 1 }, 'any finite number is a turn number'],
+    [[call({}, { turn: 1, name: 'List_subagent_models' }), call({}, { turn: 1, name: 'list_subagent_models ' }), call({}, { turn: 1, name: 'subagent_fork' }), ask(1)],
+      { turns: 1, listed: 0 }, 'only the tool named exactly list_subagent_models'],
+    [[call('not even json', { turn: 1, name: 'list_subagent_models' }), ask(1)], { turns: 1, listed: 1 }, 'the arguments of a list call are not read'],
+  ]) {
+    const state = fold(events, on)
+    assert.deepEqual(state.discovery, expected, why)
+    assert.ok(state.discovery.listed <= state.discovery.turns, why)
+  }
+  // Discovery never changes a verdict.
+  assert.deepEqual(verdictState(fold([ask(1), list(1), ask(2), list(2), ask(2)], on)), verdictState(fold([ask(1), ask(2), ask(2)], on)))
+  // Requests while Router is off open no turn; a list call made while it is off still counts for its turn.
+  const off = fold([policy(AUTHORIZED), ...command(`level hard ${label(OPUS)} effort=xhigh`)])
+  let state = fold([list(3), ask(3)], off)
+  assert.deepEqual(state.discovery, { turns: 0, listed: 0 })
+  assert.equal(state.listTurn, 3, 'list calls are recorded whatever the mode')
+  assert.equal(state.lastRequestTurn, null)
+  state = fold([...command('manual'), ask(3)], state)
+  assert.deepEqual(state.discovery, { turns: 1, listed: 1 }, 'the list call made while Router was off counts for its turn')
+  state = fold([ask(3), ...command('off'), list(4), ask(4), ...command('on'), ask(4), ask(5)], state)
+  assert.deepEqual(state.discovery, { turns: 3, listed: 2 })
+  // The bookkeeping keeps turn numbers only; -0 is kept as 0, so a JSON round trip keeps it.
+  const kept = fold([list(1), ask(1), list(2)], on)
+  assert.equal(kept.listTurn, 2)
+  assert.equal(kept.lastRequestTurn, 1)
+  const zero = fold([list(-0), ask(-0)], on)
+  assert.ok(Object.is(zero.listTurn, 0) && Object.is(zero.lastRequestTurn, 0))
+  assert.deepEqual(zero.discovery, { turns: 1, listed: 1 })
+})
+
+test('status: a second line with the levels, the reserved count and discovery, joined by one newline', () => {
+  const v2 = (fields) => ({ ...initAudit(), ...fields })
+  assert.equal(auditStatusLine(() => v2({
+    counts: { ...ZERO, match: 3, unlisted_closed: 1 }, total: 4, levels: { mechanical: 1, ordinary: 0, hard: 2, shared: 0 }, reserved: 5, discovery: { turns: 3, listed: 1 },
+  })), 'Observed subagent requests while Router was on: 4 (match 3, unlisted_closed 1). Observe only; nothing is blocked.\n'
+    + 'Shortlist that ran (route shown by): mechanical 1, ordinary 0, hard 2, shared 0. Advisor-reserved subagent requests: 5. Listed models first in 1 of 3 turns with routed requests.')
+  // Only reserved children: the second line alone.
+  assert.equal(auditStatusLine(() => v2({ reserved: 2 })),
+    'Shortlist that ran (route shown by): mechanical 0, ordinary 0, hard 0, shared 0. Advisor-reserved subagent requests: 2. Listed models first in 0 of 0 turns with routed requests.')
+  // From the fold: two lines, the first one the v1 line.
+  const lines = auditStatusLine(() => fold(realisticLog())).split('\n')
+  assert.deepEqual(lines, [
+    'Observed subagent requests while Router was on: 9 (inherit 1, match 2, retry 1, effort_mismatch 1, effort_omitted 1, unlisted_closed 1, unlisted_open 1, malformed 1). Observe only; nothing is blocked.',
+    'Shortlist that ran (route shown by): mechanical 0, ordinary 1, hard 3, shared 1. Advisor-reserved subagent requests: 1. Listed models first in 1 of 2 turns with routed requests.',
+  ])
+  // Nothing observed: no line.
+  for (const [name, read] of [
+    ['initial', () => initAudit()],
+    ['total 0 and reserved 0, other counts set', () => v2({ levels: { ...LEVELS_ZERO, hard: 3 }, discovery: { turns: 2, listed: 1 } })],
+    ['only requests while Router was off', () => fold([policy(AUTHORIZED), reservedChild(), call(spawn(routed(OPUS))), list(1)])],
+  ]) assert.equal(auditStatusLine(read), '', name)
+  // Any problem gives '' and nothing throws, whatever the value does while it is read.
+  const good = fold(realisticLog())
+  for (const [name, read] of [
+    ['a v1-shaped state', () => ({ router: good.router, authorized: good.authorized, ...verdictState(good) })],
+    ['levels missing', () => ({ ...good, levels: undefined })],
+    ['a level count missing', () => ({ ...good, levels: { mechanical: 0, ordinary: 1, hard: 3 } })],
+    ['a level count as text', () => ({ ...good, levels: { ...good.levels, hard: '3' } })],
+    ['a negative shared count', () => ({ ...good, levels: { ...good.levels, shared: -1 } })],
+    ['an inherited level count', () => ({ ...good, levels: Object.create(good.levels) })],
+    ['reserved missing', () => ({ ...good, reserved: undefined })],
+    ['reserved as text', () => ({ ...good, reserved: '1' })],
+    ['a fractional reserved count', () => ({ ...good, reserved: 0.5 })],
+    ['discovery as a list', () => ({ ...good, discovery: [2, 1] })],
+    ['a negative listed count', () => ({ ...good, discovery: { turns: 2, listed: -1 } })],
+    ['an unsafe turns count', () => ({ ...good, discovery: { turns: 2 ** 53, listed: 1 } })],
+    ['a levels getter that throws', () => ({ ...good, get levels() { throw new Error('levels') } })],
+    ['a reserved getter that throws', () => ({ ...good, get reserved() { throw new Error('reserved') } })],
+    ['a level getter that throws', () => ({ ...good, levels: { ...LEVELS_ZERO, get shared() { throw new Error('shared') } } })],
+    ['a discovery proxy whose traps throw', () => ({ ...good, discovery: new Proxy({}, { get() { throw new Error('get') }, getOwnPropertyDescriptor() { throw new Error('descriptor') } }) })],
+    ['a revoked proxy as levels', () => {
+      const { proxy, revoke } = Proxy.revocable({ ...good.levels }, {})
+      revoke()
+      return { ...good, levels: proxy }
+    }],
+  ]) assert.equal(auditStatusLine(read), '', name)
+})
+
+/** A 40-event log shaped like the measured session: Hard-heavy routing, a shared route, Advisor critics, discovery in some turns. */
+function measuredLog() {
+  const ask = (args, turn) => call(args, { turn, step: 1 })
+  const critic = (turn, role = 'advisor-verifier') => call(spawn({}, { name: `${role}-0123456789ab` }), { turn })
+  const FABLE = { provider: 'anthropic', model: 'claude-fable-5-2' }
+  return [
+    policy(AUTHORIZED), // 1
+    ...command('manual'), // 2-3
+    ...command(`level hard ${label(OPUS)} effort=xhigh,${label(FLASH)}`), // 4-5
+    ...command(`level ordinary ${label(HAIKU)}`), // 6-7
+    ...command(`level mechanical ${label(FLASH)} effort=low`), // 8-9
+    list(1), // 10
+    ask(spawn(routed(OPUS, 'xhigh')), 1), // 11 match, hard
+    ask(spawn(routed(OPUS, 'xhigh')), 1), // 12 match, hard
+    critic(1), // 13 reserved
+    critic(1), // 14 reserved
+    ask(spawn(routed(OPUS, 'high')), 2), // 15 effort_mismatch, hard (no list call in turn 2)
+    ask(spawn(routed(OPUS)), 2), // 16 effort_omitted, hard
+    ask(spawn(routed(HAIKU)), 2), // 17 match, ordinary
+    critic(2, 'advisor-consult'), // 18 reserved
+    ask(spawn(routed(OPUS, 'xhigh')), 3), // 19 match, hard
+    list(3), // 20 after the turn's first request: turn 3 is not listed
+    ask(spawn(routed(FLASH)), 3), // 21 match, shared (Mechanical and Hard)
+    ask(spawn(routed(FLASH, 'low')), 3), // 22 match, shared
+    list(4), // 23
+    ask(spawn(routed(OPUS, 'xhigh')), 4), // 24 match, hard
+    event('tool/result', { turn: 4, step: 1, message: { role: 'tool', content: [{ type: 'text', text: 'unsupported reasoning_effort' }], isError: true } }), // 25
+    ask(spawn(routed(OPUS)), 4), // 26 retry, hard
+    ask(spawn(), 4), // 27 inherit
+    critic(4, 'advisor-planner'), // 28 reserved
+    critic(5), // 29 reserved: a turn of critics only
+    critic(5), // 30 reserved
+    list(6), // 31
+    ask(spawn(routed(FABLE)), 6), // 32 unlisted_closed
+    ask(spawn(routed(OPUS, 'xhigh')), 6), // 33 match, hard
+    ask('{"provider":"anthropic"', 6), // 34 malformed
+    ...command('off'), // 35-36
+    ask(spawn(routed(OPUS, 'xhigh')), 7), // 37 Router off
+    critic(7), // 38 Router off
+    list(7), // 39
+    event('assistant/message', { turn: 7, step: 2, message: { role: 'assistant', content: 'router: hard → anthropic/claude-opus-5-5 because review; effort: xhigh' } }), // 40
+  ]
+}
+const MEASURED = Object.freeze({
+  events: 40,
+  router: { mode: 'off', selections: { mechanical: [{ ...FLASH, effort: 'low' }], ordinary: [HAIKU], hard: [{ ...OPUS, effort: 'xhigh' }, FLASH] } },
+  total: 14,
+  counts: { ...ZERO, inherit: 1, match: 8, retry: 1, effort_mismatch: 1, effort_omitted: 1, unlisted_closed: 1, malformed: 1 },
+  levels: { mechanical: 0, ordinary: 1, hard: 8, shared: 2 },
+  reserved: 6,
+  discovery: { turns: 5, listed: 3 },
+})
+const MEASURED_STATUS = [
+  'Observed subagent requests while Router was on: 14 (inherit 1, match 8, retry 1, effort_mismatch 1, effort_omitted 1, unlisted_closed 1, malformed 1). Observe only; nothing is blocked.',
+  'Shortlist that ran (route shown by): mechanical 0, ordinary 1, hard 8, shared 2. Advisor-reserved subagent requests: 6. Listed models first in 3 of 5 turns with routed requests.',
+].join('\n')
+const summary = (state, events) => ({
+  events, router: { mode: state.router.mode, selections: state.router.selections }, total: state.total, counts: state.counts, levels: state.levels, reserved: state.reserved, discovery: state.discovery,
+})
+
+test('a 40-event log shaped like the measured session folds to exact counts and status lines, deterministically', async () => {
+  const { routerAudit } = await definitions()
+  const log = measuredLog()
+  assert.equal(log.length, 40)
+  const once = fold(log, routerAudit.init())
+  assert.deepEqual(summary(once, log.length), MEASURED)
+  assert.equal(auditStatusLine(() => once), MEASURED_STATUS)
+  assert.deepEqual(routerAudit.stateSchema.parse(JSON.parse(JSON.stringify(once))), once)
+  // Replay: the same log folds to the same state; a checkpoint plus its suffix equals the full fold.
+  assert.deepEqual(fold(log, routerAudit.init()), once)
+  for (let cut = 0; cut <= log.length; cut++) {
+    const checkpoint = routerAudit.stateSchema.parse(JSON.parse(JSON.stringify(fold(log.slice(0, cut), routerAudit.init()))))
+    assert.deepEqual(fold(log.slice(cut), checkpoint), once, `cut ${cut}`)
+  }
+  // Deep-frozen events and state fold to the same result: nothing is written to the inputs
+  // (a write would throw, and the fold would return the state it was given).
+  const realNow = Date.now
+  Date.now = () => { throw new Error('the audit fold must not read the clock') }
+  let frozen
+  try {
+    frozen = deepFreeze(log).reduce(foldAudit, deepFreeze(routerAudit.init()))
+  } finally {
+    Date.now = realNow
+  }
+  assert.deepEqual(frozen, once)
+})
+
+const SCRIPT = fileURLToPath(new URL('../scripts/audit-replay.mjs', import.meta.url))
+/** Run the replay script in an empty temp directory, with a temp HOME, and the given stdin. */
+function replay(input) {
+  const cwd = mkdtempSync(path.join(tmpdir(), 'router-audit-replay-'))
+  try {
+    const result = spawnSync(process.execPath, [SCRIPT], { input, cwd, encoding: 'utf8', env: { HOME: cwd }, timeout: 60_000 })
+    assert.deepEqual(readdirSync(cwd), [], 'the script writes no file')
+    return result
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+}
+const jsonl = (events) => events.map((entry) => JSON.stringify(entry)).join('\n')
+const EMPTY_SUMMARY = Object.freeze({
+  events: 0, router: { mode: 'off', selections: { mechanical: null, ordinary: null, hard: null } }, total: 0, counts: ZERO, levels: LEVELS_ZERO, reserved: 0, discovery: { turns: 0, listed: 0 },
+})
+
+test('scripts/audit-replay.mjs folds a JSONL session log from stdin into one JSON object on stdout', () => {
+  const log = measuredLog()
+  const result = replay(`${jsonl(log)}\n`)
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.stderr, '')
+  assert.ok(result.stdout.endsWith('}\n'))
+  assert.equal(result.stdout.slice(0, -1).includes('\n'), false, 'one line, one object')
+  const printed = JSON.parse(result.stdout)
+  assert.deepEqual(printed, MEASURED)
+  assert.deepEqual(Object.keys(printed), ['events', 'router', 'total', 'counts', 'levels', 'reserved', 'discovery'])
+  assert.deepEqual(Object.keys(printed.router), ['mode', 'selections'])
+  assert.deepEqual(printed, summary(fold(log), log.length), 'exactly the fold')
+  // Lines that are no JSON are skipped; JSON that is no event is folded and changes nothing; CRLF and no final newline are fine.
+  const garbage = ['', 'not json', '{', '[1,2', '   ', '\u0000', '{"type":"tool/call","data":']
+  const noise = ['42', 'null', '"tool/call"', '[]', '{}', '{"type":"tool/call"}', '{"type":"tool/call","data":{"name":"bash","turn":2}}']
+  const lines = jsonl(log).split('\n')
+  const mixed = replay([...garbage, ...lines.slice(0, 20), ...noise, ...garbage, ...lines.slice(20)].join('\r\n'))
+  assert.equal(mixed.status, 0, mixed.stderr)
+  assert.deepEqual(JSON.parse(mixed.stdout), { ...MEASURED, events: 40 + noise.length })
+  // Empty stdin, or nothing but garbage: the initial state and its event count.
+  for (const [input, events] of [['', 0], ['\n\n', 0], ['nothing\n{\n', 0], ['null\n', 1]]) {
+    const empty = replay(input)
+    assert.equal(empty.status, 0, empty.stderr)
+    assert.deepEqual(JSON.parse(empty.stdout), { ...EMPTY_SUMMARY, events }, JSON.stringify(input))
+  }
+})
+
+test('scripts/audit-replay.mjs ignores a leading byte-order mark and a closed output pipe', () => {
+  const log = measuredLog()
+  const withBom = replay(`\ufeff${jsonl(log)}\n`)
+  assert.equal(withBom.status, 0, withBom.stderr)
+  assert.deepEqual(JSON.parse(withBom.stdout), MEASURED, 'the first line is not lost to the mark')
+  // A mark that is not at the very start is still no JSON: that line stays skipped.
+  const inside = replay([jsonl(log.slice(0, 5)), `\ufeff${JSON.stringify(log[5])}`, jsonl(log.slice(6))].join('\n'))
+  assert.equal(inside.status, 0, inside.stderr)
+  assert.equal(JSON.parse(inside.stdout).events, 40 - 1, 'only the first line may carry a mark')
+  // A closed stdout ends the run with status 0 and no stack trace.
+  const cwd = mkdtempSync(path.join(tmpdir(), 'router-audit-replay-'))
+  try {
+    const closed = spawnSync('sh', ['-c', `${JSON.stringify(process.execPath)} ${JSON.stringify(SCRIPT)} | true`], { input: `${jsonl(log)}\n`, cwd, encoding: 'utf8', env: { HOME: cwd }, timeout: 60_000 })
+    assert.equal(closed.status, 0, closed.stderr)
+    assert.doesNotMatch(closed.stderr, /Error|EPIPE|at /)
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('scripts/audit-replay.mjs reads stdin only (no file, network, clock or environment access) and is not published', () => {
+  const source = readFileSync(new URL('../scripts/audit-replay.mjs', import.meta.url), 'utf8')
+  assert.deepEqual([...source.matchAll(/^import .* from '([^']+)'$/gm)].map((match) => match[1]), ['node:readline', '../src/audit.js'])
+  for (const forbidden of [/Date/, /performance/, /hrtime/, /node:fs/, /node:net/, /node:http/, /node:child_process/, /fetch\(/, /process\.env/, /process\.argv/, /require\(/, /import\(/, /setTimeout|setInterval/]) {
+    assert.doesNotMatch(source, forbidden)
+  }
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.ok(Array.isArray(manifest.files))
+  assert.equal(manifest.files.some((entry) => entry.replace(/^\.\//, '').startsWith('scripts')), false, 'a development tool: not in the published files')
+})
+
+test('mutation checks: each audit v2 rule is caught on a temp copy of the source', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'router-audit-mutants-'))
+  try {
+    const zodUrl = import.meta.resolve('zod')
+    const urlOf = (file) => new URL(`../src/${file}`, import.meta.url).href
+    const sources = { 'audit.js': readFileSync(new URL('../src/audit.js', import.meta.url), 'utf8'), 'index.host.js': readFileSync(new URL('../src/index.host.js', import.meta.url), 'utf8') }
+    let serialFile = 0
+    // A copy imports zod, state.js and (for the host) audit.js from the checkout by URL.
+    const load = (file, source) => {
+      const target = path.join(dir, `${serialFile++}-${file.replace(/\.js$/, '.mjs')}`)
+      writeFileSync(target, source
+        .replaceAll("from 'zod'", `from '${zodUrl}'`)
+        .replaceAll("from './state.js'", `from '${urlOf('state.js')}'`)
+        .replaceAll("from './audit.js'", `from '${urlOf('audit.js')}'`))
+      return import(pathToFileURL(target).href)
+    }
+    const run = (m, events) => events.reduce(m.foldAudit, m.initAudit())
+    const ask = (turn, args = spawn(routed(OPUS, 'xhigh'))) => call(args, { turn })
+    const on = () => session({ levels: BASE_LEVELS })
+    const { router } = await definitions()
+    const probes = {
+      attribution: (m) => isDeepStrictEqual(run(m, [...on(), call(spawn(routed(HAIKU))), call(spawn({ ...routed(OPUS), reasoning_effort: 3 })), call(spawn(routed(GONE)))]).levels, { ...LEVELS_ZERO, ordinary: 1 }),
+      // In the fold an unshown route never gets a shown-route verdict, so this rule is probed on attributeLevel itself.
+      visibility: (m) => m.attributeLevel(routed(GONE), { selections: { mechanical: [GONE], ordinary: null, hard: [OPUS] }, authorized: AUTHORIZED }) === null
+        && run(m, [...session({ levels: { mechanical: label(GONE), hard: label(OPUS) } }), call(spawn(routed(GONE)))]).levels.mechanical === 0,
+      shared: (m) => isDeepStrictEqual(run(m, [...on(), call(spawn(routed(FLASH)))]).levels, { ...LEVELS_ZERO, shared: 1 }),
+      reservedWindow: (m) => run(m, [policy(AUTHORIZED), reservedChild()]).reserved === 0 && run(m, [...on(), reservedChild()]).reserved === 1,
+      reservedNotTotal: (m) => run(m, [...on(), reservedChild()]).total === 0,
+      turnCounting: (m) => run(m, [...on(), list(1), ask(1), ask(1), ask(2)]).discovery.turns === 2,
+      listBefore: (m) => run(m, [...on(), ask(1), list(1), ask(1)]).discovery.listed === 0 && run(m, [...on(), list(1), ask(1)]).discovery.listed === 1,
+      listEarlierTurn: (m) => run(m, [...on(), list(1), ask(2)]).discovery.listed === 0,
+      skipBadRequestTurn: (m) => run(m, [...on(), ask('4'), ask(null)]).discovery.turns === 0,
+      skipBadListTurn: (m) => run(m, [...on(), list(1), list('x'), ask(1)]).discovery.listed === 1,
+      statusJoin: (m) => m.auditStatusLine(() => run(m, measuredLog())) === MEASURED_STATUS,
+      statusReservedOnly: (m) => m.auditStatusLine(() => ({ ...m.initAudit(), reserved: 2 })).startsWith('Shortlist that ran (route shown by): '),
+      requiredFields: (m) => !m.auditStateSchema(router.stateSchema).safeParse((({ discovery, ...rest }) => rest)(m.initAudit())).success, // eslint-disable-line no-unused-vars
+      versionBump: async (m) => {
+        const units = {}
+        await m.apply({ sessionProjections: { async register(unit) { units[unit.key] = unit; return { stateOf: () => undefined } } }, systemPrompt: { getSectionOrder: () => 500, section() {} }, inject() {} })
+        return units.routerAudit.stateVersion === 2 && units.router.stateVersion === 5
+      },
+    }
+    const mutations = [
+      ['attribution', 'audit.js', [['SHOWN_ROUTE.has(result.verdict) ?', "result.verdict !== 'inherit' ?"]]],
+      ['visibility', 'audit.js', [['shownLevels(selections, authorized).flatMap(', 'shownLevels(selections, null).flatMap(']]],
+      ['shared', 'audit.js', [["showing.length === 1 ? showing[0] : 'shared'", 'showing[0]']]],
+      ['reservedWindow', 'audit.js', [
+        ["if (name !== 'subagent' || state.router.mode !== 'manual') return state", "if (name !== 'subagent') return state"],
+        ['const result = classifyDelegation(args, {', "if (state.router.mode !== 'manual') return state\n  const result = classifyDelegation(args, {"],
+      ]],
+      ['reservedNotTotal', 'audit.js', [['return { ...state, reserved: state.reserved + 1 }', 'return { ...state, reserved: state.reserved + 1, total: state.total + 1 }']]],
+      ['turnCounting', 'audit.js', [['|| turn === state.lastRequestTurn)', '|| false)']]],
+      ['listBefore', 'audit.js', [['return { ...state, listTurn: plainTurn(turn) }',
+        'return { ...state, listTurn: plainTurn(turn), discovery: turn === state.lastRequestTurn ? { ...state.discovery, listed: state.discovery.listed + 1 } : state.discovery }']]],
+      ['listEarlierTurn', 'audit.js', [['listed: state.listTurn === turn ? listed + 1 : listed', 'listed: state.listTurn !== null ? listed + 1 : listed']]],
+      ['skipBadRequestTurn', 'audit.js', [['!Number.isFinite(turn) || turn === state.lastRequestTurn', 'turn === undefined || turn === state.lastRequestTurn']]],
+      ['skipBadListTurn', 'audit.js', [['!Number.isFinite(turn) || turn === state.listTurn', 'turn === undefined || turn === state.listTurn']]],
+      ['statusJoin', 'audit.js', [["return lines.join('\\n')", "return lines.join('\\n\\n')"]]],
+      ['statusReservedOnly', 'audit.js', [['if (total > 0 || reserved > 0)', 'if (total > 0)']]],
+      ['requiredFields', 'audit.js', [['discovery: z.object({ turns: count, listed: count }),', 'discovery: z.object({ turns: count, listed: count }).optional(),']]],
+      ['versionBump', 'index.host.js', [["key: 'routerAudit',\n      stateVersion: 2,", "key: 'routerAudit',\n      stateVersion: 1,"]]],
+    ]
+    assert.deepEqual(mutations.map(([name]) => name).sort(), Object.keys(probes).sort(), 'one mutation per probe')
+    const holds = async (probe, m) => {
+      try {
+        return (await probe(m)) === true
+      } catch {
+        return false
+      }
+    }
+    // The unmutated copies pass every probe, so a failing mutant fails for its mutation alone.
+    const pristine = { 'audit.js': await load('audit.js', sources['audit.js']), 'index.host.js': await load('index.host.js', sources['index.host.js']) }
+    for (const [name, file] of mutations) assert.equal(await holds(probes[name], pristine[file]), true, `${name}: the unmutated copy passes`)
+    for (const [name, file, edits] of mutations) {
+      let source = sources[file]
+      for (const [find, replace] of edits) {
+        assert.equal(source.split(find).length, 2, `${name}: ${JSON.stringify(find)} occurs exactly once in ${file}`)
+        source = source.replace(find, () => replace)
+      }
+      assert.equal(await holds(probes[name], await load(file, source)), false, `${name}: the mutant is caught`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })

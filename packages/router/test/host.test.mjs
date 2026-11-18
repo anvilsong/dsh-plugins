@@ -340,6 +340,8 @@ const OFF_STATUS = [
   'hard: anthropic/claude-haiku-5-5 effort=xhigh',
 ].join('\n')
 const OBSERVED_LINE = 'Observed subagent requests while Router was on: 4 (inherit 1, match 2, unlisted_open 1). Observe only; nothing is blocked.'
+// Audit v2's second line: Haiku is Hard's only entry; turns 2 and 3 had requests, neither listed models first.
+const BREAKDOWN_LINE = 'Shortlist that ran (route shown by): mechanical 0, ordinary 0, hard 2, shared 0. Advisor-reserved subagent requests: 0. Listed models first in 0 of 2 turns with routed requests.'
 const toolCall = (args, turn = 2) => ({ type: 'tool/call', time: 10 + turn, data: { turn, step: 1, callId: `call_${turn}`, name: 'subagent', arguments: JSON.stringify(args) } })
 const AUDIT_LOG = [
   { type: 'subagent/model-selection-policy', time: 1, data: { allowedModels: [selected, haiku] } },
@@ -399,7 +401,8 @@ test('the observe-only audit is a third, host-only projection; the router projec
   const modelRoutes = h.units.get('routerModelRoutes')
   const audit = h.units.get('routerAudit')
   assert.equal(audit.key, 'routerAudit')
-  assert.equal(audit.stateVersion, 1, 'bump routerAudit stateVersion together with the router stateVersion')
+  // 2: audit v2 added required fields; the router projection stays at 5.
+  assert.equal(audit.stateVersion, 2, 'bump routerAudit stateVersion together with the router stateVersion')
   assert.equal('wire' in audit, false, 'host-only: no Client view')
   assert.equal(audit.apply, foldAudit)
   assert.equal(audit.stateSchema.shape.router, router.stateSchema)
@@ -418,7 +421,7 @@ test('the observe-only audit is a third, host-only projection; the router projec
   assert.deepEqual(h.warnings, [])
 })
 
-test('/router status appends one observed line only after requests were observed while Router was on', async () => {
+test('/router status appends the observed lines only after requests were observed while Router was on', async () => {
   const h = auditHarness()
   await apply(h.ctx)
   const audit = h.units.get('routerAudit')
@@ -427,9 +430,15 @@ test('/router status appends one observed line only after requests were observed
   const observed = h.observed()
   assert.equal(observed.total, 4)
   h.setAudit(() => observed)
-  assert.equal(await h.status(), `${MANUAL_STATUS}\n${OBSERVED_LINE}`)
+  assert.equal(await h.status(), `${MANUAL_STATUS}\n${OBSERVED_LINE}\n${BREAKDOWN_LINE}`, 'the v1 line, then the v2 line, one newline apart')
   h.setRouter({ ...HAIKU_XHIGH, mode: 'off' })
-  assert.equal(await h.status(), `${OFF_STATUS}\n${OBSERVED_LINE}`, 'counts from while Router was on stay after it is off')
+  assert.equal(await h.status(), `${OFF_STATUS}\n${OBSERVED_LINE}\n${BREAKDOWN_LINE}`, 'counts from while Router was on stay after it is off')
+  // Only Advisor-reserved children observed: the second line alone.
+  h.setRouter(HAIKU_XHIGH)
+  h.setAudit(() => ({ ...audit.init(), reserved: 3 }))
+  assert.equal(await h.status(), `${MANUAL_STATUS}\nShortlist that ran (route shown by): mechanical 0, ordinary 0, hard 0, shared 0. Advisor-reserved subagent requests: 3. Listed models first in 0 of 0 turns with routed requests.`)
+  h.setAudit(() => observed)
+  h.setRouter({ ...HAIKU_XHIGH, mode: 'off' })
   // While an update is pending, status reports only the update, as before.
   h.setRouter({ ...HAIKU_XHIGH, pending: { target: 'level', level: 'hard', routes: null, commandId: 'p', startedAt: Date.now() } })
   assert.equal(await h.status(), 'Router is updating (level hard) for this session.')
@@ -455,6 +464,9 @@ test('status keeps its existing text when the audit state is missing, no audit s
       get() { throw new Error('get trap') },
       getOwnPropertyDescriptor() { throw new Error('descriptor trap') },
     })],
+    // A cached v1 row is refolded by the Host; read anyway, it gives no line.
+    ['a v1-shaped state', () => (({ levels, reserved, discovery, listTurn, lastRequestTurn, ...v1 }) => v1)(h.observed())], // eslint-disable-line no-unused-vars
+    ['a levels getter that throws', () => ({ ...h.observed(), get levels() { throw new Error('levels') } })],
   ]) {
     h.setAudit(read)
     assert.equal(await h.status(), MANUAL_STATUS, name)
@@ -505,8 +517,14 @@ test('the audit embeds the router state, so its state version moves with the rou
   const h = auditHarness()
   await apply(h.ctx)
   // On failure: bump routerAudit's stateVersion in the same change, then update both numbers here.
+  // routerAudit is at 2 for its own v2 fields (levels, reserved, discovery); the router is still at 5.
   assert.equal(h.units.get('router').stateVersion, 5, 'bump routerAudit stateVersion together with the router stateVersion')
-  assert.equal(h.units.get('routerAudit').stateVersion, 1, 'bump routerAudit stateVersion together with the router stateVersion')
+  assert.equal(h.units.get('routerAudit').stateVersion, 2, 'bump routerAudit stateVersion together with the router stateVersion')
+  // The cached v1 row does not pass the v2 schema, so the Host refolds it from the log.
+  const audit = h.units.get('routerAudit')
+  const v1Row = (({ levels, reserved, discovery, listTurn, lastRequestTurn, ...v1 }) => v1)(h.observed()) // eslint-disable-line no-unused-vars
+  assert.equal(audit.stateSchema.safeParse(v1Row).success, false)
+  assert.equal(audit.stateSchema.safeParse(h.observed()).success, true)
 })
 
 test('the policy section is byte-identical whatever the audit counts', async () => {
@@ -518,5 +536,6 @@ test('the policy section is byte-identical whatever the audit counts', async () 
     h.setAudit(read)
     assert.equal(h.section(), expected)
     assert.doesNotMatch(h.section(), /observ|nothing is blocked/i) // ("auditable line" is POLICY's own wording)
+    assert.doesNotMatch(h.section(), /Shortlist that ran|route shown by|reserved subagent requests|Listed models first/i)
   }
 })

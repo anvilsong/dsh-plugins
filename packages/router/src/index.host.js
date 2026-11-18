@@ -129,12 +129,15 @@ export async function apply(ctx) {
   // Observe-only delegation audit: a host-only unit (no wire) that the prompt,
   // the Client and the tool path never read; only /router status reports it.
   // It embeds the router state, so its version moves with stateVersion 5.
+  // 2: audit v2 (per-level, Advisor-reserved and discovery counts); a cached
+  // v1 state no longer matches the state version, so the Host refolds the
+  // session log (the old shape would also fail the schema).
   // Without it Router works as before.
   let audit
   try {
     audit = await ctx.sessionProjections.register({
       key: 'routerAudit',
-      stateVersion: 1,
+      stateVersion: 2,
       stateSchema: auditStateSchema(stateSchema),
       init: initAudit,
       apply: foldAudit,

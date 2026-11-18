@@ -147,8 +147,8 @@ Each shortlist entry is a model plus, optionally, the effort to pass with it.
 command form (`<provider>/<model> effort=<id>`), marking entries whose route is
 no longer authorized with `(unavailable)`; while an update is pending it
 reports only which target is updating. Once the
-[observe-only audit](#observe-only-audit) has counted a request, a last line
-reports its counts.
+[observe-only audit](#observe-only-audit) has counted a request or an
+Advisor-reserved child, up to two last lines report its counts.
 
 **Upgrade note.** The projection moved to state version 5 (entries gained an
 optional effort), so cached Router state is rebuilt once from the session log.
@@ -272,24 +272,29 @@ or `router: inherit — no clear route advantage`.
 While Router is on, the Host counts how the lead's `subagent` requests compare
 with the shortlist entries the lead was shown. It only observes: nothing is
 blocked, delayed or rewritten, and nothing reaches the prompt, the
-model-options menu or a tool. Its one output is a last line in
-`/router status`, for example:
+model-options menu or a tool. In the Host its only output is one or two last
+lines in `/router status`, for example:
 
 ```text
 Observed subagent requests while Router was on: 12 (inherit 2, match 9, effort_mismatch 1). Observe only; nothing is blocked.
+Shortlist that ran (route shown by): mechanical 0, ordinary 2, hard 7, shared 1. Advisor-reserved subagent requests: 9. Listed models first in 3 of 5 turns with routed requests.
 ```
 
-The line appears once a request has been counted, also after Router is turned
-off, and lists the non-zero verdicts in the order of the table below. While an
-update is pending, status still reports only the update.
+The first line appears once a request has been counted, also after Router is
+turned off, and lists the non-zero verdicts in the order of the table below.
+The second line appears once a request or an Advisor-reserved child has been
+counted (alone when only reserved children were), and always shows all four
+level counts and both discovery numbers, zeros included. While an update is
+pending, status still reports only the update.
 
 - **What is counted.** Each request to the tool named exactly `subagent` made
   while Router is on in the session, as the session log records it, including
   requests the Host then refused. Counts are requests: a spawn rejected for its
   effort and its retry count as `match` and `retry`. Advisor-reserved children
   (`advisor-verifier`, `advisor-planner` and `advisor-consult`, alone or
-  followed by `-`) and the other delegation tools (`subagent_fork`,
-  `subagent_codex`, `subagent_claude_code`, `spawn_teammate`) are not counted.
+  followed by `-`) are not requests: they have their own count (below). The
+  other delegation tools (`subagent_fork`, `subagent_codex`,
+  `subagent_claude_code`, `spawn_teammate`) are not counted.
 - **What is compared.** The request's exact `provider`, `model` and
   `reasoning_effort` (or its absence) against the union of the entries every
   level shows the lead: authorized entries only, with the efforts their
@@ -316,6 +321,36 @@ update is pending, status still reports only the update.
 - **Fidelity, not judgment.** The audit measures whether requests carry a
   shown route and its effort, not whether the level was right: a 100 % match
   rate does not show that substantive work was never relabelled Mechanical.
+- **Shortlist that ran.** Each counted request whose route a level shows
+  (`match`, `retry`, `effort_mismatch`, `effort_omitted`) adds one to the
+  level whose shortlist shows its exact provider and model, judged like the
+  verdicts: prompt-visible (authorized) entries only, with the shortlists in
+  force at the request, its effort ignored. A route that several levels show
+  counts as `shared`. `inherit`, `malformed` and unlisted requests are not
+  attributed (the unlisted verdicts already count them), so the four numbers
+  add up to those four verdicts. This reports which level's shortlist the
+  route that ran is on, **not** whether that level was right for the work: a
+  request carries no level, none is inferred from the prompt or the
+  `router:` line, and a shared route says nothing about the level meant.
+- **Advisor-reserved children.** `subagent` requests whose child name is
+  Advisor-reserved are counted apart, only while Router is on (the same window
+  as the verdicts, so the numbers compare). They are never classified,
+  attributed, part of the total or of discovery. Reserved children made with
+  the other delegation tools are not counted.
+- **Discovery.** `turns` counts the turns with at least one counted request
+  (any verdict; reserved children do not count) while Router is on; `listed`
+  counts how many of them had a `tool/call` to the tool named exactly
+  `list_subagent_models` before the turn's first counted request. A list call
+  after that first request comes too late for the turn. List calls are
+  recorded whatever the mode, but count only for a turn with a counted
+  request. A request or list call whose turn is no finite number is left out
+  of discovery, never guessed (the request itself is still counted). Two
+  caveats: `turns` counts changes of the turn number, not distinct values
+  (requests in turns 5, 4, 5 count as three turns), and a list call logged in
+  the same step as the request, just before it, counts as listed first even
+  though its result could not have been read yet. The status line's "turns with
+  routed requests" therefore includes turns that had only inherit or malformed
+  requests.
 - **Heuristics.** `retry` is an adjacency rule: two deliberate requests on one
   route in a turn, first with and then without an effort, also read as a
   retry, and only a request the audit counts breaks the adjacency. Requests
@@ -327,11 +362,30 @@ update is pending, status still reports only the update.
   Of the requests themselves, only the last effort match is kept: its provider
   and model ids (cut to 200 characters), its effort id and its turn number;
   never a child's name, description or prompt. Besides the counts, the state
-  keeps the session's authorized routes and the router state rebuilt from the
-  same commands, with their selections and failure text, as the router
-  projection already does.
+  keeps the session's authorized routes, the turn numbers of the latest
+  `list_subagent_models` call and of the latest counted request, and the
+  router state rebuilt from the same commands, with their selections and
+  failure text, as the router projection already does.
 - **Versions.** The audit embeds the router state, so a change to the router's
   state version must bump the `routerAudit` state version in the same change.
+  The audit's own fields bump it too: `routerAudit` is at state version 2 (the
+  per-level, reserved and discovery counts; the router stays at 5). A cached
+  version-1 state no longer matches the state version, so the Host discards it
+  and refolds the session log (the old shape would also fail the new schema), so
+  earlier sessions get the new counts from their start.
+- **Replay a log.** `packages/router/scripts/audit-replay.mjs` folds one
+  session log through the same fold and prints one JSON object
+  `{events, router: {mode, selections}, total, counts, levels, reserved, discovery}`:
+
+  ```sh
+  <decompress the session log> | node packages/router/scripts/audit-replay.mjs
+  ```
+
+  It reads JSONL from stdin only (decompress the log first), skips lines that
+  are no JSON (`events` counts the lines it folded), and touches no file,
+  network, clock or environment. It is a development tool in this repository:
+  the package's `files` list does not include `scripts/`, so it is not
+  published.
 - **Not covered.** Subagent calls dispatched programmatically (from
   `run_code`) are logged as `tool/ptc-dispatch` events and are not counted. A
   call that names only an `agent_preset` counts as `inherit`, even when the
