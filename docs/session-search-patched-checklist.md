@@ -56,8 +56,10 @@ from the install on:
 dsh plugin --profile <profile> remove dsh-plugin-session-search-patched
 ```
 
-or switch the bundle `dsh-plugin-session-search-patched` off on the Plugins page.
-On a running `dsh web` both apply about 3 seconds later; restart afterwards. Never
+or take the bundle name out of `dsh.profile.bundles` by hand (the one-liner is in
+`packages/session-search-patched/docs/rollout-record.md`, section 7). Switching the bundle off
+on the Plugins page was not exercised; do not rely on it. On a running `dsh web`
+the removal applies about 3 seconds later; restart afterwards. Never
 disable only the row `session-query-sqlite-patched`: the shipped row stays off,
 the group has no engine and **search is dead** until the bundle is switched off or
 removed.
@@ -90,17 +92,26 @@ both engines give the same clean error (README, "What it does not fix").
 
 ## 2. Install
 
-1. From the checkout:
+Follow `packages/session-search-patched/docs/rollout-record.md`, section 6: stop the
+host first (the host runs your session, so this ends it), install from a **frozen
+copy** of the reviewed commit, start the host again with your usual command line.
+The steps below name what to check at each point.
+
+1. From the frozen copy (`PKG`, made as in the rollout record, section 6.2 step 1;
+   installing straight from the working tree also works, but nobody may edit
+   `src/` while it is installed):
 
    ```sh
-   dsh plugin --profile <profile> add "$PWD/packages/session-search-patched"
+   dsh plugin --profile <profile> add "$PKG"
    ```
 
    Expect exit 0 and no `installation rejected`. (A rejection reads `Plugin … is
    incompatible with dsh …` and ends `nothing was installed`; the host version is
    then not 0.2.2-rc.3.)
-2. If `dsh web` was running, wait about 3 seconds. Expect no restart prompt and no
-   error banner. The change applies live (HMR); you confirm it after the restart.
+2. Installing while `dsh web` runs was tested only on a scratch host: it applied
+   about 2 seconds later. On your real host it recomposes the whole profile and
+   restarts other linked plugins whose files changed since the host started;
+   prefer the host stopped, as the rollout record recommends.
 3. `<DSH home>/profiles/<profile>/package.json` now names
    `dsh-plugin-session-search-patched` in `dependencies` and in
    `dsh.profile.bundles`, after the session-search bundle.
@@ -120,8 +131,7 @@ keeps serving), or any change to files outside the profile folder. Read README,
    the page.
 2. Expect no line `dsh: skipping profile bundle "dsh-plugin-session-search-patched"`
    on the terminal of `dsh web`.
-3. The Plugins page shows the session-search bundle and this package's bundle
-   enabled. What each row looks like in the GUI is **not verified**; write down what
+3. Look at the Plugins page for the session-search bundle and this package's bundle. What each row looks like in the GUI is **not verified**; write down what
    you see.
 
 Failure means: a skipped bundle (read the line: it names the failed requirement),
@@ -160,8 +170,9 @@ row and the effect.
    `sessionQuery: true`. Exactly one enabled engine row in the group. No engine row
    outside the group except the root row `session-query-sqlite` with
    `openAt: never`.
-3. **Plugins page.** The row of this bundle is listed. (What it shows for the
-   shipped row `optional-session-query-sqlite` is **not verified**.)
+3. **Plugins page.** What it shows for this bundle and for the shipped row
+   `optional-session-query-sqlite` is **not verified**: the page may list no row
+   for this bundle. Write down what you see; do not fail the check on it.
 4. **Behaviour**: scenarios 5 to 7 below.
 
 Failure means: two enabled engine rows in the group, an engine row outside the
@@ -261,12 +272,8 @@ Do it once with nothing pending, so you know it works on your profile.
    may remain; it is inert.
 3. Restart the host. Run search 1 and 4 of scenario 1: the same results as the
    "before" snapshot.
-4. Optional: install again (scenario 2), restart, and switch the bundle **off** on
-   the Plugins page instead (the entry leaves `dsh.profile.bundles`, the
-   dependency stays). Expect the same dump result as in step 2, but with the
-   dependency still present. Then switch it on again, or remove it as in step 1.
-   After you switched the *session-search* bundle off and on, switch this bundle
-   off and on once to put its layer after it again.
+4. After you switched the *session-search* bundle off and on, remove and install
+   this bundle again once, so that its layer comes after it again.
 5. Do **not** try "disable only the row" on a profile you use: it leaves the group
    without a provider and kills search until the bundle is switched off or
    removed.
