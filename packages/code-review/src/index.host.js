@@ -774,6 +774,9 @@ throw new Error('The review loop ended without a stop reason.')
 `
 }
 
+/** A queued task above this many bytes may be too big for the model to relay in one workflow call. */
+const RELAY_WARN_BYTES = 150_000
+
 function steerMessage(scope, pin, guidance) {
   const spec = {
     meta: { name: 'code-review', description: 'Bounded read-only code review' },
@@ -788,7 +791,7 @@ function steerMessage(scope, pin, guidance) {
     },
     script: reviewWorkflowScript(),
   }
-  return `Run a bounded code review. Make exactly ONE workflow call, passing spec.meta as meta, spec.args as args, and spec.script as the script verbatim. Each round runs two independent finders in parallel and one refuter only when that round has new de-duplicated candidates. Run at most three rounds. Do not add agents, delegate elsewhere, or retry a failed stage. Do not modify, stage, stash, format, or run anything that writes to the workspace. Read the manifest files and only necessary surrounding context. If any finder or refuter fails or returns invalid output, follow the workflow failure path, report the failed review, and never call it dry. Every report, including a failed review, starts with the pin the host captured when this review was queued; its first line must be exactly:\n${pin.line}\nand its second line must be exactly:\n${guidance.line}\nAfter a successful workflow returns, render its {rounds,stop,findings,preExisting,unverified,stats} result as markdown below those lines: surviving findings by severity, then "Pre-existing (not introduced by this change)" with each finding's severity and reason, then Unverified, then skipped files, then one line of stats. Always show "Rounds: <rounds>/3" and "Stop reason: <dry|cap_reached>". For dry, explain that the final round confirmed no new finding. For cap_reached, state that round 3 still confirmed findings and "More findings may remain." Add no findings of your own and do not show refuted findings.\n<workflow_spec>${JSON.stringify(spec).replaceAll('</', '<\\/').replace(/<(?=workflow_spec)/gi, '\\u003c')}</workflow_spec>`
+  return `Run a bounded code review. Make exactly ONE workflow call, passing spec.meta as meta, spec.args as args, and spec.script as the script verbatim. Leave the text ${SCOPE_TOKEN} in spec.args.finderPrompts and spec.args.refuterPrompt exactly as written; the workflow fills it in. Each round runs two independent finders in parallel and one refuter only when that round has new de-duplicated candidates. Run at most three rounds. Do not add agents, delegate elsewhere, or retry a failed stage. Do not modify, stage, stash, format, or run anything that writes to the workspace. Read the manifest files and only necessary surrounding context. If any finder or refuter fails or returns invalid output, follow the workflow failure path, report the failed review, and never call it dry. Every report, including a failed review, starts with the pin the host captured when this review was queued; its first line must be exactly:\n${pin.line}\nand its second line must be exactly:\n${guidance.line}\nAfter a successful workflow returns, render its {rounds,stop,findings,preExisting,unverified,stats} result as markdown below those lines: surviving findings by severity, then "Pre-existing (not introduced by this change)" with each finding's severity and reason, then Unverified, then skipped files, then one line of stats. Always show "Rounds: <rounds>/3" and "Stop reason: <dry|cap_reached>". For dry, explain that the final round confirmed no new finding. For cap_reached, state that round 3 still confirmed findings and "More findings may remain." Add no findings of your own and do not show refuted findings.\n<workflow_spec>${JSON.stringify(spec).replaceAll('</', '<\\/').replace(/<(?=workflow_spec)/gi, '\\u003c')}</workflow_spec>`
 }
 
 export async function apply(ctx) {
@@ -816,12 +819,18 @@ export async function apply(ctx) {
         if (scope.files.length === 0 && scope.mode !== 'patch') {
           return { kind: 'error', text: 'No reviewable files were found. Sensitive, generated, binary, and over-budget files are skipped.' }
         }
+        const steer = steerMessage(scope, pin, guidance)
         agent.followup({
           source: { kind: 'user' },
           role: 'user',
-          content: [{ type: 'text', text: steerMessage(scope, pin, guidance) }],
+          content: [{ type: 'text', text: steer }],
         })
-        return { kind: 'success', text: `Code review queued for ${scope.path}. Two finders and one refuter will run next.\n${pin.line}\n${guidance.line}` }
+        // The model must pass the whole spec in one call; there is no byte cap, so say so when the task is big.
+        const size = Buffer.byteLength(steer)
+        const note = size > RELAY_WARN_BYTES
+          ? `\nThe queued task is ${Math.round(size / 1000)} KB, which may be too large to relay in one call. Split the patch (for example by file) if the review does not start.`
+          : ''
+        return { kind: 'success', text: `Code review queued for ${scope.path}. Two finders and one refuter will run next.\n${pin.line}\n${guidance.line}${note}` }
       } catch (error) {
         return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
       }

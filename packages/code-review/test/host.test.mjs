@@ -1701,3 +1701,37 @@ test('a patch of about 70 KB keeps the whole queued message small enough to rela
     await cleanup(cwd)
   }
 })
+
+test('the queued message tells the model to leave the scope placeholder exactly as written', async () => {
+  const cwd = await temp()
+  try {
+    await writeFile(path.join(cwd, 'a.patch'), 'diff --git a/src/a.js b/src/a.js\n--- /dev/null\n+++ b/src/a.js\n@@ -0,0 +1 @@\n+const a = 1\n')
+    const { h } = await review(cwd, 'a.patch', { git: false })
+    const text = steerText(h)
+    assert.match(text, /Leave the text \{\{SCOPE_JSON\}\} in spec\.args\.finderPrompts and spec\.args\.refuterPrompt exactly as written/)
+    assert.match(text, /the workflow fills it in/)
+  } finally {
+    await cleanup(cwd)
+  }
+})
+
+test('a queued task too large to relay is named in the command reply; a normal one is not', async () => {
+  const cwd = await temp()
+  try {
+    const make = (files) => Array.from({ length: files }, (_, file) => {
+      const lines = Array.from({ length: 200 }, (_, index) => `const value_${file}_${index} = compute(${index}, "${'y'.repeat(80)}")`)
+      return [`diff --git a/src/g${file}.js b/src/g${file}.js`, '--- /dev/null', `+++ b/src/g${file}.js`, '@@ -0,0 +1,200 @@', ...lines.map((line) => '+' + line)].join('\n') + '\n'
+    }).join('')
+    await writeFile(path.join(cwd, 'small.patch'), make(1))
+    await writeFile(path.join(cwd, 'large.patch'), make(10))
+    const small = await review(cwd, 'small.patch', { git: false })
+    assert.doesNotMatch(small.result.text, /too large/)
+    const large = await review(cwd, 'large.patch', { git: false })
+    assert.ok(Buffer.byteLength(steerText(large.h)) > 150_000, String(Buffer.byteLength(steerText(large.h))))
+    assert.match(large.result.text, /The queued task is \d+ KB, which may be too large to relay in one call/)
+    assert.match(large.result.text, /Split the patch/)
+    assert.match(large.result.text, /^Code review queued for /, 'the queue line stays first')
+  } finally {
+    await cleanup(cwd)
+  }
+})
