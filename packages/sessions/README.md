@@ -314,7 +314,10 @@ session; that tree's registry steps wait), `registry-step-failed`,
   or audit line, and a fresh read then starts no recovery at all for it (the
   Host logs a line that names the batch and the step only when an automatic
   recovery reaches it, which after the third failure means at the next Host
-  start, so the row staying *needs recovery* is what you see first). Your next prune,
+  start, so the row staying *needs recovery* is what you see first). While every
+  owed step of a batch is held this way, a fresh read does not finish that
+  batch's interrupted moves either; the next Host start or your next change
+  does. Your next prune,
   restore or permanent delete, of any batch, tries every owed step again, each
   time. **Restore batch** on the *needs recovery* row is the simplest: when the
   steps now succeed it finishes them, and a batch wholly back in the store is
