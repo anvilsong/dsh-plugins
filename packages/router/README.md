@@ -252,9 +252,11 @@ Caveats:
   itself, so `mechanical 0` in `/router status` is the expected reading, not a
   fault. The tier exists to hold a cheap route behind three strict criteria; a
   user who wants no cheap route leaves it at Inherit, which is the default. If
-  replays of many sessions that include plan-driven parallel workers still show
-  `mechanical 0`, merge it into Ordinary in the same change as the next router
-  state-version bump (the Advisor's plan levels name Mechanical too).
+  replays of at least 10 sessions that include plan-driven parallel workers
+  still show `mechanical 0`, merge it into Ordinary in the same change as the
+  next router state-version bump (the Advisor's plan levels name Mechanical
+  too). `scripts/audit-replay.mjs` replays one session log read from stdin; add
+  up the `mechanical` counts of the replays by hand.
 - **Inherit by default.** A shortlist applies only when configured. Leave
   inheritance for a named non-cost reason—a capability, tool, context window,
   provider feature, or explicit user preference—or for high-confidence
