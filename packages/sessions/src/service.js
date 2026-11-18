@@ -25,7 +25,8 @@
 //   unarchive, each idempotent and journaled in the batch -> audit apply-end.
 // Restore: recover() -> move back (exact recorded folder; `workspace-missing`
 //   and `conflict` keep the unit in trash) -> verify the log is back (same
-//   folder, and the size and revision file part it had when it was moved) ->
+//   folder, and the size and revision file part it had when it was moved;
+//   strict only in the restore call: recovery accepts a changed log) ->
 //   attach, check membership -> insertSessionBefore the recorded anchor ->
 //   archive (in recorded archive order) -> pin (only members that were pinned
 //   and not archived, in reverse recorded pin order), each journaled. A batch
@@ -35,8 +36,9 @@
 //   left undone: units wholly in trash get their prune steps, units moved back
 //   get their restore steps. It never deletes and never moves toward the trash.
 //   It runs before every mutation, once when the service starts (best effort,
-//   logged; every call waits for it), and on a fresh Trash tab read when a
-//   batch still owes registry steps.
+//   logged; every call waits for it, at most STARTUP_WAIT_MS; tried again at
+//   a later call while the host services are missing), and on a fresh Trash
+//   tab read when a batch still owes registry steps.
 //
 // The trash manifest (src/trash.js) records each member's workspace, parent,
 // archived and pinned marks, but not its position in the workspace order, its
@@ -65,6 +67,8 @@ import { createTrash, isBatchId, MANIFEST_FILE, SESSIONS_FOLDER } from './trash.
 
 /** Plans kept in memory; an older one reads as expired. */
 export const PLANS_KEPT = 5
+/** Longest wait of a call for the recovery at start, in ms after that run began (option startupWaitMs). */
+export const STARTUP_WAIT_MS = 5000
 /** Registry hints of a batch: position, anchors, revision and size of each member. */
 export const HINTS_FILE = 'registry.json'
 export const HINTS_KIND = 'dsh-plugin-sessions/registry-hints'
@@ -304,6 +308,7 @@ function recordedRoot(fs, trashDir) {
  * @param {object} [options.trashOptions] extra createTrash options (identity, isAlive, uid, random)
  * @param {string} [options.pluginVersion] recorded in the audit log
  * @param {boolean} [options.startupRecover] false: no recovery at start (default: it runs once, see ensureStartup)
+ * @param {number} [options.startupWaitMs] longest wait of a call for that recovery (default STARTUP_WAIT_MS)
  */
 function createCore(options) {
   const { adapter, settings } = options
@@ -639,9 +644,12 @@ function createCore(options) {
    * pinned (README, known limits). Once a restore step is journaled, the user
    * may unarchive, unpin or move the session, and a later recover() must not
    * undo that; a pin of a session that is archived again is journaled
-   * skipped. `strict`: a log that is back but not the one that was moved is
-   * not attached (the restore itself); recovery accepts it, since the session
-   * may have been used since. `logs`: the log facts at the move, by id.
+   * skipped. `strict` (only the restore call itself): a member whose log is
+   * back but is not the one that was moved gets none of these steps, and the
+   * call reports recovery-needed; a later recovery or a fresh Trash read
+   * (strict false) accepts the log, since the session may have been used
+   * since, and runs the steps. The folder is back in the store either way and
+   * the log is never altered. `logs`: the log facts at the move, by id.
    */
   async function completeRestore(entries, histories, hints, logs, record, warnings, { strict }) {
     const items = entries.map((entry) => ({ entry, hint: hints?.get(entry.id) ?? null, history: restorePhase(histories.get(entry.id) ?? []) }))
@@ -1345,12 +1353,18 @@ function createCore(options) {
   // once when the service starts, so nothing waits for the next user action:
   // best effort (a failure is logged, never thrown; the next mutation runs
   // recover() anyway), one run shared by every caller, and every call waits
-  // for it, so a call made right after the start is never busy because of it.
-  // Without a batch in the trash there is nothing to recover and the store is
-  // not read. While the host services are not there yet, the next call tries
-  // again.
+  // for it, so a call made right after the start is not busy because of it.
+  // The wait is bounded: a call waits at most startupWaitMs after the run
+  // began (a host call that never settles must not hold every call); past
+  // that, calls go ahead, one line is logged, the run keeps going and keeps
+  // the mutation slot, so a change gets `busy` until it ends. Without a batch
+  // in the trash there is nothing to recover and the store is not read. While
+  // the host services are not there yet (their plugins are not active yet),
+  // the run does nothing and is dropped when it settles, so the next call
+  // tries again; a run that did start is never repeated, even one that failed.
 
-  const startup = { promise: null }
+  const startupWaitMs = Number.isFinite(options.startupWaitMs) && options.startupWaitMs >= 0 ? options.startupWaitMs : STARTUP_WAIT_MS
+  const startup = { run: null, wait: null }
 
   /** Whether the trash folder holds a batch (an lstat, then one readdir of a real folder; a missing folder holds none). */
   function trashHoldsBatches() {
@@ -1363,14 +1377,12 @@ function createCore(options) {
     }
   }
 
+  /** One recovery at start. Never rejects; resolves to true when it should be tried again (the host services are not there yet). */
   async function startupRecovery() {
     try {
-      if (config === null || !adapter.lockProbeSupported) return
-      if (!backendReady()) {
-        startup.promise = null
-        return
-      }
-      if (!trashHoldsBatches()) return
+      if (config === null || !adapter.lockProbeSupported) return false
+      if (!backendReady()) return true
+      if (!trashHoldsBatches()) return false
       const report = await mutate('recover', async () => {
         const { trash } = await mutationContext({ needStoreRoot: false })
         const lock = acquire(trash)
@@ -1389,12 +1401,41 @@ function createCore(options) {
     } catch (error) {
       logOnce(`recovery at start did not run (${errorToken(error)}); the next change runs it`)
     }
+    return false
   }
 
-  /** The recovery at start: one shared promise that never rejects. */
+  /**
+   * The recovery at start: one shared run that never rejects, and the bounded
+   * wait of the calls for it. A run that found no host services is dropped
+   * once it settles, so a later call starts a new one; nothing retries
+   * without a call.
+   */
   function ensureStartup() {
-    startup.promise ??= startupRecovery()
-    return startup.promise
+    if (startup.run !== null) return startup.run
+    const run = startupRecovery()
+    let timer = null
+    const bound = new Promise((resolve) => {
+      timer = setTimeout(() => {
+        logOnce(`recovery at start has taken ${startupWaitMs} ms so far (a large store or a slow host call); calls go ahead without it, and a change gets busy until it ends`)
+        resolve()
+      }, startupWaitMs)
+      timer.unref?.()
+    })
+    startup.run = run
+    startup.wait = Promise.race([run, bound]).then(() => undefined)
+    void run.then((again) => {
+      clearTimeout(timer)
+      if (again === true && startup.run === run) {
+        startup.run = null
+        startup.wait = null
+      }
+    })
+    return run
+  }
+  /** What a call waits for: the recovery at start, at most until startupWaitMs after that run began. */
+  function startupWait() {
+    ensureStartup()
+    return startup.wait
   }
   if (options.startupRecover !== false) setImmediate(ensureStartup)
 
@@ -1431,18 +1472,18 @@ function createCore(options) {
       } catch (error) {
         throw toRemote(error)
       }
-      if (options.startupRecover !== false) await ensureStartup()
+      if (options.startupRecover !== false) await startupWait()
       try {
         return await handlers[name](request)
       } catch (error) {
         throw toRemote(error)
       }
     },
-    /** The recovery at start (it runs once; this returns its promise, which never rejects). */
+    /** The recovery at start (one run, started again only after one that found no host services; its promise never rejects). */
     startup: () => (options.startupRecover !== false ? ensureStartup() : Promise.resolve()),
-    /** Reconcile the trash and the registry now (not a Remote method). */
+    /** Reconcile the trash and the registry now (not a Remote method); waits for the recovery at start as a call does. */
     async recover() {
-      if (options.startupRecover !== false) await ensureStartup()
+      if (options.startupRecover !== false) await startupWait()
       return mutate('recover', async () => {
         const { trash } = await mutationContext({ needStoreRoot: false })
         const lock = acquire(trash)

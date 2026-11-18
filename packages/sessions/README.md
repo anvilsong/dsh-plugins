@@ -17,9 +17,13 @@ disk. This plugin adds one page that
   separate typed action.
 
 The page is for the owner of the machine. The plugin registers no agent tool
-and no slash command, and nothing runs by itself: no schedule, no automatic
-prune, no expiry. It never opens a session log body and never calls session
-search. A session title comes from the host's projection cache (no log read);
+and no slash command, and it never prunes, restores or deletes on its own: no
+schedule, no automatic prune, no expiry. Only recovery runs without a click:
+when the Host starts and whenever the page reads the Trash tab afresh (**Refresh**,
+the timed refresh, and the read the page makes by itself after every change), it can finish an
+interrupted operation (move folders back toward the store, run registry steps
+still owed), never more (see [Recovery](#recovery)). It never opens a session
+log body and never calls session search. A session title comes from the host's projection cache (no log read);
 without one, a row shows the short session id.
 
 The unit of a prune is a **whole tree**: the top-most archived session plus
@@ -285,7 +289,19 @@ session; that tree's registry steps wait), `registry-step-failed`,
   become ghosts that the host hides again after its restart). A second host can
   also recreate an empty session folder in the instant of a rename; a restore
   reports that as `conflict` and never deletes it. Run prune and restore with one
-  Host.
+  Host. The same goes for **Refresh** on the Trash tab and for the start of a
+  Host: both can run recovery, and its registry steps are written from that
+  host's in-memory view of the registry, which a second host can have made
+  stale.
+- **A batch whose owed steps cannot finish stays *needs recovery*.** This
+  happens when the backend still lists a moved session (`stale-backend-entry`;
+  that tree's registry steps wait, and the result recommends a restart), or
+  when a session of a restored batch whose registry steps were still owed was
+  pruned again into a newer batch (its log is not at the recorded folder, so
+  the older batch cannot finish until that session is back). Such a batch stays
+  listed as *needs recovery*, and every **Refresh** of the Trash tab runs a
+  recovery for it again; while that recovery runs, a change you start gets
+  `busy`. Try it again a moment later.
 - **Search and caches after a prune.** The plugin calls neither. The search
   index reconciles with the session list before each search, so a pruned
   session drops out of search at the **next search** (not at restart) and is
@@ -310,12 +326,21 @@ session; that tree's registry steps wait), `registry-step-failed`,
   (never over an existing one), checks that the log is back (same folder, and
   the size and revision the log had when it was moved: they are journaled
   right after the move, so a log that changed after the last check but before
-  its move still restores, and one that changed in the trash does not),
-  re-attaches the session to its workspace, puts it back before its recorded
-  neighbour, archives it again if it was archived, and pins it again only if it
-  was pinned and is not archived. A tree whose workspace no longer exists stays
-  in the trash (`workspace-missing`); a missing project folder is recreated
-  (mode 0700) when the manifest recorded it.
+  its move still restores), re-attaches the session to its workspace, puts it
+  back before its recorded neighbour, archives it again if it was archived, and
+  pins it again only if it was pinned and is not archived. A tree whose
+  workspace no longer exists stays in the trash (`workspace-missing`); a
+  missing project folder is recreated (mode 0700) when the manifest recorded
+  it.
+- **A log that changed while in the trash.** Only the restore call itself is
+  strict about it: it moves the folder back but runs none of that session's
+  registry steps, and its result is *needs recovery* (`recovery-needed`). The
+  next recovery accepts the log, since the session may be in use by then, and
+  finishes the registry steps: attach, order, archive, pin. That is a Host
+  start, the next prune, restore or permanent delete, or any fresh read of the
+  Trash tab; the page makes one by itself right after every change, so in
+  practice the steps finish within moments of the restore. The
+  folder is back in the store either way, and the log is never altered.
 - **Archive and pin order after a restore.** The workspace order comes back
   exactly. Of the registry's archive and pin lists, a restore gives back the
   batch's own ids in their recorded relative order (it archives them in that
@@ -340,15 +365,26 @@ session; that tree's registry steps wait), `registry-step-failed`,
   A batch in conflict still holds its own copy of that session, and the Trash
   tab counts it: **Delete permanently…** on that batch deletes that copy too.
   `workspace-missing`: recreate or re-add the workspace, then restore again.
+  If the workspace goes away during the restore itself (after the restore's
+  check and before the attach), the folders are back in the store all the
+  same: the attach is journaled as skipped, the result says *needs recovery*
+  with `registry-step-failed`, the session is in no workspace (the sidebar calls that *Ungrouped*, and an
+  archived one stays archived), and the batch is closed, so there is nothing left to restore. Add the session to a
+  workspace again in the app.
 - **A store with no session left.** When the store lists no session at all, the
   Host takes the sessions tree from the newest trash batch, so the page is not
   read-only and **Restore batch** works.
 - **An interrupted action.** After a crash, a batch shows *needs recovery* (or
-  *conflict*). Recovery runs once when the Host starts the plugin (if the trash
-  holds a batch; a failure is only logged), at the start of every prune,
-  restore or permanent delete, and when **Refresh** reads the Trash tab while a
-  batch still owes registry steps (a plain read only reports them). It runs
-  under the trash lock; every page call waits for the one at start. It compares the manifest with the disk,
+  *conflict*). Recovery runs once when the Host starts the plugin, at the start
+  of every prune, restore or permanent delete, and when **Refresh** reads the
+  Trash tab while a batch still owes registry steps (a plain read only reports
+  them). At start it runs when the trash holds any batch folder, closed ones
+  included: every such start reads the store once and takes the trash lock. A
+  failure at start is only logged; while the host services it needs are not
+  there yet, the next page call starts it. It runs under the trash lock. Every
+  page call waits for the one at start, at most 5 seconds: after that the call
+  goes ahead, the Host logs that recovery at start is still running, and a
+  change gets `busy` until it ends. It compares the manifest with the disk,
   appends the missing journal lines, finishes registry steps a crash left undone
   and renames a tree that is split between store and trash back whole into the
   store. **Recovery never deletes and never moves toward the trash.** Folders
@@ -357,9 +393,12 @@ session; that tree's registry steps wait), `registry-step-failed`,
   permanently…** on that batch again to finish it.
 - **Last resort, with the Host stopped.** `manifest.json` lists each session's
   `source` path. You can `mv` a folder from `<batchId>/sessions/<project>/<id>`
-  back to its `source` only if the destination does not exist. The registry is
-  not updated by hand: the sessions will show under *Ungrouped*, not archived.
-  Prefer the page.
+  back to its `source` only if the destination does not exist. Leave the
+  registry alone: the batch folder is still there, so the next recovery (at the
+  next Host start) finds the folder back, moves the rest of a partly moved tree
+  back too, re-attaches those sessions to their workspace, archives again the
+  ones that were archived and pins again the ones that were pinned, as a
+  restore would. Prefer the page.
 - **Stop using the plugin.** Disable it in **Settings → Plugins**. The trash and
   the audit log stay where they are.
 

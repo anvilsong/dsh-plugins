@@ -318,11 +318,13 @@ function makeCtx(world, proc, extra = {}) {
  * `adapterFs(fs)` wraps the adapter's file system; `wrapAdapter(adapter)` replaces members of the host adapter;
  * `wrapFs(fs)` wraps the service's file system. The recovery a service runs when it starts is off here unless
  * `startupRecover` is true (the crash tests read the report of their own recover() call); the plugin entry and the
- * sandbox of the integration tests run it.
+ * sandbox of the integration tests run it. `wrapGet(get)` replaces the context's service lookup (a host whose
+ * providing plugins are not active yet answers undefined); `startupWaitMs` bounds the wait of a call for that recovery.
  */
 function start(world, options = {}) {
   const proc = makeProcess(world, options)
   const ctx = makeCtx(world, proc)
+  if (options.wrapGet) ctx.get = options.wrapGet(ctx.get)
   const made = createHostAdapter(ctx, { platform: options.platform, fs: options.adapterFs ? options.adapterFs(proc.adapterFs) : proc.adapterFs })
   const adapter = options.wrapAdapter ? options.wrapAdapter(made) : made
   const settings = resolveSettings(options.config ?? {}, { home: world.home })
@@ -333,6 +335,7 @@ function start(world, options = {}) {
     fs: options.wrapFs ? options.wrapFs(fs) : fs,
     clock: options.clock,
     startupRecover: options.startupRecover === true,
+    startupWaitMs: options.startupWaitMs,
     trashOptions: { identity: { pid: ++pidCount, startedAt: 1, host: HOST }, isAlive: options.isAlive ?? (() => false) },
   })
   return { service, proc, ctx, adapter }
@@ -1592,23 +1595,27 @@ test('F1: a log that grows after the re-read and before its move (its writer gon
   assert.deepEqual((await service.trash({ fresh: true })).batches, [], 'nothing is left in the Trash tab')
 })
 
-test('F1: a log that changes while it is in the trash is still refused by the Undo; the Trash tab shows the batch until recovery has attached it', { skip: NOT_DARWIN }, async () => {
+test('F1: a log that changes while it is in the trash: the Undo call itself is strict (needs-recovery, no registry step), a later fresh Trash read finishes the registry steps; the folder is back either way and the log is never altered', { skip: NOT_DARWIN }, async () => {
   const world = makeWorld()
   const original = registryOf(world)
   const { service } = start(world)
   const { result } = await prune(service, { scope: 'selection', rootIds: ['b1'] })
   appendFileSync(trashCopy(world, result.batchId, 'p2', 'b1'), Buffer.from('written in the trash'))
+  const changed = sha(readFileSync(trashCopy(world, result.batchId, 'p2', 'b1')))
+  // The restore result is strict: the folder comes back, but the call runs none of b1's registry steps.
   const back = await service.restore({ batchId: result.batchId })
   assert.deepEqual([back.state, back.warnings], ['needs-recovery', [{ code: 'recovery-needed', sessionId: 'b1' }]])
-  assert.equal(world.workspaces[0].sessionIds.includes('b1'), false, 'not attached')
-  assert.equal(world.archived.includes('b1'), false, 'not archived')
+  assert.equal(world.workspaces[0].sessionIds.includes('b1'), false, 'not attached by the restore call')
+  assert.equal(world.archived.includes('b1'), false, 'not archived by the restore call')
   assert.ok(places(world).get('b1')[0] === 'store', 'the folder itself is back')
   const calls = world.calls.length
   assert.deepEqual(trashRows(await service.trash({})), [[result.batchId, 0, 0, 'needs-recovery']], 'listed while its registry steps wait')
   assert.equal(world.calls.length, calls, 'a plain read runs no registry step')
-  // Recovery accepts it (the session may be in use by now), and the batch leaves the tab.
+  // A fresh read runs recovery, which accepts the log (the session may be in use by now) and finishes the
+  // registry steps: attached and archived again, and the batch leaves the tab.
   assert.deepEqual((await service.trash({ fresh: true })).batches, [])
   assert.deepEqual(registryOf(world), original)
+  assert.equal(sha(readFileSync(path.join(world.store, 'p2', 'b1', LOG))), changed, 'the log is never altered')
 })
 
 test('O1: restore gives back the recorded order of the batch\'s archived ids (archive appends) and pinned ids (pin prepends)', { skip: NOT_DARWIN }, async () => {
@@ -1735,6 +1742,132 @@ test('F2: recovery runs once when the service starts, never throws, logs, and ev
   await idle.service.core.startup()
   assert.equal(bare.listCalls, 0, 'no trash: the store is not even read')
   assert.equal(existsSync(bare.trashDir), false, 'and no trash folder is created')
+})
+
+const TIMED_OUT = Symbol('timed out')
+/** The value of `promise`, or TIMED_OUT when it has not settled within `ms`. */
+async function within(promise, ms) {
+  let timer
+  const bound = new Promise((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), ms) })
+  try {
+    return await Promise.race([promise, bound])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** A prune whose unarchive steps the registry refused: archived ids whose folders are in the trash, owed to recovery. */
+async function owedBatch(world) {
+  world.fail.add('unarchive')
+  const { result } = await prune(start(world).service)
+  world.fail.clear()
+  assert.equal(result.state, 'needs-recovery')
+  const owed = world.archived.filter((id) => PRUNED.includes(id))
+  assert.ok(owed.length > 0, 'a crash-like leftover: archived ids whose folders are in the trash')
+  return { result, owed }
+}
+const linesOf = (world, pattern) => world.logs.filter((line) => pattern.test(line))
+const leftover = (world) => world.archived.filter((id) => PRUNED.includes(id))
+
+test('recovery at start: host services missing at the first call (their plugins not active yet) are tried again at a later call; it then runs once, with no retry loop', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  const { owed } = await owedBatch(world)
+  let ready = false
+  let lookups = 0
+  const next = start(world, {
+    startupRecover: true,
+    wrapGet: (get) => (name) => {
+      lookups += 1
+      return ready ? get(name) : undefined
+    },
+  })
+  await tick() // the recovery the start schedules
+  const first = await next.service.overview({})
+  assertOverview(first)
+  assert.deepEqual(first.capabilities, { prune: false, reason: ERROR.unsupportedBackend })
+  assert.deepEqual(leftover(world), owed, 'nothing can run without the services')
+  // No retry loop: without a call, nothing looks the services up again.
+  const quiet = lookups
+  for (let i = 0; i < 100; i += 1) await tick()
+  assert.equal(lookups, quiet, 'no retry without a call')
+
+  // The services appear: the next call runs the recovery at start, and each owed step runs once.
+  ready = true
+  const unarchives = () => world.calls.filter(([name]) => name === 'unarchive').length
+  const before = unarchives()
+  assertOverview(await next.service.overview({}))
+  assertRegistryConsistent(world, original)
+  assert.equal(unarchives() - before, owed.length, 'each owed step ran once')
+  assert.equal(linesOf(world, /recovery at start finished/).length, 1, world.logs.join('\n'))
+  assert.deepEqual(auditOps(world).filter((op) => op === 'recover'), ['recover'])
+  // Later calls do not run it again.
+  const calls = world.calls.length
+  assertOverview(await next.service.overview({ fresh: true }))
+  assertTrashList(await next.service.trash({}))
+  assertArchivedPage(await next.service.archived({}))
+  assert.equal(world.calls.length, calls, 'not run again')
+  assert.deepEqual(auditOps(world).filter((op) => op === 'recover'), ['recover'])
+  assert.ok(linesOf(world, /recovery at start did not run/).length <= 1, world.logs.join('\n'))
+
+  // A run that really ran and failed (logged) is not repeated by later calls; the next change runs recovery anyway.
+  const other = makeWorld()
+  const otherOriginal = registryOf(other)
+  const { owed: left } = await owedBatch(other)
+  chmodSync(other.auditFile, 0o400)
+  let broken
+  try {
+    broken = start(other, { startupRecover: true })
+    await broken.service.core.startup()
+  } finally {
+    chmodSync(other.auditFile, 0o600)
+  }
+  assert.equal(linesOf(other, /recovery at start did not run/).length, 1, other.logs.join('\n'))
+  for (let i = 0; i < 3; i += 1) assertOverview(await broken.service.overview({ fresh: true }))
+  assert.deepEqual(leftover(other), left, 'a read does not run it again')
+  assert.equal(linesOf(other, /recovery at start did not run/).length, 1, 'logged once')
+  await broken.service.recover()
+  assertRegistryConsistent(other, otherOriginal)
+})
+
+test('recovery at start: a registry call that never settles holds no call past the wait bound; the recovery keeps running, single flight, and a change gets busy until it ends', { skip: NOT_DARWIN }, async () => {
+  const world = makeWorld()
+  const original = registryOf(world)
+  const { result } = await owedBatch(world)
+  const held = holdRegistry(world, 'unarchive') // a registry listener that never answers
+  try {
+    const BOUND = 1000
+    const next = start(world, { startupRecover: true, startupWaitMs: BOUND })
+    const run = next.service.core.startup()
+    await until(() => held.reached, 'the recovery at start waits on the registry')
+    assert.equal(next.service.core.startup(), run, 'single flight')
+    const view = await within(next.service.overview({}), BOUND + 3000)
+    assert.notEqual(view, TIMED_OUT, 'overview answers once the bound has passed')
+    assertOverview(view)
+    const still = () => linesOf(world, /recovery at start is still running/)
+    assert.equal(still().length, 1, world.logs.join('\n'))
+    // Past the bound a call does not wait again.
+    assert.notEqual(await within(next.service.overview({ fresh: true }), BOUND / 2), TIMED_OUT, 'no second wait')
+    const list = await within(next.service.trash({ fresh: true }), BOUND / 2)
+    assert.notEqual(list, TIMED_OUT, 'a fresh Trash read answers: it skips its own recovery while one runs')
+    assertTrashList(list)
+    assert.deepEqual(trashRows(list), [[result.batchId, 3, 5, 'needs-recovery']])
+    // The recovery still holds the one mutation slot: a change gets busy at once, it does not hang.
+    assert.equal(next.service.core.inspectState().mutating, 'recover')
+    assert.equal(await settledCode(next.service.restore({ batchId: result.batchId })), ERROR.busy)
+    assert.equal(await settledCode(next.service.recover()), ERROR.busy)
+    assert.equal(still().length, 1, 'logged once')
+    // The registry answers: the recovery that kept running finishes, once.
+    held.open()
+    await run
+    assertRegistryConsistent(world, original)
+    assert.equal(linesOf(world, /recovery at start finished/).length, 1, world.logs.join('\n'))
+    assert.equal(next.service.core.inspectState().mutating, null)
+    assert.equal((await next.service.restore({ batchId: result.batchId })).state, 'complete')
+    assert.deepEqual(registryOf(world), original)
+  } finally {
+    held.open()
+  }
 })
 
 test('F4: a restore with nothing left to do closes its batch; recover() then skips it and it stays on disk, unlisted', { skip: NOT_DARWIN }, async () => {

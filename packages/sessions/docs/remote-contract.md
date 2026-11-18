@@ -11,6 +11,7 @@ The machine-checked form is [`src/contract.js`](../src/contract.js) (names, meth
 - Requests are strict: an unknown key, a missing key or a wrong type fails with `sessions-manager/invalid-request`.
 - Responses are strict. A response holds only ids, paths, numbers, flags and a nullable session title. It never holds message text. A title comes from a cheap source and is never read from a log body.
 - No method reads a session log body. No method calls session search.
+- Every method first waits for the Host's recovery at start, at most 5 s after that recovery began (`STARTUP_WAIT_MS` in `src/service.js`). After that the call goes ahead without it, and a mutation gets `sessions-manager/busy` until the recovery ends.
 
 ## Sources of a response field
 
@@ -241,7 +242,7 @@ Request: `{ batchId }`; the id is one path segment (`[A-Za-z0-9][A-Za-z0-9._-]{0
 
 Errors: `sessions-manager/forbidden`, `sessions-manager/invalid-request`, `sessions-manager/busy`, `sessions-manager/batch-not-found`, `sessions-manager/unsupported-backend`, `sessions-manager/unsupported-platform`, `sessions-manager/trash-unusable`, `sessions-manager/store-unreadable`.
 
-Response: `ApplyResult` (validator `assertApplyResult`; fields and sources as for `apply`). A destination that already exists is skipped with `conflict`; nothing is overwritten. A second restore of the same batch is a no-op. The log of each member must be back as it was when it was moved (revision file part and size journaled right after the move; a batch of an older build has only the hint of the last re-read before the move): a log that changed in the trash is not attached (`recovery-needed`; recovery accepts it later). The batch's archived ids are archived again in their recorded order and its pinned ids pinned in reverse recorded order. A batch wholly back with no registry step left is closed: it stays on disk, unlisted, and recovery skips it.
+Response: `ApplyResult` (validator `assertApplyResult`; fields and sources as for `apply`). A destination that already exists is skipped with `conflict`; nothing is overwritten. A second restore of the same batch is a no-op. The log of each member must be back as it was when it was moved (revision file part and size journaled right after the move; a batch of an older build has only the hint of the last re-read before the move). Only the restore call itself is strict about this check: a member whose log changed in the trash is moved back but gets none of its registry steps, and the call returns `needs-recovery` with `recovery-needed`. A later recovery (a Host start, the next `apply`, `restore` or `purge`, or a `trash` read with `fresh: true`) accepts the log and finishes those registry steps. The folder is back in the store either way, and the log is never altered. The batch's archived ids are archived again in their recorded order and its pinned ids pinned in reverse recorded order. A batch wholly back with no registry step left is closed: it stays on disk, unlisted, and recovery skips it.
 
 ### `purge`
 
