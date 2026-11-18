@@ -409,9 +409,9 @@ test('the list uses table roles; sortable headers expose aria-sort and are nativ
     assert.equal(heading.props.role, 'cell')
     assert.equal(heading.props['aria-colspan'], width, 'the group heading spans the row')
   }
-  assert.deepEqual(ariaSort(root), { Session: 'none', 'Size with children': 'descending', 'Last activity': 'none' }, 'only sortable headers carry aria-sort')
+  assert.deepEqual(ariaSort(root), { Session: 'none', 'Size': 'descending', 'Last activity': 'none' }, 'only sortable headers carry aria-sort')
 
-  for (const caption of ['Session', 'Size with children', 'Last activity']) {
+  for (const caption of ['Session', 'Size', 'Last activity']) {
     const button = sortButton(root, caption)
     assert.equal(button.type, 'button', 'a native button: Enter and Space activate it from the keyboard')
     assert.equal(button.props.type, 'button')
@@ -421,12 +421,12 @@ test('the list uses table roles; sortable headers expose aria-sort and are nativ
     assert.equal(typeof button.props.title, 'string')
   }
   sortButton(root, 'Last activity').props.onClick(event()); await settle()
-  assert.deepEqual(ariaSort(root), { Session: 'none', 'Size with children': 'none', 'Last activity': 'descending' }, 'newest first')
+  assert.deepEqual(ariaSort(root), { Session: 'none', 'Size': 'none', 'Last activity': 'descending' }, 'newest first')
   await env.advance(0)
   assert.equal(lastRequest(env).sort, 'lastActivityAt')
   sortButton(root, 'Session').props.onClick(event()); await settle()
   await env.advance(0)
-  assert.deepEqual(ariaSort(root), { Session: 'ascending', 'Size with children': 'none', 'Last activity': 'none' }, 'A to Z')
+  assert.deepEqual(ariaSort(root), { Session: 'ascending', 'Size': 'none', 'Last activity': 'none' }, 'A to Z')
   assert.equal(lastRequest(env).sort, 'title')
   const count = requests(env).length
   sortButton(root, 'Session').props.onClick(event()); await settle()
