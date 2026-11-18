@@ -1,0 +1,43 @@
+{
+  "name": "dsh-plugin-sessions",
+  "version": "0.1.0",
+  "description": "Owner-only dashboard for the session store: sizes, archived sessions, and a reversible prune into a trash folder.",
+  "type": "module",
+  "main": "src/index.host.js",
+  "meta": {
+    "title": "Sessions",
+    "description": "See what the session store holds, list archived sessions, and move them to a recoverable trash folder."
+  },
+  "exports": {
+    ".": { "default": "./src/index.host.js" },
+    "./client": { "default": "./src/client.js" },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-api-gateway"
+      ]
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.3"
+  },
+  "peerDependencies": { "@deepseek-ai/cordis": "~4.1.0" },
+  "license": "MIT"
+}
