@@ -653,7 +653,8 @@ window.__ModuleLoader__.load({
       const { level, view, routes, t, lock } = props
       const anchor = useAnchorName()
       const cellRef = React.useRef(null)
-      const { busy, run, report, mounted } = useCommand(props)
+      // `error` holds a failure only when the slot gives no reportFailure.
+      const { busy, error, run, report, mounted } = useCommand(props)
       // The draft, { keys, efforts }: the entries the open flyout shows and
       // their efforts by route key (no key: the model's own default). Its
       // valueText is the command text, so texts compare both parts.
@@ -1131,6 +1132,8 @@ window.__ModuleLoader__.load({
           moreValue === null ? null : h('span', { className: 'router-cell-more' }, moreValue),
           h('span', { className: 'router-chevron' }, saving ? spinnerIcon : chevronIcon),
         ),
+        // As the switch: shown inline only without the menu's failure channel.
+        error ? h('span', { className: 'router-error', role: 'alert' }, error) : null,
         flyout,
       )
     }

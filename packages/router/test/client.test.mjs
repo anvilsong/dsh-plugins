@@ -432,6 +432,34 @@ test('a host rejection recorded in the projection is reported once and the draft
   assert.equal(reports.length, 1, 'failures for other levels are ignored')
 })
 
+test('a host rejection without a failure channel is shown in the level cell; with a channel it is not', async () => {
+  const failure = { count: 1, text: 'Router is already updating. Try again after it finishes.', target: 'level', level: 'mechanical' }
+  for (const withChannel of [false, true]) {
+    const env = load()
+    const reports = []
+    env.harness.commandUi = { execute: async () => ({ kind: 'success' }) }
+    const extra = withChannel ? { reportFailure: (message) => reports.push(message) } : undefined
+    const { cells } = levels(env, manualView({}), routes, extra)
+    const cell = env.runtime.mount(cells[0].type)
+    const base = cells[0].props
+    let output = cell.render({ ...base, open: true })
+    findAll(output, (node) => node.props?.title === 'anthropic/claude-haiku-5-5' && node.props?.onSelect)[0].props.onSelect()
+    output = cell.render({ ...base, open: false })
+    await ticks()
+    output = cell.render({ ...base, open: false, view: manualView({}, { failure }) })
+    output = cell.render()
+    const alert = findAll(output, (node) => node.props?.role === 'alert')
+    if (withChannel) {
+      assert.deepEqual(reports, [failure.text], 'with a channel the message goes to the channel')
+      assert.equal(alert.length, 0, 'and is not drawn in the cell')
+    } else {
+      assert.equal(alert.length, 1, 'without a channel the cell shows it')
+      assert.deepEqual(alert[0].children, [failure.text])
+      assert.equal(alert[0].props.className, 'router-error')
+    }
+  }
+})
+
 test('a draft left open when the host menu closes is committed on unmount', async () => {
   const env = load()
   const calls = []
