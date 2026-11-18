@@ -46,6 +46,7 @@ active provider.
 | [`packages/router`](packages/router) | `dsh-plugin-router` | Lead-controlled model routing with three complexity-level shortlists and `/router` |
 | [`packages/code-review`](packages/code-review) | `dsh-plugin-code-review` | Bounded code review with two independent finders and one refuter |
 | [`packages/sessions`](packages/sessions) | `dsh-plugin-sessions` | Owner-only Sessions page: store sizes, archived sessions, and a reversible prune into a trash folder (macOS) |
+| [`packages/session-search-patched`](packages/session-search-patched) | `dsh-plugin-session-search-patched` | Unofficial patched engine for the optional session search (bounded index; pinned to DSH 0.2.2-rc.3, the shipped engine serves otherwise); install by folder path |
 
 ## Repository layout
 
