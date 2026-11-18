@@ -1,0 +1,1 @@
+dsh: [dsh-plugin-session-search-patched] patch: name mismatch for "optional-session-query-sqlite" (expected "@deepseek-ai/dsh-session-query-sqlite", got "@deepseek-ai/dsh-session-query-sqlite-renamed"), skipping

@@ -1,0 +1,63 @@
+# S1 spike: guard inputs observed by the probe inside the running scratch host (H1)
+{
+ "version": {
+  "resolutionEntries": 589,
+  "dsh": "0.2.2-rc.3",
+  "appBoot": "0.2.2-rc.3",
+  "engine": "0.2.2-rc.3",
+  "engineScope": "installation",
+  "sessionQuery": "0.2.2-rc.3",
+  "packageOfEngine": "0.2.2-rc.3",
+  "profileName": "web",
+  "installAnchor": "/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh/package.json",
+  "installAnchorVersion": "0.2.2-rc.3",
+  "DSH_CLIENT_VERSION": null,
+  "electron": "44.7.0",
+  "node": "24.21.0"
+ },
+ "asar": {
+  "engineDir": "/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-session-query-sqlite",
+  "manifestVersion": "0.2.2-rc.3",
+  "src/index.ts": {
+   "bytes": 41094,
+   "sha256": "72868e4ae967fee94967df5939ee092a582249ff7b37afc4fe0cf7660d48b8d3"
+  },
+  "src/query.ts": {
+   "bytes": 15548,
+   "sha256": "b29363581b715a1eb50509d7c5ff039d7d4004926160cd88ffcbadaa44ca1c48"
+  },
+  "src/schema.ts": {
+   "bytes": 6098,
+   "sha256": "2cc4c7c8e50409847599a048922d55ef4ffbd1ac2309502f3a5a06420bc1a28f"
+  },
+  "lib/index.js": {
+   "bytes": 46487,
+   "sha256": "dbecf83320e10d93d735b3d01384ab817a0b90102ccecb0a22c013c71dfe70a0"
+  },
+  "srcExportResolve": "file:///Applications/DeepSeek%20Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-session-query-sqlite/src/index.ts"
+ },
+ "isolate": {
+  "sessionQuery": "sessionQuery#optional-session-search",
+  "rowId": "session-query-sqlite-patched",
+  "parentRowId": "optional-session-search"
+ },
+ "env": {
+  "DSH_HOME": "/private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-rfXeUA/home/.dsh",
+  "HOME": "/private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-rfXeUA/home",
+  "DSH_AGENTS_HOME": "/private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-rfXeUA/home/.agents",
+  "XDG_CONFIG_HOME": "/private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-rfXeUA/xdg/config",
+  "XDG_DATA_HOME": "/private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-rfXeUA/xdg/data",
+  "XDG_STATE_HOME": "/private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-rfXeUA/xdg/state",
+  "XDG_CACHE_HOME": "/private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-rfXeUA/xdg/cache",
+  "TMPDIR": "/private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-rfXeUA/tmp",
+  "DSH_PROFILE": null,
+  "DSH_PROFILE_DIR": null,
+  "DSH_TELEMETRY_DISABLED": "1",
+  "cwd": "/private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-rfXeUA/work"
+ }
+}
+
+# fallback run H9 (SPIKE_PROBE_MODE=broken): patched module import fails, shipped class mounted in the new row
+{"time": "2026-11-18T09:22:36.546Z", "pid": 72302, "event": "probe-fallback", "rowId": "session-query-sqlite-patched", "reason": {"code": "ERR_MODULE_NOT_FOUND", "message": "Cannot find module '/Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/probe/missing-patched-engine.js' imported from /Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/probe/index.js"}}
+{"time": "2026-11-18T09:22:36.547Z", "pid": 72302, "event": "probe-engine-settled", "rowId": "session-query-sqlite-patched", "engine": "SqliteSessionQueryEngine", "state": 2}
+{"time": "2026-11-18T09:22:36.547Z", "pid": 72302, "event": "sessionQuery-up", "where": "group", "scope": "sessionQuery#optional-session-search", "provider": {"ctor": "SqliteSessionQueryEngine", "row": "session-query-sqlite-patched", "fiberState": "ACTIVE", "scope": "sessionQuery#optional-session-search"}}

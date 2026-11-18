@@ -1,0 +1,13 @@
+# Candidate D: candidate A plus a !!js host-version condition on both rows.
+- id: optional-session-query-sqlite
+  name: '@deepseek-ai/dsh-session-query-sqlite'
+  disabled: !!js "ctx.get('pluginPackages')?.resolution?.entries.find(e => e.name === '@deepseek-ai/dsh-session-query-sqlite')?.version === '0.2.2-rc.3'"
+- id: optional-session-search
+  insert:
+    - id: session-query-sqlite-patched
+      name: dsh-plugin-session-search-patched
+      disabled: !!js "ctx.get('pluginPackages')?.resolution?.entries.find(e => e.name === '@deepseek-ai/dsh-session-query-sqlite')?.version !== '0.2.2-rc.3'"
+      config:
+        path: ':memory:'
+        openAt: first-search
+        persistedReadConcurrency: 1

@@ -1,0 +1,14 @@
+# Candidate E: name assertions under test. The disable patch asserts a wrong
+# plugin name; the insert patch carries a wrong name for the group.
+- id: optional-session-query-sqlite
+  name: '@deepseek-ai/dsh-session-query-sqlite-renamed'
+  disabled: true
+- id: optional-session-search
+  name: '@deepseek-ai/not-a-group'
+  insert:
+    - id: session-query-sqlite-patched
+      name: dsh-plugin-session-search-patched
+      config:
+        path: ':memory:'
+        openAt: first-search
+        persistedReadConcurrency: 1

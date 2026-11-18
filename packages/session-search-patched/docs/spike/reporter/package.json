@@ -1,0 +1,9 @@
+{
+  "name": "dsh-spike-session-search-reporter",
+  "version": "0.0.0-spike.1",
+  "private": true,
+  "description": "S1 spike observer, mounted only by a scratch profile patch.",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT"
+}

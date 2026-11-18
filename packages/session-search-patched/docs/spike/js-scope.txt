@@ -1,0 +1,38 @@
+# S1 spike: what a `disabled: !!js` expression sees (row spike-js-scope of docs/spike/scratch-profile-observers.yml)
+# 128 evaluations recorded over all host runs; the first one of H1 and the last one are shown
+# types: typeof <identifier> evaluated inside the expression (try/catch around each)
+{
+ "ctx": "object",
+ "expr": "string",
+ "arguments": "object",
+ "this": "object",
+ "process": "object",
+ "globalThis": "object",
+ "require": "throws ReferenceError: require is not defined",
+ "module": "throws ReferenceError: module is not defined",
+ "Buffer": "function",
+ "get": "function",
+ "inject": "function",
+ "plugin": "function",
+ "effect": "function",
+ "loader": "object",
+ "logger": "function",
+ "baseUrl": "string",
+ "root": "object",
+ "reflect": "object",
+ "registry": "object",
+ "events": "object",
+ "fiber": "object",
+ "profileContext": "object",
+ "pluginPackages": "throws Error: cannot get property \"pluginPackages\" without inject",
+ "dshHomePath": "function",
+ "sessions": "throws ReferenceError: sessions is not defined",
+ "sessionQuery": "throws ReferenceError: sessionQuery is not defined",
+ "cmdlineArgs": "object",
+ "hmr": "throws ReferenceError: hmr is not defined",
+ "import.meta": "throws SyntaxError: Cannot use 'import.meta' outside a module"
+}
+# ctx.reflect.props at the first evaluation (identifiers reachable as bare names through with(ctx), besides globals):
+["accessor", "appExit", "appReady", "bail", "cmdlineArgs", "dshHomePath", "effect", "emit", "get", "inject", "launchEnvironment", "loader", "mixin", "on", "once", "parallel", "plugin", "pluginPackages", "profileContext", "provide", "runtime", "serial", "set", "waterfall"]
+# ctx.reflect.props at the last evaluation:
+["accessor", "agentDefaultModel", "agentLoop", "agentPresets", "agentTeams", "agents", "appExit", "appReady", "approval", "attachments", "authorization", "bail", "clientModules", "cmdlineArgs", "commands", "compaction", "configEditor", "connection", "cordisInspect", "credentials", "credentialsController", "debounce", "deepseekAccount", "deepseekLlmApiExtensions", "directoryPicker", "directoryPickerController", "dshHomePath", "dynamicCordisRunner", "effect", "emit", "fileReferences", "fileUploads", "fs", "get", "goals", "hmr", "inject", "interval", "invocation", "jobController", "jobs", "launchEnvironment", "llm", "loader", "mcpManager", "mcpResources", "messageFeedback", "mixin", "officeKit", "on", "once", "otel", "parallel", "permissionPresets", "planMode", "plugin", "pluginInventory", "pluginManager", "pluginPackages", "pluginRegistryProbe", "profileContext", "provide", "ptcRuntime", "remoteAccess", "runtime", "sandbox", "sandboxPolicy", "schedule", "serial", "sessionController", "sessionFeedback", "sessionFileReferences", "sessionLogDeepSeek", "sessionPersistence", "sessionProjectionCache", "sessionProjections", "sessionQuery", "sessionReferenceResolver", "sessionSk1llCatalog", "sessionTitle", "sessionToolResults", "sessions", "set", "setInterval", "setTimeout", "settings", "settingsController", "shell", "shellEnv", "sk1lls", "spillStore", "storage", "storage.backend.json", "storageDomain", "subagentModelSelection", "subagents", "subprocess", "systemPrompt", "terminalController", "terminals", "throttle", "timeout", "timer", "tokenMeter", "toolResultPruner", "tools", "typert", "typertGateway", "userQuestions", "waterfall", "web", "webApp", "webServer", "webStartup", "workflowEngine", "workingDirectory", "workspaceChanges", "workspaceController", "workspaceFiles", "workspaceRegistry"]

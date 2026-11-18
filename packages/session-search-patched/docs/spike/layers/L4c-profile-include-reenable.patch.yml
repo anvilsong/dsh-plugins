@@ -1,0 +1,2 @@
+- id: include:optional-session-query-sqlite
+  disabled: false

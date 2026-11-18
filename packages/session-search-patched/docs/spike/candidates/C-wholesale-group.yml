@@ -1,0 +1,12 @@
+# Candidate C: wholesale replacement of the group's config (freezes a copy of the tool row).
+- id: optional-session-search
+  name: cordis:group
+  config:
+    - id: session-query-sqlite-patched
+      name: dsh-plugin-session-search-patched
+      config:
+        path: ':memory:'
+        openAt: first-search
+        persistedReadConcurrency: 1
+    - id: optional-tool-session-query
+      name: '@deepseek-ai/dsh-tool-session-query'

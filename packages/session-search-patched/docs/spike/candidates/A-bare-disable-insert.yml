@@ -1,0 +1,18 @@
+# Bundle patch of dsh-plugin-session-search-patched (unofficial).
+# Swaps the engine inside the optional session-search group: the shipped
+# engine row is switched off and the patched engine row joins the same group,
+# so it provides sessionQuery only in that group's isolated scope. Both
+# patches address rows of @deepseek-ai/dsh-experimental-session-search by
+# their bare ids. When that bundle is not selected, or its layer comes after
+# this one, both patches are skipped with a warning and nothing is mounted.
+- id: optional-session-query-sqlite
+  name: '@deepseek-ai/dsh-session-query-sqlite'
+  disabled: true
+- id: optional-session-search
+  insert:
+    - id: session-query-sqlite-patched
+      name: dsh-plugin-session-search-patched
+      config:
+        path: ':memory:'
+        openAt: first-search
+        persistedReadConcurrency: 1

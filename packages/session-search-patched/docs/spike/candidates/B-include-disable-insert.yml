@@ -1,0 +1,12 @@
+# Candidate B: candidate A with include:-prefixed ids.
+- id: include:optional-session-query-sqlite
+  name: '@deepseek-ai/dsh-session-query-sqlite'
+  disabled: true
+- id: include:optional-session-search
+  insert:
+    - id: session-query-sqlite-patched
+      name: dsh-plugin-session-search-patched
+      config:
+        path: ':memory:'
+        openAt: first-search
+        persistedReadConcurrency: 1

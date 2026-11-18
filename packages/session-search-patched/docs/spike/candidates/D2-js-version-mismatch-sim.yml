@@ -1,0 +1,13 @@
+# Candidate D2: candidate D pinned to 0.2.2-rc.4, which simulates a host whose version is not the pinned one.
+- id: optional-session-query-sqlite
+  name: '@deepseek-ai/dsh-session-query-sqlite'
+  disabled: !!js "ctx.get('pluginPackages')?.resolution?.entries.find(e => e.name === '@deepseek-ai/dsh-session-query-sqlite')?.version === '0.2.2-rc.4'"
+- id: optional-session-search
+  insert:
+    - id: session-query-sqlite-patched
+      name: dsh-plugin-session-search-patched
+      disabled: !!js "ctx.get('pluginPackages')?.resolution?.entries.find(e => e.name === '@deepseek-ai/dsh-session-query-sqlite')?.version !== '0.2.2-rc.4'"
+      config:
+        path: ':memory:'
+        openAt: first-search
+        persistedReadConcurrency: 1

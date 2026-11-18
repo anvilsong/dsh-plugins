@@ -1,0 +1,4 @@
+- id: optional-session-query-sqlite
+  config:
+    path: ":memory:"
+    openAt: startup

@@ -1,0 +1,74 @@
+# docs/spike/layers/dump-L1-after.txt
+engine session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=root state=enabled
+engine optional-session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=group:optional-session-search state=disabled
+engine session-query-sqlite-patched (dsh-plugin-session-search-patched) scope=group:optional-session-search state=enabled
+group optional-session-search: present isolate={"sessionQuery":true} children=["optional-session-query-sqlite","optional-tool-session-query","session-query-sqlite-patched"]
+check exactly one enabled engine row in group: yes
+check the enabled group engine is session-query-sqlite-patched: yes
+check root engine rows are only session-query-sqlite with openAt never: yes
+check tool row unchanged against baseline: yes
+check group isolate {sessionQuery: true}: yes
+
+# docs/spike/layers/dump-L2-before.txt
+engine session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=root state=enabled
+engine optional-session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=group:optional-session-search state=enabled
+group optional-session-search: present isolate={"sessionQuery":true} children=["optional-session-query-sqlite","optional-tool-session-query"]
+check exactly one enabled engine row in group: yes
+check the enabled group engine is session-query-sqlite-patched: no
+check root engine rows are only session-query-sqlite with openAt never: yes
+check tool row unchanged against baseline: yes
+check group isolate {sessionQuery: true}: yes
+
+# docs/spike/layers/dump-L3-search-deselected.txt
+engine session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=root state=enabled
+group optional-session-search: ABSENT
+check exactly one enabled engine row in group: NO (0: )
+check the enabled group engine is session-query-sqlite-patched: no
+check root engine rows are only session-query-sqlite with openAt never: yes
+check tool row unchanged against baseline: NO undefined
+check group isolate {sessionQuery: true}: NO
+
+# docs/spike/layers/dump-L4-profile-reenable.txt
+engine session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=root state=enabled
+engine optional-session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=group:optional-session-search state=enabled
+engine session-query-sqlite-patched (dsh-plugin-session-search-patched) scope=group:optional-session-search state=enabled
+group optional-session-search: present isolate={"sessionQuery":true} children=["optional-session-query-sqlite","optional-tool-session-query","session-query-sqlite-patched"]
+check exactly one enabled engine row in group: NO (2: optional-session-query-sqlite=enabled, session-query-sqlite-patched=enabled)
+check the enabled group engine is session-query-sqlite-patched: no
+check root engine rows are only session-query-sqlite with openAt never: yes
+check tool row unchanged against baseline: yes
+check group isolate {sessionQuery: true}: yes
+
+# docs/spike/layers/dump-L4b-profile-config-only.txt
+engine session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=root state=enabled
+engine optional-session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=group:optional-session-search state=disabled
+engine session-query-sqlite-patched (dsh-plugin-session-search-patched) scope=group:optional-session-search state=enabled
+group optional-session-search: present isolate={"sessionQuery":true} children=["optional-session-query-sqlite","optional-tool-session-query","session-query-sqlite-patched"]
+check exactly one enabled engine row in group: yes
+check the enabled group engine is session-query-sqlite-patched: yes
+check root engine rows are only session-query-sqlite with openAt never: yes
+check tool row unchanged against baseline: yes
+check group isolate {sessionQuery: true}: yes
+
+# docs/spike/layers/dump-L4c-profile-include-reenable.txt
+engine session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=root state=enabled
+engine optional-session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=group:optional-session-search state=disabled
+engine session-query-sqlite-patched (dsh-plugin-session-search-patched) scope=group:optional-session-search state=enabled
+group optional-session-search: present isolate={"sessionQuery":true} children=["optional-session-query-sqlite","optional-tool-session-query","session-query-sqlite-patched"]
+check exactly one enabled engine row in group: yes
+check the enabled group engine is session-query-sqlite-patched: yes
+check root engine rows are only session-query-sqlite with openAt never: yes
+check tool row unchanged against baseline: yes
+check group isolate {sessionQuery: true}: yes
+
+# docs/spike/layers/dump-L5-home-reenable.txt
+engine session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=root state=enabled
+engine optional-session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=group:optional-session-search state=enabled
+engine session-query-sqlite-patched (dsh-plugin-session-search-patched) scope=group:optional-session-search state=enabled
+group optional-session-search: present isolate={"sessionQuery":true} children=["optional-session-query-sqlite","optional-tool-session-query","session-query-sqlite-patched"]
+check exactly one enabled engine row in group: NO (2: optional-session-query-sqlite=enabled, session-query-sqlite-patched=enabled)
+check the enabled group engine is session-query-sqlite-patched: no
+check root engine rows are only session-query-sqlite with openAt never: yes
+check tool row unchanged against baseline: yes
+check group isolate {sessionQuery: true}: yes
+

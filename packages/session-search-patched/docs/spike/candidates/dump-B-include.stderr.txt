@@ -1,0 +1,2 @@
+dsh: [dsh-plugin-session-search-patched] patch: entry "include:optional-session-query-sqlite" not found
+dsh: [dsh-plugin-session-search-patched] patch insert: entry "include:optional-session-search" not found

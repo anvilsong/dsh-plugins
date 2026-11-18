@@ -1,0 +1,38 @@
+{
+  "name": "dsh-plugin-session-search-patched",
+  "version": "0.1.0",
+  "description": "Unofficial patched engine for the optional session search: swaps the shipped SQLite session-query engine for one with a bounded index, and falls back to the shipped engine on any guard or engine failure.",
+  "type": "module",
+  "main": "src/index.host.js",
+  "meta": {
+    "title": "Session search (patched engine, unofficial)",
+    "description": "Replaces the engine of the optional session search with a bounded-index build of the same engine. Only for DSH 0.2.2-rc.3; anywhere else the shipped engine keeps serving."
+  },
+  "exports": {
+    ".": { "default": "./src/index.host.js" },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "vendor/src",
+    "vendor/PROVENANCE.md",
+    "vendor/LICENSE.upstream",
+    "patches"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" }
+  },
+  "engines": { "dsh": "0.2.2-rc.3" },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/schemastery": "~3.19.0",
+    "@deepseek-ai/dsh-session": "0.2.2-rc.3",
+    "@deepseek-ai/dsh-session-query": "0.2.2-rc.3",
+    "@deepseek-ai/dsh-session-query-sqlite": "0.2.2-rc.3"
+  },
+  "license": "MIT"
+}

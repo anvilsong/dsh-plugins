@@ -1,0 +1,42 @@
+# S1 spike: scratch profile patch with observer rows only (copied into the scratch
+# profile's cordis.patch.yml; never used outside a scratch DSH home).
+# spike-reporter-group observes sessionQuery inside optional-session-search,
+# spike-reporter-root observes the root scope and writes Loader snapshots.
+# The spike-js-* rows test what a `disabled: !!js` expression can see.
+- id: optional-session-search
+  insert:
+    - id: spike-reporter-group
+      name: file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
+      config:
+        where: group
+        search: true
+- insert:
+    - id: spike-reporter-root
+      name: file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
+      config:
+        where: root
+        search: true
+        snapshots: true
+    - id: spike-js-scope
+      name: file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
+      disabled: !!js "(process.getBuiltinModule('node:fs').appendFileSync(process.env.SPIKE_REPORT, JSON.stringify({ event: 'js-scope', row: 'spike-js-scope', props: Object.keys(ctx.reflect.props).sort(), types: Object.fromEntries(['ctx', 'expr', 'arguments', 'this', 'process', 'globalThis', 'require', 'module', 'Buffer', 'get', 'inject', 'plugin', 'effect', 'loader', 'logger', 'baseUrl', 'root', 'reflect', 'registry', 'events', 'fiber', 'profileContext', 'pluginPackages', 'dshHomePath', 'sessions', 'sessionQuery', 'cmdlineArgs', 'hmr', 'import.meta'].map(n => { try { return [n, typeof eval(n)] } catch (e) { return [n, 'throws ' + e.constructor.name + ': ' + String(e.message).split('\\n')[0]] } })) }) + '\\n'), true)"
+    - id: spike-js-version-eq
+      name: file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
+      disabled: !!js "ctx.get('pluginPackages')?.resolution?.entries.find(e => e.name === '@deepseek-ai/dsh-session-query-sqlite')?.version === '0.2.2-rc.3'"
+      config:
+        where: js-version-eq-rc3-should-stay-disabled
+    - id: spike-js-version-ne
+      name: file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
+      disabled: !!js "ctx.get('pluginPackages')?.resolution?.entries.find(e => e.name === '@deepseek-ai/dsh-session-query-sqlite')?.version !== '0.2.2-rc.3'"
+      config:
+        where: js-version-ne-rc3-should-mount
+    - id: spike-js-version-other
+      name: file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
+      disabled: !!js "ctx.get('pluginPackages')?.resolution?.entries.find(e => e.name === '@deepseek-ai/dsh-session-query-sqlite')?.version === '0.2.2-rc.4'"
+      config:
+        where: js-version-eq-rc4-should-mount
+    - id: spike-js-anchor
+      name: file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
+      disabled: !!js "JSON.parse(process.getBuiltinModule('node:fs').readFileSync(ctx.get('profileContext').installAnchor, 'utf8')).version === '0.2.2-rc.3'"
+      config:
+        where: js-anchor-eq-rc3-should-stay-disabled

@@ -1,0 +1,1 @@
+dsh: [/private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-rfXeUA/home/.dsh/profiles/web/cordis.patch.yml] patch: entry "include:optional-session-query-sqlite" not found
