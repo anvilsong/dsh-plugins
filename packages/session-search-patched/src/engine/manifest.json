@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "baseVersion": "0.2.2-rc.3",
+  "node": {
+    "major": 24,
+    "version": "v24.22.3"
+  },
+  "script": {
+    "path": "scripts/build.mjs",
+    "sha256": "b35e519f58cd049871e71e796655ff351ebbfac3f376cebe9ba6244af4796724"
+  },
+  "config": {
+    "path": "scripts/build.config.json",
+    "sha256": "d4f70d2a4a7e7eb5ba8f646690d854e32cce6e3a588c7cbf3f24232dadbe61fc"
+  },
+  "inputs": {
+    "vendor/src/index.ts": "0472dc2a080a719adef38ccecbfe20574b424763d4dc7938e6818c0c38c3fcdf",
+    "vendor/src/query.ts": "b29363581b715a1eb50509d7c5ff039d7d4004926160cd88ffcbadaa44ca1c48",
+    "vendor/src/schema.ts": "2cc4c7c8e50409847599a048922d55ef4ffbd1ac2309502f3a5a06420bc1a28f"
+  },
+  "outputs": {
+    "src/engine/index.js": "bef011ff1234e3bdab3863d17390480714875051713c7599dda00f170c5037f9",
+    "src/engine/query.js": "b81c045b5551658d9742ea3f24ae5774abb7acb3a8566b44bc189f6ba9570ab6",
+    "src/engine/schema.js": "7d6be83f3d5ffd876770edaaeea187670eee182e050ee7852b66c4206a5b97f2"
+  },
+  "classFieldsWithoutInitializer": [
+    "src/engine/index.js:230:12 SqliteSessionQueryEngine.config",
+    "src/engine/index.js:233:11 SqliteSessionQueryEngine._ready",
+    "src/engine/index.js:234:11 SqliteSessionQueryEngine._db",
+    "src/engine/index.js:236:11 SqliteSessionQueryEngine._lastPersistenceIdentity",
+    "src/engine/index.js:240:11 SqliteSessionQueryEngine._persistedRowsBinding",
+    "src/engine/index.js:246:11 SqliteSessionQueryEngine._closePromise",
+    "src/engine/index.js:247:20 SqliteSessionQueryEngine._optionalPersistenceFiber"
+  ],
+  "semicolonsInsertedByStrip": [
+    "src/engine/index.js:271:3"
+  ]
+}

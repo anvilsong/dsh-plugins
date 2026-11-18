@@ -1,0 +1,6 @@
+{
+  "baseVersion": "fixture-1",
+  "map": {
+    "@deepseek-ai/dsh-session-query": "../shim/session-query.js"
+  }
+}

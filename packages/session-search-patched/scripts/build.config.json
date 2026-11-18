@@ -1,0 +1,13 @@
+{
+  "baseVersion": "0.2.2-rc.3",
+  "allow": [
+    "@deepseek-ai/cordis",
+    "@deepseek-ai/dsh-session",
+    "@deepseek-ai/dsh-session-query",
+    "@deepseek-ai/schemastery",
+    "node:crypto",
+    "node:fs/promises",
+    "node:path",
+    "node:sqlite"
+  ]
+}
