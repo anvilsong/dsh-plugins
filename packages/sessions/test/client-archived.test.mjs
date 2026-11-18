@@ -341,7 +341,7 @@ test('rows are grouped by workspace in Host order and show title or short id, wo
   const description = root.find((n) => n.props?.id === blocked.props['aria-describedby'])
   assert.ok(description, 'the badge points at its description')
   assert.deepEqual(findAllIn(description, (n) => n.type === 'li').map(textOf), [
-    'A session in this tree is open in the running app. Close it, or restart the host, then try again. (e5f6a7b8, c0ffee04)',
+    'A session in this tree is loaded in the running host, even if no tab shows it. Close the page that holds it or restart the host, then try again. (e5f6a7b8, c0ffee04)',
     'A descendant is a kept top-level session (a fork). (c0ffee03)',
   ])
   assert.equal(blocked.props.title, findAllIn(description, (n) => n.type === 'li').map(textOf).join(' '))
@@ -513,7 +513,7 @@ test('multi-select: a selection bar; Unarchive selected asks once for more than 
   assert.equal(result.props.role, 'alert')
   assert.match(textOf(result), /Unarchived 1 session/)
   assert.match(textOf(result), /Not unarchived \(1\):/)
-  assert.deepEqual(findAllIn(result, (n) => n.type === 'li').map(textOf), ['s0004: A session in this tree is open in the running app. Close it, or restart the host, then try again.'])
+  assert.deepEqual(findAllIn(result, (n) => n.type === 'li').map(textOf), ['s0004: A session in this tree is loaded in the running host, even if no tab shows it. Close the page that holds it or restart the host, then try again.'])
   assert.equal(findAllIn(result, (n) => n.type === 'li')[0].props.title, 's0004')
   assert.deepEqual(plain(root.componentProps('ArchivedTab')[0].shell.archivedView.selection), ['s0004'], 'the failed id stays selected for a retry')
   await env.advance(0)
