@@ -1,0 +1,10 @@
+# test/scratch/evidence/dump-B1-a1-engines-rc4.txt
+engine session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=root state=enabled
+engine optional-session-query-sqlite (@deepseek-ai/dsh-session-query-sqlite) scope=group:optional-session-search state=enabled
+group optional-session-search: present isolate={"sessionQuery":true} children=["optional-session-query-sqlite","optional-tool-session-query","ssp-observer-group"]
+check exactly one enabled engine row in group: yes
+check the enabled group engine is session-query-sqlite-patched: no
+check root engine rows are only session-query-sqlite with openAt never: yes
+check tool row unchanged against baseline: yes
+check group isolate {sessionQuery: true}: yes
+

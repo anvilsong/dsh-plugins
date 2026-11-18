@@ -1,0 +1,140 @@
+
+=== H7 drill a1: installed copy pinned to engines.dsh 0.2.2-rc.4 (2026-11-18T10:16:30.000Z)
+10:16:36.790 observer-apply    where=root scope=None
+10:16:36.802 observer-apply    where=group scope=sessionQuery#optional-session-search
+10:16:36.874 sessionQuery-up   SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:16:37.022 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:16:42.058 snapshot H7-start root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=False state=ACTIVE
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+10:16:42.095 query-start       label=H7-a1 provider=SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:17:10.340 query-done        label=H7-a1 sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=28244
+10:17:20.743 sessionQuery-down SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:17:20.743 observer-dispose  where=root scope=None
+10:17:20.745 observer-dispose  where=group scope=None
+
+=== H8 drill a2: installed copy whose guard pins 0.2.2-rc.4 (2026-11-18T10:17:33.000Z)
+10:17:40.851 observer-apply    where=root scope=None
+10:17:40.864 observer-apply    where=group scope=sessionQuery#optional-session-search
+10:17:40.946 sessionQuery-up   SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] shipped-class bases-identical=True prc=1
+10:17:41.085 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:17:46.082 snapshot H8-start root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=NO-FIBER
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      log 2026-11-18T10:17:40.953Z warn  [session-search-patched] session-search-patched: active engine: shipped SqliteSessionQueryEngine (@deepseek-ai/dsh-session-query-sqlite) as fallback; reason: compatibility guard failed: host @deepseek-ai/dsh-session-query-sqlite is 0.2.2-rc.3, not the pinned 0.2.2-rc.4
+10:17:46.169 query-start       label=H8-a2 provider=SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] shipped-class bases-identical=True prc=1
+10:18:16.012 query-done        label=H8-a2 sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=29842
+10:18:27.016 sessionQuery-down SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] shipped-class bases-identical=True prc=1
+10:18:27.019 observer-dispose  where=root scope=None
+10:18:27.020 observer-dispose  where=group scope=None
+
+=== H9 drill b: identical copy installed (control before removing its folder) (2026-11-18T10:18:37.000Z)
+10:18:42.725 observer-apply    where=root scope=None
+10:18:42.738 observer-apply    where=group scope=sessionQuery#optional-session-search
+10:18:42.849 sessionQuery-up   SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:18:42.960 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:18:47.954 snapshot H9-start root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=NO-FIBER
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      log 2026-11-18T10:18:42.857Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+
+=== H9 live: drill b, package folder moved away (2026-11-18T10:19:00.000Z)
+10:19:08.164 query-start       label=H9-folder-missing provider=SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:19:08.561 snapshot H9-folder-missing root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=NO-FIBER
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      log 2026-11-18T10:18:42.857Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:19:33.279 query-done        label=H9-folder-missing sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=25114
+10:19:39.614 sessionQuery-down SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:19:39.615 observer-dispose  where=root scope=None
+10:19:39.616 observer-dispose  where=group scope=None
+
+=== H10 drill b: restart with the package folder missing (2026-11-18T10:19:50.000Z)
+10:19:55.954 observer-apply    where=root scope=None
+10:19:55.967 observer-apply    where=group scope=sessionQuery#optional-session-search
+10:19:56.047 sessionQuery-up   SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:19:56.205 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=none@None, schemastery=none@None, dsh-session=none@None, dsh-session-query=none@None, dsh-session-query-sqlite=none@None, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: {'error': {'code': 'ERR_MODULE_NOT_FOUND', 'name': 'Error', 'message': "Cannot find module '<path:0552450447>' imported from <path:e6ab01201e>"}}
+10:20:06.003 snapshot H10-start root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=False state=ACTIVE
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+10:20:06.095 query-start       label=H10-b provider=SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:20:34.995 query-done        label=H10-b sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=28899
+10:20:49.265 sessionQuery-down SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:20:49.265 observer-dispose  where=root scope=None
+10:20:49.266 observer-dispose  where=group scope=None
+
+=== H11 T5 check: profile row re-enables optional-session-query-sqlite, package installed (2026-11-18T10:21:01.000Z)
+10:21:07.222 observer-apply    where=root scope=None
+10:21:07.235 observer-apply    where=group scope=sessionQuery#optional-session-search
+10:21:07.311 sessionQuery-up   SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:21:07.460 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:21:18.082 snapshot H11-start root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=False state=ACTIVE
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      log 2026-11-18T10:21:07.348Z error [sqlite-session-query-engine] service "<q:4410313f52>" has been registered at <SqliteSessionQueryEngine>
+      log 2026-11-18T10:21:07.357Z error [session-search-patched] session-search-patched: active engine: none (another row already provides sessionQuery in this group); reason: provider clash: service "sessionQuery" has been registered at <SqliteSessionQueryEngine>; a later layer (a profile or home cordis.patch.yml row with id optional-session-query-sqlite) turned the shipped engine row back on, and it serves search here; remove that override and restart the host
+10:21:18.160 query-start       label=H11-t5 provider=SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:21:46.327 query-done        label=H11-t5 sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=28166
+10:21:57.361 sessionQuery-down SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:21:57.361 observer-dispose  where=root scope=None
+10:21:57.362 observer-dispose  where=group scope=None
+
+=== H12 drill a3: installed copy whose guard pins another src/query.ts sha256 (2026-11-18T10:22:09.000Z)
+10:22:15.356 observer-apply    where=root scope=None
+10:22:15.369 observer-apply    where=group scope=sessionQuery#optional-session-search
+10:22:15.451 sessionQuery-up   SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] shipped-class bases-identical=True prc=1
+10:22:15.590 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=MISMATCH, src/schema.ts=pin-ok
+10:22:26.603 snapshot H12-start root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=NO-FIBER
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      log 2026-11-18T10:22:15.458Z warn  [session-search-patched] session-search-patched: active engine: shipped SqliteSessionQueryEngine (@deepseek-ai/dsh-session-query-sqlite) as fallback; reason: compatibility guard failed: shipped src/query.ts sha256 b29363581b71… is not the pinned 000000000000…
+10:22:26.697 query-start       label=H12-a3 provider=SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] shipped-class bases-identical=True prc=1
+10:22:54.840 query-done        label=H12-a3 sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=28142
+10:23:13.160 sessionQuery-down SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] shipped-class bases-identical=True prc=1
+10:23:13.160 observer-dispose  where=root scope=None
+10:23:13.161 observer-dispose  where=group scope=None

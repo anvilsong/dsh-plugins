@@ -1,0 +1,12 @@
+files:
+.plugin-manager
+cordis.patch.yml
+cordis.yml
+node_modules
+package.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
+--- rows/deps of the package (node_modules excluded):
+grep exit 1
+--- node_modules entry:
+lrwxr-xr-x@ 1 macbook  staff  102 Nov 18 02:00 dsh-plugin-session-search-patched -> ../../../../../../../../../../../../Users/macbook/projects/dsh-plugins/packages/session-search-patched

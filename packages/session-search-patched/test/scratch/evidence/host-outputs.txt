@@ -1,0 +1,22 @@
+# S8: complete stdout/stderr of the 12 scratch hosts (H1-H12), URL token redacted.
+# Every host: node scripts/scratch-home.mjs dsh <root> ... -- --profile web --no-open --host 127.0.0.1 --port 3198,
+# a managed background job stopped with job_kill; after each stop `lsof -nP -iTCP:3198 -sTCP:LISTEN` and
+# `pgrep -fl -- '--port 3198'` returned nothing.
+# A = /private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-5Cp7ZF, B = .../dsh-scratch-llL9GT
+H1  (A, bundle off)                stdout: dsh web: http://127.0.0.1:3198/?token=<redacted>
+H2  (A, bundle on, cold install)   stdout: dsh web: http://127.0.0.1:3198/?token=<redacted>
+H3  (A, bundle disabled)           stdout: dsh web: http://127.0.0.1:3198/?token=<redacted>
+H4  (A, bundle removed)            stdout: dsh web: http://127.0.0.1:3198/?token=<redacted>
+H5  (A, after hot install)         stdout: dsh web: http://127.0.0.1:3198/?token=<redacted>
+H6  (A, drill c)                   stdout: dsh web: http://127.0.0.1:3198/?token=<redacted>
+H7  (B, drill a1 engines rc.4)     stdout: dsh web: http://127.0.0.1:3198/?token=<redacted>
+                                   stderr: dsh: skipping profile bundle "dsh-plugin-session-search-patched": Error: Plugin dsh-plugin-session-search-patched@0.1.0 is incompatible with dsh 0.2.2-rc.3: requirements {"engines.dsh":"0.2.2-rc.4"}. Running it may cause crashes or data loss. Update the plugin or install a plugin version compatible with this dsh runtime. To accept this risk explicitly, grant the exact-version exemption for dsh-plugin-session-search-patched@0.1.0 on dsh 0.2.2-rc.3 with `dsh plugin allow-version` or the plugin manager, then retry the installation or restart dsh. Exact-version exemption: not active.
+H8  (B, drill a2 guard rc.4)       stdout: dsh web: http://127.0.0.1:3198/?token=<redacted>
+H9  (B, drill b control)           stdout: dsh web: http://127.0.0.1:3198/?token=<redacted>
+H10 (B, drill b folder missing)    stdout: dsh web: http://127.0.0.1:3198/?token=<redacted>
+                                   stderr: dsh: skipping profile bundle "dsh-plugin-session-search-patched": Error: dsh: cannot resolve profile bundle "dsh-plugin-session-search-patched" from the dsh installation or /private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-llL9GT/home/.dsh/profiles/web; run 'dsh plugin --profile web install' if its dependency is not installed
+H11 (B, T5 clash)                  stdout: dsh web: http://127.0.0.1:3198/?token=<redacted>
+H12 (B, drill a3 sources pin)      stdout: dsh web: http://127.0.0.1:3198/?token=<redacted>
+# The package's `session-search-patched:` lines (info, warn and error) never reach stdout/stderr of
+# `dsh web`; they are in the host's logger buffer (cordis LoggerService.buffer), read by the observer
+# (snapshot records, `log` lines in timeline-A.txt / timeline-B.txt).

@@ -1,0 +1,15 @@
+# S8: scratch profile patch with observer rows only. Copied into the scratch
+# profile's cordis.patch.yml; never used outside a scratch DSH home.
+# ssp-observer-group sits inside the isolated session-search group and runs the
+# query set on request; ssp-observer-root writes Loader snapshots on request.
+- id: optional-session-search
+  insert:
+    - id: ssp-observer-group
+      name: file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/test/scratch/observer/index.js
+      config:
+        where: group
+- insert:
+    - id: ssp-observer-root
+      name: file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/test/scratch/observer/index.js
+      config:
+        where: root

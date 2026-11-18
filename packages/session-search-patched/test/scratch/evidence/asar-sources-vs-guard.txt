@@ -1,0 +1,4 @@
+manifest version 0.2.2-rc.3 (guard PINNED_VERSION 0.2.2-rc.3: equal)
+src/index.ts 41094 bytes 72868e4ae967fee94967df5939ee092a582249ff7b37afc4fe0cf7660d48b8d3 equals the guard.js pin
+src/query.ts 15548 bytes b29363581b715a1eb50509d7c5ff039d7d4004926160cd88ffcbadaa44ca1c48 equals the guard.js pin
+src/schema.ts 6098 bytes 2cc4c7c8e50409847599a048922d55ef4ffbd1ac2309502f3a5a06420bc1a28f equals the guard.js pin

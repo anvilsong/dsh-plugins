@@ -1,0 +1,6 @@
+check exactly one enabled engine row in group: yes
+check the enabled group engine is session-query-sqlite-patched: yes
+check root engine rows are only session-query-sqlite with openAt never: yes
+check tool row unchanged against baseline: yes
+check group isolate {sessionQuery: true}: yes
+

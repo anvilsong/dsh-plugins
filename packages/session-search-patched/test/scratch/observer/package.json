@@ -1,0 +1,9 @@
+{
+  "name": "dsh-ssp-s8-scratch-observer",
+  "version": "0.0.0-s8.1",
+  "private": true,
+  "description": "S8 scratch observer, mounted only by a scratch profile patch inside a scratch DSH home.",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT"
+}

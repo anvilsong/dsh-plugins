@@ -1,0 +1,422 @@
+
+=== H1 bundle off (shipped engine), fresh store copy (2026-11-18T09:58:10.000Z)
+09:58:16.369 observer-apply    where=root scope=None
+09:58:16.382 observer-apply    where=group scope=sessionQuery#optional-session-search
+09:58:16.451 sessionQuery-up   SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+09:58:16.598 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=NOT-asar@4.1.0, schemastery=none@None, dsh-session=none@None, dsh-session-query=none@None, dsh-session-query-sqlite=none@None, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: {'error': {'code': 'ERR_INVALID_ARG_TYPE', 'name': 'TypeError', 'message': 'The "<q:d070c7ecb4>" argument must be of type string. Received undefined'}}
+09:59:20.328 query-start       label=off provider=SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+09:59:47.969 query-done        label=off sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=27641
+10:00:07.196 snapshot H1-after-queries root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=False state=ACTIVE
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+10:00:21.671 sessionQuery-down SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:00:21.672 observer-dispose  where=root scope=None
+10:00:21.673 observer-dispose  where=group scope=None
+
+=== H2 bundle on (real package, cold install), fresh store copy (2026-11-18T10:01:07.000Z)
+10:01:13.936 observer-apply    where=root scope=None
+10:01:13.949 observer-apply    where=group scope=sessionQuery#optional-session-search
+10:01:14.057 sessionQuery-up   SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:01:14.167 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:01:36.841 snapshot H2-start root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=NO-FIBER
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      log 2026-11-18T10:01:14.064Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:01:51.422 query-start       label=on provider=SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:02:17.560 query-done        label=on sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=26138
+
+=== H2 live: disable bundle (name removed from dsh.profile.bundles) (2026-11-18T10:02:34.000Z)
+10:02:36.871 sessionQuery-down SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:02:36.891 sessionQuery-up   SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:02:36.935 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:02:43.218 snapshot H2-after-disable root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=False state=ACTIVE
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      log 2026-11-18T10:01:14.064Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:02:49.335 sessionQuery-down SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:02:49.335 observer-dispose  where=root scope=None
+10:02:49.336 observer-dispose  where=group scope=None
+
+=== H3 restart with bundle disabled, fresh store copy (2026-11-18T10:03:07.000Z)
+10:03:14.473 observer-apply    where=root scope=None
+10:03:14.486 observer-apply    where=group scope=sessionQuery#optional-session-search
+10:03:14.559 sessionQuery-up   SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:03:14.714 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:03:37.068 query-start       label=H3-disabled provider=SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:04:06.021 query-done        label=H3-disabled sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=28953
+10:04:07.229 snapshot H3-after-queries root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=False state=ACTIVE
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+
+=== H3 live: re-enable bundle (name appended to dsh.profile.bundles) (2026-11-18T10:04:19.000Z)
+10:04:21.615 sessionQuery-down SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:04:21.628 sessionQuery-up   SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:04:21.672 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:04:27.657 query-start       label=H3-reenabled provider=SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:04:27.728 snapshot H3-after-reenable root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=DISPOSED
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      log 2026-11-18T10:04:21.629Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:04:53.687 query-done        label=H3-reenabled sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=26026
+
+=== H3 live: dsh plugin remove (2026-11-18T10:05:04.000Z)
+10:05:07.248 sessionQuery-down SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:05:07.273 sessionQuery-up   SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:05:07.317 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:05:13.305 query-start       label=H3-removed provider=SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:05:13.359 snapshot H3-after-remove root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=False state=ACTIVE
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      log 2026-11-18T10:04:21.629Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:05:43.461 query-done        label=H3-removed sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=30156
+10:05:53.378 sessionQuery-down SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:05:53.378 observer-dispose  where=root scope=None
+10:05:53.379 observer-dispose  where=group scope=None
+
+=== H4 restart after remove, fresh store copy (2026-11-18T10:06:05.000Z)
+10:06:10.882 observer-apply    where=root scope=None
+10:06:10.903 observer-apply    where=group scope=sessionQuery#optional-session-search
+10:06:10.984 sessionQuery-up   SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:06:11.164 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:06:27.860 query-start       label=H4-removed provider=SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:06:58.041 query-done        label=H4-removed sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=30181
+10:07:03.267 snapshot H4-before-hot-install root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=False state=ACTIVE
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+
+=== H4 live: drill d, dsh plugin add into the running host (2026-11-18T10:07:04.000Z)
+10:07:06.483 snapshot H4-hot-t1 root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=False state=ACTIVE
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+10:07:07.384 sessionQuery-down SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:07:07.400 sessionQuery-up   SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:07:07.444 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:07:07.691 snapshot H4-hot-t2 root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=DISPOSED
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      log 2026-11-18T10:07:07.402Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:07:08.493 snapshot H4-hot-t3 root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=DISPOSED
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      log 2026-11-18T10:07:07.402Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:07:09.696 snapshot H4-hot-t4 root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=DISPOSED
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      log 2026-11-18T10:07:07.402Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:07:10.503 snapshot H4-hot-t5 root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=DISPOSED
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      log 2026-11-18T10:07:07.402Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:07:11.706 snapshot H4-hot-t6 root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=DISPOSED
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      log 2026-11-18T10:07:07.402Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:07:12.509 snapshot H4-hot-t7 root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=DISPOSED
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      log 2026-11-18T10:07:07.402Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:07:13.717 snapshot H4-hot-t8 root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=DISPOSED
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      log 2026-11-18T10:07:07.402Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:07:15.438 query-start       label=H4-hot-installed provider=SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:07:42.973 query-done        label=H4-hot-installed sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=27534
+10:07:45.786 snapshot H4-hot-after-queries root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=DISPOSED
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      log 2026-11-18T10:07:07.402Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:07:53.559 sessionQuery-down SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:07:53.559 observer-dispose  where=root scope=None
+10:07:53.560 observer-dispose  where=group scope=None
+
+=== H5 restart after the hot install, fresh store copy (2026-11-18T10:08:02.000Z)
+10:08:07.662 observer-apply    where=root scope=None
+10:08:07.677 observer-apply    where=group scope=sessionQuery#optional-session-search
+10:08:07.800 sessionQuery-up   SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:08:07.920 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:08:45.047 snapshot H5-start root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=NO-FIBER
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      log 2026-11-18T10:08:07.808Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:08:45.183 query-start       label=H5-restarted provider=SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:09:12.463 query-done        label=H5-restarted sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=27280
+
+=== H5 live: drill c1, unknown event type planted (patched engine) (2026-11-18T10:09:25.000Z)
+10:09:25.696 query-start       label=H5-c1-unknown provider=SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:09:44.778 query-done        label=H5-c1-unknown sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=19081
+10:09:46.762 snapshot H5-c1-after root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=NO-FIBER
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      log 2026-11-18T10:08:07.808Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:10:20.535 sessionQuery-down SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:10:20.535 observer-dispose  where=root scope=None
+10:10:20.536 observer-dispose  where=group scope=None
+
+=== H6 restart, patched, unknown-type session planted before start (drill c1) (2026-11-18T10:10:28.000Z)
+10:10:33.253 observer-apply    where=root scope=None
+10:10:33.266 observer-apply    where=group scope=sessionQuery#optional-session-search
+10:10:33.383 sessionQuery-up   SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:10:33.497 facts             store root starts with scratch DSH_HOME=True listed=253 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:10:38.269 planted {"time": "2026-11-18T10:10:38.269Z", "pid": 16741, "event": "planted", "where": "group", "label": "H6-c1", "listed": 253, "planted": [], "reads": {"5508d8c0-0000-4000-8000-00000000000a": {"code": null, "name": "SessionPersistenceCorruptionError", "message": "session \"5508d8c0-0000-4000-8000-0000000
+
+=== H6 live: drill c1 re-planted with frame layout + valid-empty control (2026-11-18T10:11:04.000Z)
+10:11:04.370 planted {"time": "2026-11-18T10:11:04.370Z", "pid": 16741, "event": "planted", "where": "group", "label": "H6-c1b", "listed": 255, "planted": [{"id": "5508d8c0-0000-4000-8000-00000000000a", "formatStatus": "current"}], "reads": {"5508d8c0-0000-4000-8000-00000000000a": {"code": null, "name": "SessionFormatUn
+10:11:15.566 query-start       label=H6-c1-patched provider=SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:11:23.215 query-error       label=H6-c1-patched q01 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.238 query-error       label=H6-c1-patched q02 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.260 query-error       label=H6-c1-patched q03 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.282 query-error       label=H6-c1-patched q04 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.303 query-error       label=H6-c1-patched q05 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.325 query-error       label=H6-c1-patched q06 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.347 query-error       label=H6-c1-patched q07 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.368 query-error       label=H6-c1-patched q08 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.389 query-error       label=H6-c1-patched q09 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.409 query-error       label=H6-c1-patched q10 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.429 query-error       label=H6-c1-patched q11 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.449 query-error       label=H6-c1-patched q12 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.476 query-error       label=H6-c1-patched q13 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.497 query-error       label=H6-c1-patched q14 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.516 query-error       label=H6-c1-patched q15 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.536 query-error       label=H6-c1-patched q16 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.556 query-error       label=H6-c1-patched q17 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.575 query-error       label=H6-c1-patched q18 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.595 query-error       label=H6-c1-patched q19 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.615 query-error       label=H6-c1-patched q20 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.635 query-error       label=H6-c1-patched q21 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.656 query-error       label=H6-c1-patched q22 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:11:23.656 query-done        label=H6-c1-patched sha256=fdf823ef2379800cf62054320f50f973e6f6a6aac2d7f7d6bd2a0521d10c136c hits=0 errors=22 totalMs=8090
+10:11:24.652 snapshot H6-c1-after root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=NO-FIBER
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      log 2026-11-18T10:10:33.391Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+
+=== H6 live: planted unknown-type session removed (patched recovers?) (2026-11-18T10:11:35.000Z)
+10:11:35.497 query-start       label=H6-c1-removed provider=SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:11:54.729 query-done        label=H6-c1-removed sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=19232
+
+=== H6 live: bundle disabled, shipped engine, unknown-type session planted again (drill c1 shipped) (2026-11-18T10:12:06.000Z)
+10:12:09.156 observer-dispose  where=root scope=None
+10:12:09.156 observer-dispose  where=group scope=None
+10:12:09.157 sessionQuery-down SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:12:09.197 observer-apply    where=group scope=sessionQuery#optional-session-search
+10:12:09.197 observer-apply    where=root scope=sessionQuery
+10:12:09.197 sessionQuery-up   SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:12:09.240 facts             store root starts with scratch DSH_HOME=True listed=254 
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:12:13.218 query-start       label=H6-c1-shipped provider=SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:12:19.198 query-error       label=H6-c1-shipped q01 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:12:24.962 query-error       label=H6-c1-shipped q02 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:12:30.859 query-error       label=H6-c1-shipped q03 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:12:36.748 query-error       label=H6-c1-shipped q04 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:12:42.597 query-error       label=H6-c1-shipped q05 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:12:48.589 query-error       label=H6-c1-shipped q06 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:12:54.454 query-error       label=H6-c1-shipped q07 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:13:00.304 query-error       label=H6-c1-shipped q08 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:13:06.294 query-error       label=H6-c1-shipped q09 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:13:12.146 query-error       label=H6-c1-shipped q10 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:13:18.078 query-error       label=H6-c1-shipped q11 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:13:24.059 query-error       label=H6-c1-shipped q12 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:13:29.908 query-error       label=H6-c1-shipped q13 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:13:35.596 query-error       label=H6-c1-shipped q14 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:13:41.203 query-error       label=H6-c1-shipped q15 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:13:46.817 query-error       label=H6-c1-shipped q16 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:13:52.655 query-error       label=H6-c1-shipped q17 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:13:58.608 query-error       label=H6-c1-shipped q18 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:14:04.440 query-error       label=H6-c1-shipped q19 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:14:10.474 query-error       label=H6-c1-shipped q20 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:14:16.362 query-error       label=H6-c1-shipped q21 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:14:22.190 query-error       label=H6-c1-shipped q22 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: session "<q:df8074dabd>" contains event type "<q:85e50f08a5>" (seq 0) unknown to this harness and not marked ignorable; refusing to interpret the log — it was likely written by a newer harness (raw log: <path:fcc5ed5ed0>:037faa32ff><path:cbd73e9c38>
+10:14:22.190 query-done        label=H6-c1-shipped sha256=fdf823ef2379800cf62054320f50f973e6f6a6aac2d7f7d6bd2a0521d10c136c hits=0 errors=22 totalMs=128971
+10:14:22.747 snapshot H6-c1-shipped-after root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=False state=ACTIVE
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      log 2026-11-18T10:10:33.391Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+
+=== H6 live: drill c2 shipped, unreadable session (mode 000), unknown-type removed (2026-11-18T10:14:38.000Z)
+10:14:38.886 planted {"time": "2026-11-18T10:14:38.886Z", "pid": 16741, "event": "planted", "where": "group", "label": "H6-c2", "listError": {"code": "EACCES", "name": "Error", "message": "EACCES: permission denied, open '/private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-5Cp7ZF/home/.dsh/sessions/--tm
+10:14:42.034 query-start       label=H6-c2-shipped provider=SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:14:42.088 query-error       label=H6-c2-shipped q01 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.122 query-error       label=H6-c2-shipped q02 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.144 query-error       label=H6-c2-shipped q03 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.162 query-error       label=H6-c2-shipped q04 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.178 query-error       label=H6-c2-shipped q05 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.194 query-error       label=H6-c2-shipped q06 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.214 query-error       label=H6-c2-shipped q07 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.234 query-error       label=H6-c2-shipped q08 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.250 query-error       label=H6-c2-shipped q09 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.267 query-error       label=H6-c2-shipped q10 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.282 query-error       label=H6-c2-shipped q11 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.298 query-error       label=H6-c2-shipped q12 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.314 query-error       label=H6-c2-shipped q13 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.329 query-error       label=H6-c2-shipped q14 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.345 query-error       label=H6-c2-shipped q15 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.361 query-error       label=H6-c2-shipped q16 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.377 query-error       label=H6-c2-shipped q17 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.392 query-error       label=H6-c2-shipped q18 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.408 query-error       label=H6-c2-shipped q19 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.425 query-error       label=H6-c2-shipped q20 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.446 query-error       label=H6-c2-shipped q21 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.463 query-error       label=H6-c2-shipped q22 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:14:42.463 query-done        label=H6-c2-shipped sha256=fdf823ef2379800cf62054320f50f973e6f6a6aac2d7f7d6bd2a0521d10c136c hits=0 errors=22 totalMs=429
+
+=== H6 live: drill c2 patched, bundle re-enabled, unreadable session still planted (2026-11-18T10:14:55.000Z)
+10:14:57.361 sessionQuery-down SqliteSessionQueryEngine@optional-session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+10:14:57.363 sessionQuery-up   SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:14:57.404 facts             store root starts with scratch DSH_HOME=True listed=None listError={'code': 'EACCES', 'name': 'Error', 'message': "EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'"}
+      packageOf(entry): cordis=asar@4.1.0, schemastery=asar@3.19.0, dsh-session=asar@0.2.2-rc.3, dsh-session-query=asar@0.2.2-rc.3, dsh-session-query-sqlite=asar@0.2.2-rc.3, dsh-plugin-session-search-patched=none@None
+      sources vs guard pins: src/index.ts=pin-ok, src/query.ts=pin-ok, src/schema.ts=pin-ok
+10:15:01.382 query-start       label=H6-c2-patched provider=SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:15:01.439 query-error       label=H6-c2-patched q01 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.465 query-error       label=H6-c2-patched q02 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.487 query-error       label=H6-c2-patched q03 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.512 query-error       label=H6-c2-patched q04 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.528 query-error       label=H6-c2-patched q05 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.545 query-error       label=H6-c2-patched q06 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.561 query-error       label=H6-c2-patched q07 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.579 query-error       label=H6-c2-patched q08 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.601 query-error       label=H6-c2-patched q09 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.617 query-error       label=H6-c2-patched q10 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.634 query-error       label=H6-c2-patched q11 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.650 query-error       label=H6-c2-patched q12 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.666 query-error       label=H6-c2-patched q13 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.681 query-error       label=H6-c2-patched q14 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.697 query-error       label=H6-c2-patched q15 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.713 query-error       label=H6-c2-patched q16 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.728 query-error       label=H6-c2-patched q17 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.744 query-error       label=H6-c2-patched q18 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.760 query-error       label=H6-c2-patched q19 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.783 query-error       label=H6-c2-patched q20 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.799 query-error       label=H6-c2-patched q21 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.815 query-error       label=H6-c2-patched q22 code=SESSION_QUERY_PERSISTENCE_FAILED SessionQueryError: session-search persistence observation failed: EACCES: permission denied, open '<path:fcc5ed5ed0>:1ef01aa2ff><path:cb31c62f4c>'
+10:15:01.815 query-done        label=H6-c2-patched sha256=fdf823ef2379800cf62054320f50f973e6f6a6aac2d7f7d6bd2a0521d10c136c hits=0 errors=22 totalMs=432
+
+=== H6 live: all planted sessions removed (patched) (2026-11-18T10:15:12.000Z)
+10:15:12.227 query-start       label=H6-c-cleared provider=SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:15:38.083 query-done        label=H6-c-cleared sha256=4700711bb32c7178ee6f4e69b15ce7a3c6832f57140e24143ad94a47e3a34b6a hits=1669 errors=0 totalMs=25856
+10:15:39.701 snapshot H6-end root-provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] shipped-class bases-identical=True prc=4
+      include:session-query-sqlite                  disabled=False state=ACTIVE
+      include:optional-session-search               disabled=False state=ACTIVE
+      include:ssp-observer-root                     disabled=False state=ACTIVE
+      include:optional-session-query-sqlite         disabled=True  state=DISPOSED
+      include:optional-tool-session-query           disabled=False state=ACTIVE
+      include:ssp-observer-group                    disabled=False state=ACTIVE
+      include:session-query-sqlite-patched          disabled=False state=ACTIVE
+      log 2026-11-18T10:10:33.391Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+      log 2026-11-18T10:14:57.364Z info  [session-search-patched] session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+10:15:56.438 observer-dispose  where=root scope=None
+10:15:56.442 sessionQuery-down SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] other-class(patch-methods=6) bases-identical=True prc=1
+10:15:56.444 observer-dispose  where=group scope=None

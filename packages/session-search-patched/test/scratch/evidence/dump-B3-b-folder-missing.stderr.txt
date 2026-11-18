@@ -1,0 +1,1 @@
+dsh: skipping profile bundle "dsh-plugin-session-search-patched": Error: dsh: cannot resolve profile bundle "dsh-plugin-session-search-patched" from the dsh installation or /private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-llL9GT/home/.dsh/profiles/web; run 'dsh plugin --profile web install' if its dependency is not installed

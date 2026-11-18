@@ -1,0 +1,7 @@
+./pnpm-lock.yaml:11:      dsh-plugin-session-search-patched:
+./pnpm-lock.yaml:12:        specifier: link:/Users/macbook/projects/dsh-plugins/packages/session-search-patched
+./pnpm-lock.yaml:13:        version: link:../../../../../../../../../../../Users/macbook/projects/dsh-plugins/packages/session-search-patched
+./cordis.patch.yml:8:      name: file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/test/scratch/observer/index.js
+./cordis.patch.yml:13:      name: file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/test/scratch/observer/index.js
+./package.json:5:    "dsh-plugin-session-search-patched": "link:/Users/macbook/projects/dsh-plugins/packages/session-search-patched"
+grep exit 0
