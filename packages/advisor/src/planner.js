@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs'
+import { realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
 import { fileSha256Sync as defaultFileHash, LEDGER_FILE, REPLIES_DIR, sha256 } from './ledger.js'
@@ -192,13 +192,22 @@ const LINE_BREAK = /[\r\n\v\f\u0085\u2028\u2029]/
 // (app/[id]/page.tsx, routes/{x}/a.js) and only * and ? are refused.
 const SCOPE_GLOB = /[*?[\]{}]/
 const REFERENCE_GLOB = /[*?]/
+// Characters no write scope or evidence reference may carry: C0 and C1
+// controls, format characters (bidi controls, zero-width and soft-hyphen
+// characters, tags), unpaired surrogates, and line and paragraph separators.
+// They would let a look-alike name pass the overlap check of write scopes and
+// spoof what the lead reads. C0 controls and DEL keep their older message.
+const UNSAFE_TEXT = /[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/u
 
 /**
  * The problem of a workspace-relative path under the rules write scopes and
- * evidence references share, or undefined.
+ * evidence references share, or undefined. Checks run in a fixed order, so an
+ * input refused for one reason keeps that reason's message.
  * @param {RegExp} glob the characters refused as a glob
+ * @param {boolean} [protect] also refuse a path that reaches a protected file
+ *   (evidence references), checked before the unsafe-character rule
  */
-function pathIssue(value, glob) {
+function pathIssue(value, glob, protect = false) {
   if (value.trim() !== value || value === '') return 'must be a non-empty path without surrounding whitespace'
   if (CONTROL.test(value)) return 'must not contain control characters'
   if (path.isAbsolute(value) || /^[a-zA-Z]:/.test(value) || value.startsWith('\\')) return 'must be workspace-relative'
@@ -208,6 +217,9 @@ function pathIssue(value, glob) {
   if (parts.length === 0 || parts.every((part) => part === '.')) return 'must not be the workspace root'
   if (parts.includes('..')) return 'must not contain ..'
   if (parts.some((part) => part.toLowerCase() === '.git')) return 'must not touch .git'
+  const hit = protect ? protectedSegment(value) : undefined
+  if (hit !== undefined) return `reaches a protected file (${hit})`
+  if (UNSAFE_TEXT.test(value)) return 'must not contain control, format or line separator characters, or unpaired surrogates'
   return undefined
 }
 
@@ -385,30 +397,26 @@ const EVIDENCE = /^(.+?)(?::(\d+)(?:-(\d+))?)?$/
 // the name.
 const MALFORMED_SUFFIX = /:[\d-]*$/
 const SUFFIX_GRAMMAR = 'line suffix must be :line or :start-end with positive whole numbers; write path, path:line or path:start-end, such as src/a.js:12 or src/a.js:12-30'
-// Characters no evidence reference may carry: C0 and C1 controls, format
-// characters (bidi controls, zero-width and soft-hyphen characters, tags),
-// unpaired surrogates, and line and paragraph separators.
-const UNSAFE_TEXT = /[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/u
 
 /**
  * The problems of one evidence reference, the grammar that advice claims and
  * the verifier's report share: a workspace-relative path with an optional
- * :line or :start-end, under the write-scope path rules except that literal
- * brackets and braces are allowed (only * and ? count as a glob), that does
- * not reach a protected file, carries no control, format or separator
- * character and no unpaired surrogate, and does not end in a malformed line
+ * :line or :start-end, under the write-scope path rules (no control, format
+ * or separator character and no unpaired surrogate included) except that
+ * literal brackets and braces are allowed (only * and ? count as a glob),
+ * that does not reach a protected file, and does not end in a malformed line
  * suffix such as :12:5, :12- or a bare colon. An input refused for another
- * reason keeps that reason's message.
+ * reason keeps that reason's message. The path part holds every character of
+ * the reference but the ASCII line suffix (EVIDENCE refuses line terminators),
+ * so the unsafe-character rule sees the whole reference.
  * @returns {string[]} issues without a location prefix; empty when it is valid
  */
 export function evidenceReferenceIssues(reference) {
   const match = typeof reference === 'string' ? EVIDENCE.exec(reference.trim() === reference ? reference : '') : null
   if (match === null || reference === '') return ['must be a workspace-relative path with optional :line or :start-end']
   const issues = []
-  const issue = pathIssue(match[1], REFERENCE_GLOB)
+  const issue = pathIssue(match[1], REFERENCE_GLOB, true)
   if (issue !== undefined) issues.push(`path ${issue}`)
-  else if (protectedSegment(match[1]) !== undefined) issues.push(`path reaches a protected file (${protectedSegment(match[1])})`)
-  else if (UNSAFE_TEXT.test(reference)) issues.push('path must not contain control, format or line separator characters, or unpaired surrogates')
   else if (MALFORMED_SUFFIX.test(match[1])) issues.push(SUFFIX_GRAMMAR)
   if (match[3] !== undefined && Number(match[3]) < Number(match[2])) issues.push('line range must not run backwards')
   if (match[2] !== undefined && Number(match[2]) === 0) issues.push('lines start at 1')
@@ -452,29 +460,112 @@ export function renderAdvice(adviceId, advice) {
 
 // ---------------------------------------------------------------------------
 // Read confinement
+//
+// The protected names are a best-effort list, not a guarantee: a secret kept
+// under an ordinary name stays readable. Every reader goes through
+// protectedSegment: planner, consult and verifier read, grep and glob paths
+// (plannerPathDenial), grep results (confinedGrep, plannerPathAllowed) and
+// evidence references (evidenceReferenceIssues).
 
-const PROTECTED_DIRS = new Set(['.git', '.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker', '.config'])
+// Folders are protected by their exact name (any case) only: a folder whose
+// name merely contains a secret word, such as secrets-manager, token-service
+// or reset-password, usually holds ordinary source, so the secret-word rule
+// below never applies to a folder.
+// Everything inside these folders is protected.
+const PROTECTED_DIRS = new Set(['.git', '.ssh', '.gnupg', '.aws', '.azure', '.kube', '.docker', '.config', '.secrets'])
+// Everything inside these folders is protected except files with a source,
+// documentation or asset extension, so k8s/secrets/db.yaml and
+// config/credentials/production.yml.enc are protected while a code module
+// such as src/credentials/vault-resolver.ts stays readable.
+const SECRET_DIRS = new Set(['secrets', 'credentials'])
 const PROTECTED_FILE = [
   /^\.env(\..+)?$/i,
+  /^\.envrc(\..+)?$/i,
+  /.\.env$/i,
   /\.(pem|key|p12|pfx|jks|keystore|kdbx|ppk|asc|gpg)$/i,
-  /^id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/i,
-  /^\.(npmrc|netrc|pypirc|pgpass|git-credentials)$/i,
+  /^\.(npmrc|netrc|pypirc|pgpass|git-credentials|htpasswd)$/i,
   /^credentials(\..+)?$/i,
   /^secrets?(\..+)?$/i,
-  /\.(tfstate|tfvars)$/i,
+  /\.tfstate(\..+)?$/i,
+  /\.tfvars(\.json)?$/i,
 ]
-const ENV_TEMPLATE = /^\.env\.(example|sample|template|dist)$/i
+// An SSH key name; a file of this shape written in a source extension (id_rsa_parser.go) is code.
+const ID_KEY = /^id_(rsa|dsa|ecdsa|ed25519)([._-].*)?$/i
+const ENV_TEMPLATE = /^\.env(rc)?\.(example|sample|template|dist)$/i
 
-export function protectedSegment(relative) {
+// Secret words, case-insensitive. A word counts only when the start or end of
+// the name, `.`, `_`, `-` or a digit bounds it, so secretary.js, tokenizer.js
+// and credentialing.md hold none. WORD_ANYWHERE may stand anywhere in the
+// name; LAST_WORD must be followed by nothing but digits, `_` and `-` up to
+// the next dot or the end. `token` is a last word only (github-token.txt,
+// token.json, access_token), because names like token-list.json and plural
+// tokens.json (lexers, design tokens) are ordinary.
+const SECRET_WORDS = 'credentials?|secrets?|passwords?|(?:private|api)[-_.]?keys?'
+const WORD_ANYWHERE = new RegExp(`(?:^|[._\\-\\d])(?:${SECRET_WORDS})(?=$|[._\\-\\d])`, 'i')
+const LAST_WORD = new RegExp(`(?:^|[._\\-\\d])(?:${SECRET_WORDS}|token)(?=[\\d_-]*(?:\\.|$))`, 'i')
+// Source, documentation and asset extensions: a file named after a secret
+// word but written in one of these is code, prose or an image about secrets
+// (secret-scanner.ts, token-bucket.js, rotating-secrets.md, a
+// ..._password_policy.sql migration, call-credentials.js.map,
+// password-meter.png), not a secret store. Shell scripts, .txt and data or
+// config formats are not on the list.
+const SOURCE_EXTENSIONS = new Set([
+  'js', 'mjs', 'cjs', 'jsx', 'ts', 'mts', 'cts', 'tsx', 'vue', 'svelte', 'astro', 'map',
+  'py', 'pyi', 'pyc', 'pyx', 'pxd', 'rb', 'go', 'rs', 'java', 'kt', 'kts', 'scala', 'groovy', 'swift', 'm', 'mm', 'dart', 'lua', 'php', 'pl', 'pm',
+  'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'hh', 'cs', 'fs', 'ex', 'exs', 'erl', 'hrl', 'clj', 'cljs', 'elm', 'hs', 'ml', 'r', 'jl', 'zig', 'sol',
+  'sql', 'css', 'scss', 'sass', 'less', 'html', 'htm', 'proto', 'graphql', 'gql',
+  'md', 'mdx', 'markdown', 'rst', 'adoc',
+  'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico',
+])
+
+/** The last extension of a name, lowercase; '' without one (a leading dot alone is none). */
+function extensionOf(base) {
+  const dot = base.lastIndexOf('.')
+  return dot <= 0 ? '' : base.slice(dot + 1).toLowerCase()
+}
+
+/**
+ * Whether a file name names a secret by a secret word: with an extension
+ * that is not a source, documentation or asset one, a secret word anywhere in
+ * the name (or token as the last word); without an extension, a secret word
+ * or token as the last word (access_token, .vault-token, aws-credentials).
+ */
+function secretWordName(base) {
+  const extension = extensionOf(base)
+  if (extension === '') return LAST_WORD.test(base)
+  if (SOURCE_EXTENSIONS.has(extension)) return false
+  return WORD_ANYWHERE.test(base) || LAST_WORD.test(base)
+}
+
+/**
+ * The segment that makes a workspace-relative path protected, or undefined.
+ * Purely lexical; a caller that knows the path is an existing folder passes
+ * `directory`, so that its own name is judged as a folder name (exact names
+ * only) rather than by the secret-word rule for files.
+ */
+export function protectedSegment(relative, directory = false) {
   const parts = relative.split(/[\\/]/).filter(Boolean)
-  for (const part of parts.slice(0, -1)) {
-    if (PROTECTED_DIRS.has(part.toLowerCase())) return part
-  }
   const base = parts[parts.length - 1]
   if (base === undefined) return undefined
+  const folders = parts.slice(0, -1)
+  const always = folders.find((part) => PROTECTED_DIRS.has(part.toLowerCase()))
+  if (always !== undefined) return always
   if (PROTECTED_DIRS.has(base.toLowerCase())) return base
   if (ENV_TEMPLATE.test(base)) return undefined
-  return PROTECTED_FILE.some((pattern) => pattern.test(base)) ? base : undefined
+  const secretDir = folders.find((part) => SECRET_DIRS.has(part.toLowerCase()))
+  if (secretDir !== undefined && (directory || !SOURCE_EXTENSIONS.has(extensionOf(base)))) return secretDir
+  if (ID_KEY.test(base) && !SOURCE_EXTENSIONS.has(extensionOf(base))) return base
+  if (PROTECTED_FILE.some((pattern) => pattern.test(base))) return base
+  return !directory && secretWordName(base) ? base : undefined
+}
+
+/** Whether an existing path is a folder (after symlinks); false when it cannot be read. */
+function isDirectory(target) {
+  try {
+    return statSync(target).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 function patternDenial(field, pattern) {
@@ -511,8 +602,9 @@ function outside(relative) {
 export function plannerPathAllowed(value, root, cwd = root) {
   if (typeof value !== 'string' || value === '' || CONTROL.test(value)) return false
   if (value.startsWith('~') || value.split(/[\\/]/).includes('..')) return false
-  const relative = path.relative(root, realpathLoose(path.resolve(cwd, value)))
-  return !outside(relative) && protectedSegment(relative) === undefined
+  const real = realpathLoose(path.resolve(cwd, value))
+  const relative = path.relative(root, real)
+  return !outside(relative) && protectedSegment(relative, isDirectory(real)) === undefined
 }
 
 /** Deny planner file access outside the workspace root or to protected files. */
@@ -528,9 +620,12 @@ export function plannerPathDenial(exec, root, cwd = root) {
     // `..` after a symlink resolves physically in the OS and ripgrep, so a
     // lexical check cannot confine it; planners never need `..`.
     if (value.startsWith('~') || value.split(/[\\/]/).includes('..')) return `${field} must stay inside the workspace without "..".`
-    const relative = path.relative(root, realpathLoose(path.resolve(cwd, value)))
+    const real = realpathLoose(path.resolve(cwd, value))
+    const relative = path.relative(root, real)
     if (outside(relative)) return `${field} must stay inside the workspace.`
-    const hit = protectedSegment(relative)
+    // A grep or glob folder is judged by exact folder names only; files,
+    // missing paths and unreadable ones get the full file-name rules.
+    const hit = protectedSegment(relative, isDirectory(real))
     return hit === undefined ? undefined : `${field} reaches a protected file or directory (${hit}).`
   }
   if (exec.name === 'read') return checkPath(args.file_path, 'file_path', true)

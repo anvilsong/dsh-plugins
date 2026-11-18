@@ -316,6 +316,16 @@ Checks:
 - Mechanical tasks have no open questions.
 - Scopes are not absolute and contain no `~`, `..`, `.git`, or glob
   characters (`*`, `?`, `[`, `]`, `{`, `}`).
+- Scopes contain no control, format or line separator characters and no
+  unpaired surrogates, the same rule as evidence references: C1 controls such
+  as U+0085, the separators U+2028 and U+2029, bidirectional controls such as
+  U+202E, and zero-width or other invisible characters such as U+200B and an
+  inner U+FEFF are refused, which closes the commonest way to disguise a name
+  from the overlap check. It does not close every way: spaces such as U+00A0,
+  combining and variation marks, filler characters and look-alike letters from
+  other scripts are valid, so the overlap check is advisory. Other non-ASCII
+  names, such as `src/文档/readme.md` or `src/café.js`, are valid. Input that an earlier rule already refuses keeps that rule's
+  message, such as "must not contain control characters" for C0 controls.
 
 ### Advice format
 
@@ -520,8 +530,8 @@ Execution:
   `failed` line, unless its id already has a terminal line or belongs to
   another child) and every tool is denied; the delegation checks above still
   apply.
-- `.git`, `.ssh`, `.env*` (except templates), keys, and credential files are
-  refused.
+- `.git`, `.ssh`, `.env*` (except templates), keys, credential files and the
+  other [protected names](#protected-names) are refused.
 - The child's `grep` is a scoped wrapper around the Host grep that drops
   matches in protected or outside files.
 - After a result is recorded, every further tool call is refused.
@@ -536,6 +546,89 @@ Limits of this iteration:
   hash check still applies.
 - `glob` can still list the names, but not the contents, of protected files.
 - Grep results over 250 matches do not get the saved full-result file.
+
+### Protected names
+
+One check, `protectedSegment` in `src/planner.js`, decides which paths are
+protected for every reader: the `read`, `grep` and `glob` paths of advisor
+children and verifiers, the files whose `grep` matches are dropped, and the
+evidence references of advice claims and verification records. The child's
+model provider receives what it reads, so these names are kept from it.
+
+The list is best-effort, not a guarantee: it goes by names only, so a secret
+stored under an ordinary name, such as `config/settings.json`, stays readable,
+and briefings must still never contain secrets. Names are compared without
+regard to case.
+
+- Folders, whatever the file inside: `.git`, `.ssh`, `.gnupg`, `.aws`,
+  `.azure`, `.kube`, `.docker`, `.config` and `.secrets`.
+- The folders `secrets` and `credentials`, except their files with a source,
+  documentation or asset extension (listed below): `k8s/secrets/db.yaml` and
+  `config/credentials/production.yml.enc` are protected,
+  `src/credentials/vault-resolver.ts` is not. The rule goes by the folder name
+  alone, so an ordinary package folder named `credentials` or `secrets`, as in a
+  monorepo, is refused too: its `package.json` and locale files cannot be read,
+  and a verifier whose working directory lies inside it is stopped. Rename the
+  folder or work from another directory if that is in the way.
+- A file in a source, documentation or asset extension stays readable even when
+  its name suggests a secret: `passwords.md`, `secrets/dump.sql` and
+  `secrets/config.js` are readable. Only the names above and the extension list
+  decide; nothing looks inside a file.
+- Other folders count only by these exact names. A folder whose name merely
+  contains a secret word, such as `src/secrets-manager/`, `src/token-service/`
+  or `app/reset-password/`, is ordinary, and its files are judged by their own
+  names. An existing folder given as a `grep` or `glob` path is judged the
+  same way; a path that does not exist, and every evidence reference, is
+  judged as a file name.
+- dotenv and direnv files: `.env` and `.env.*` except the templates
+  `.env.example`, `.env.sample`, `.env.template` and `.env.dist`; `*.env`
+  (`prod.env`); `.envrc` and `.envrc.*`.
+- Keys and key stores: `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`,
+  `*.keystore`, `*.kdbx`, `*.ppk`, `*.asc`, `*.gpg`, and SSH keys named
+  `id_rsa`, `id_dsa`, `id_ecdsa` or `id_ed25519`, alone or followed by `.`,
+  `_` or `-` and more (`id_rsa.pub`, `id_ed25519_sk`, `id_rsa_work`).
+- Credential dotfiles: `.npmrc`, `.netrc`, `.pypirc`, `.pgpass`,
+  `.git-credentials` and `.htpasswd`.
+- `credentials` and `secret` or `secrets`, alone or with extensions
+  (`credentials.json`, `secrets.yaml`, `secret.js`).
+- Terraform: state `*.tfstate` and `*.tfstate.*` (`terraform.tfstate.backup`,
+  `.terraform.tfstate.lock.info`), and variables `*.tfvars` and
+  `*.tfvars.json` (`terraform.tfvars`, `prod.auto.tfvars`). The template
+  `terraform.tfvars.example` is not protected.
+- Secret words in a file name. The words are `credential` or `credentials`,
+  `secret` or `secrets`, `password` or `passwords`, `private key` and
+  `api key` (singular or plural, written together or with `-`, `_` or `.`,
+  as in `private_key` or `apikey`), and `token`. A word counts only when the
+  start or end of the name, `.`, `_`, `-` or a digit bounds it, so
+  `secretary.js`, `tokenizer.js`, `credentialing-docs.md`, `passwordless.json`
+  and the plural `tokens.json` contain none.
+  - A name whose last extension is not a source, documentation or asset
+    extension is protected when a secret word other than `token` stands
+    anywhere in it (`aws-credentials.json`, `client_secret_123.json`,
+    `my_secrets.yaml`, `db-password.txt`, `private-key.json`), or when a
+    secret word or `token` is its last word, followed only by digits, `_` or
+    `-` before the next dot or the end (`github-token.txt`, `token.json`,
+    `refresh_token_2.json`, `bot.token`). `token` counts only as the last word
+    because names like `token-bucket.json` and `token-list.json` are ordinary.
+  - A name without an extension is protected when a secret word or `token`
+    is its last word (`access_token`, `GITHUB_TOKEN`, `.vault-token`,
+    `aws-credentials`).
+  - A source, documentation or asset extension keeps the name readable:
+    code, prose and images about secrets (`src/token-bucket.js`,
+    `src/secret-scanner.ts`, `src/aws-credentials.ts`,
+    `docs/rotating-secrets.md`, a `…_password_policy.sql` migration). The
+    extensions are `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`,
+    `.tsx`, `.vue`, `.svelte`, `.astro`, `.map`, `.py`, `.pyi`, `.pyc`,
+    `.pyx`, `.pxd`, `.rb`, `.go`, `.rs`, `.java`, `.kt`, `.kts`, `.scala`,
+    `.groovy`, `.swift`, `.m`, `.mm`, `.dart`, `.lua`, `.php`, `.pl`, `.pm`,
+    `.c`, `.h`, `.cc`, `.cpp`, `.cxx`, `.hpp`, `.hh`, `.cs`, `.fs`, `.ex`,
+    `.exs`, `.erl`, `.hrl`, `.clj`, `.cljs`, `.elm`, `.hs`, `.ml`, `.r`,
+    `.jl`, `.zig`, `.sol`, `.sql`, `.css`, `.scss`, `.sass`, `.less`, `.html`,
+    `.htm`, `.proto`, `.graphql`, `.gql`, `.md`, `.mdx`, `.markdown`, `.rst`,
+    `.adoc`, `.png`, `.jpg`, `.jpeg`, `.gif`, `.svg`, `.webp` and `.ico`.
+    Shell scripts, `.txt`, and data and configuration formats such as `.json`,
+    `.yaml` or `.ini` are not on the list. The exact names above (`secrets.js`,
+    `credentials.ts`) stay protected whatever their extension.
 
 ## Evidence verification
 
@@ -630,8 +723,8 @@ The verifier boundary is default-deny:
   argument: the Host writes its one record.
 - `read`, `grep`, and `glob` are confined exactly like advisor children: paths
   stay inside the lead's workspace after symlinks are resolved and may not
-  contain `..`, protected files are refused, and `grep` drops matches in
-  protected or outside files.
+  contain `..`, [protected names](#protected-names) are refused, and `grep`
+  drops matches in protected or outside files.
 - The data directory is denied to `read`, `grep`, and `glob`, also when the
   workspace contains it, such as a home-directory workspace with the default
   `<DSH home>/advisor`. A path is denied when its real path is the folder or

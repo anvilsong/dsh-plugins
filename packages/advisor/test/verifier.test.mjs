@@ -461,6 +461,31 @@ test('confinement: protected files are denied, including through symlinks; env t
   h.dispose()
 })
 
+test('confinement: the verifier shares the secret-name rules for read and grep paths, grep results and report evidence', async () => {
+  const h = harness()
+  const c = h.startChild()
+  const secret = ['aws-credentials.json', 'client_secret_123.json', '.envrc', 'terraform.tfstate.backup', 'github-token.txt', 'k8s/secrets/db.yaml', '.htpasswd', 'prod.env']
+  const ordinary = ['secretary.js', 'tokenizer.js', 'src/token-bucket.js', 'src/secrets-manager/index.js', 'credentialing-docs.md', 'tokens.json']
+  for (const file of secret) {
+    assert.match(h.run(c, 'read', { file_path: file }), /^file_path reaches a protected file or directory/, file)
+    assert.match(h.run(c, 'grep', { pattern: 'x', path: file }), /^path reaches a protected file or directory/, file)
+    assert.match(h.run(c, 'glob', { pattern: '*', path: file }), /^path reaches a protected file or directory/, file)
+  }
+  for (const file of ordinary) assert.equal(h.run(c, 'read', { file_path: file }), undefined, file)
+  h.state.grepMatches = [...secret, ...ordinary].map((file, index) => ({ path: file, lineNumber: index + 1, line: 'FAKE_SECRET' }))
+  const args = { pattern: 'FAKE' }
+  const value = await c.registered.get('grep').execute(args, { name: 'grep', arguments: args, agent: c.agent })
+  assert.deepEqual(value.matches.map((match) => match.path), ordinary)
+  const entry = (evidence) => ({ entries: [{ ref: '1', status: 'confirmed', reply_line: 3, evidence }] })
+  for (const file of secret) {
+    const result = validateVerifierReport(entry([`${file}:1`]), { kind: 'advice', expected: 1 })
+    assert.equal(result.ok, false, file)
+    assert.match(result.issues.join('\n'), /^entries\.0\.evidence\.0: path reaches a protected file/m, file)
+  }
+  assert.equal(validateVerifierReport(entry(ordinary.map((file) => `${file}:1`).slice(0, 5)), { kind: 'advice', expected: 1 }).ok, true)
+  h.dispose()
+})
+
 test('confinement: glob and grep paths, glob patterns and grep includes cannot leave the workspace or reach .git', () => {
   const h = harness({ ledger: FIXED_LEDGER })
   const c = h.startChild()

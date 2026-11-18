@@ -684,6 +684,44 @@ test('validatePlan: rejects absolute, home, parent, .git (any case), glob, contr
   }
 })
 
+test('validatePlan: write scopes refuse C1 controls, separators, format characters and unpaired surrogates, so a look-alike cannot dodge the overlap check', () => {
+  const UNSAFE = 'must not contain control, format or line separator characters, or unpaired surrogates'
+  const scoped = (id, scopes, blockedBy = []) => task(id, { write_scopes: scopes, blocked_by: blockedBy })
+  const unsafe = [
+    ['C1 NEL', '\u0085'], ['C1 CSI', '\u009b'], ['line separator', '\u2028'], ['paragraph separator', '\u2029'], ['RLO', '\u202e'], ['LRI', '\u2066'],
+    ['ALM', '\u061c'], ['ZWSP', '\u200b'], ['ZWJ', '\u200d'], ['word joiner', '\u2060'], ['inner BOM', '\ufeff'], ['soft hyphen', '\u00ad'],
+    ['tag', '\u{E0041}'], ['lone high surrogate', '\ud800'], ['lone low surrogate', '\udc00'],
+  ]
+  for (const [label, char] of unsafe) {
+    // Unordered next to src/a.js, the look-alike is refused for its character instead of passing as another path.
+    assert.deepEqual(validatePlan(plan([scoped('T1', ['src/a.js']), scoped('T2', [`src/a${char}.js`])])), { ok: false, issues: [`tasks.1.write_scopes.0: ${UNSAFE}`] }, label)
+    assert.equal(issues(plan([scoped('T1', [`src/${char}lib`, 'docs'])])), `tasks.0.write_scopes.0: ${UNSAFE}`, label)
+    // Evidence references keep their own grammar and messages.
+    const expected = char === '\u2028' || char === '\u2029'
+      ? ['must be a workspace-relative path with optional :line or :start-end']
+      : [`path ${UNSAFE}`]
+    assert.deepEqual(evidenceReferenceIssues(`src/a${char}.js:1`), expected, label)
+  }
+  // Input refused for another reason keeps that reason's message.
+  for (const [scope, message] of [
+    ['a\u0000b', 'must not contain control characters'], ['a\u0085\u0007b', 'must not contain control characters'], ['a\u007fb', 'must not contain control characters'],
+    ['\ufeffsrc/a.js', 'must be a non-empty path without surrounding whitespace'], ['src/a.js\u2028', 'must be a non-empty path without surrounding whitespace'],
+    ['/a\u200b.js', 'must be workspace-relative'], ['~\u200b/x', 'must not start with ~'], ['src/*\u200b.js', 'must be a path prefix, not a glob'],
+    ['../a\u202e.js', 'must not contain ..'], ['.git/\u200bx', 'must not touch .git'],
+  ]) {
+    assert.equal(issues(plan([scoped('T1', [scope])])), `tasks.0.write_scopes.0: ${message}`, JSON.stringify(scope))
+  }
+  // Ordinary non-ASCII names stay valid, and the overlap rule still applies to them and to ASCII paths.
+  for (const scope of ['src/\u6587\u6863/readme.md', 'src/caf\u00e9.js', 'src/cafe\u0301.js', 'src/\u{1F642}.js', 'docs/\u00e9t\u00e9/\u6f22\u5b57.md', 'src/a\u00a0b.js']) {
+    assert.equal(validatePlan(plan([scoped('T1', [scope])])).ok, true, scope)
+  }
+  assert.match(issues(plan([scoped('T1', ['src/\u6587\u6863']), scoped('T2', ['src/\u6587\u6863/readme.md'])])), /tasks T1 and T2 both change src\/\u6587\u6863; order them with blocked_by/)
+  assert.equal(validatePlan(plan([scoped('T1', ['src/\u6587\u6863']), scoped('T2', ['src/\u6587\u6863/readme.md'], ['T1'])])).ok, true)
+  assert.match(issues(plan([scoped('T1', ['src/a.js']), scoped('T2', ['./src//a.js'])])), /tasks T1 and T2 both change src\/a\.js; order them with blocked_by/)
+  assert.equal(validatePlan(plan([scoped('T1', ['src/a.js']), scoped('T2', ['src/a.js'], ['T1'])])).ok, true)
+  assert.equal(validatePlan(plan([scoped('T1', ['src/a.js']), scoped('T2', ['src/b.js'])])).ok, true)
+})
+
 test('validatePlan: verify must be a single line under every line terminator', () => {
   for (const verify of ['npm test\nrm -rf /', 'npm test\r\nx', 'npm test\rx', 'npm test\u2028rm -rf ~', 'npm test\u2029x', 'npm test\u0085x', 'npm test\u000bx', 'npm test\u000cx']) {
     assert.match(issues(plan([task('T1', { acceptance: [{ criterion: 'c', verify }] })])), /tasks\.0\.acceptance\.0\.verify: must be a single line/, JSON.stringify(verify))
@@ -1087,6 +1125,116 @@ test('paths: protected files and directories are denied; env templates are not',
   }
   assert.equal(protectedSegment('src/.git/hooks/x'), '.git')
   assert.equal(protectedSegment('.env.example'), undefined)
+})
+
+// The best-effort secret-name rules (README: protected names). Each protected
+// name is denied to read and as a grep path, dropped from grep results and
+// refused as evidence; each ordinary name passes all four.
+const SECRET_NAMES = [
+  // A secret word as a delimited word, in a name without a source or documentation extension.
+  'aws-credentials.json', 'config/credential.yaml', 'client_secret_123.json', 'client_secret_1234567890-abc123def.apps.googleusercontent.com.json',
+  'my_secrets.yaml', 'MY_SECRETS.YAML', 'deploy/prod-secrets.yml', 'secret-2.txt', 'private_key.pem', 'private-key.json', 'privatekey.txt',
+  'api_key.txt', 'apikey.json', 'db-password.txt', 'passwords.csv', 'aws-credentials.json.example',
+  // token only as the last word; any secret word as the last word of a name without an extension.
+  'github-token.txt', 'token.json', 'bot.token', 'refresh_token_2.json', 'access_token', 'GITHUB_TOKEN', '.vault-token', 'aws-credentials', 'client_secret',
+  // dotenv and direnv files, terraform state and variables, credential dotfiles and SSH keys.
+  '.envrc', '.envrc.local', 'prod.env', 'config/app.env',
+  'terraform.tfstate', 'terraform.tfstate.backup', '.terraform.tfstate.lock.info', 'envs/prod/terraform.tfstate.d', 'terraform.tfvars', 'prod.auto.tfvars', 'terraform.tfvars.json',
+  '.htpasswd', '.npmrc', '.pypirc', '.netrc', 'id_rsa', 'id_ed25519_sk', 'id_ecdsa_sk.pub', 'id_rsa_github',
+  // Folders protected by their exact name: secrets/ and credentials/ except their source, documentation and asset files ...
+  'k8s/secrets/db.yaml', 'secrets/notes.txt', 'secrets/db-config', 'config/credentials/production.yml.enc', 'Credentials/aws.ini',
+  // ... and the other folders whatever the file.
+  '.ssh/.env.example', '.aws/.envrc.example', 'src/id_rsa_parser.pub', '.secrets/token', '.secrets/app.js', '.aws/config', 'home/.ssh/config', '.gnupg/pubring.kbx', '.kube/config', '.docker/config.json', '.ssh/README.md',
+]
+const ORDINARY_NAMES = [
+  // The letters inside another word.
+  'secretary.js', 'secretariat.yaml', 'tokenizer.js', 'tokenomics.json', 'credentialing-docs.md', 'credentialed.txt', 'passwordless.json',
+  'README.md', 'src/environment.js', 'docs/pem-format.md', 'gitconfig.md',
+  // A source or documentation extension: code and docs about secrets stay readable.
+  'src/token-bucket.js', 'src/secret-scanner.ts', 'src/aws-credentials.ts', 'lib/password-reset.py', 'src/lexer/token.go', 'src/api-key-auth.js', 'docs/rotating-secrets.md',
+  'db/migrations/20200619000000_password_policy.sql', 'build/call-credentials.js.map', 'img/password-meter.png', '__pycache__/api_key.cpython-312.pyc',
+  'src/credentials/vault-resolver.ts', 'k8s/secrets/README.md', 'secrets/app.js',
+  // token that is not the last word, and the plural tokens.
+  'data/token-bucket.json', 'tokens.json', 'design/tokens/colors.json',
+  // Folder names count only when they are exactly a protected folder name.
+  'src/secrets-manager/index.js', 'src/secrets-manager', 'src/token-service', 'packages/credential-providers/src/index.ts', 'pkg/secret/store.go',
+  // Templates and near misses.
+  '.env.example', '.env.sample', '.env.template', '.env.dist', '.envrc.example', '.envrc.sample', 'secrets/.env.example', 'config/credentials/.env.template', 'src/id_rsa_parser.go', 'src/id_rsa_test.go', 'envrc.md', 'infra/variables.tf', 'terraform.tfvars.example', 'src/id_utils.js',
+  'src/\u6587\u6863/readme.md', 'src/caf\u00e9.js',
+]
+
+test('protectedSegment: secret words, dotenv, terraform and credential dotfile names are protected for every reader; ordinary source is not', () => {
+  assert.ok(SECRET_NAMES.length >= 25 && ORDINARY_NAMES.length >= 15)
+  for (const name of SECRET_NAMES) {
+    const hit = protectedSegment(name)
+    assert.notEqual(hit, undefined, name)
+    assert.equal(deny('read', { file_path: name }), `file_path reaches a protected file or directory (${hit}).`, name)
+    assert.equal(deny('grep', { pattern: 'x', path: name }), `path reaches a protected file or directory (${hit}).`, name)
+    assert.equal(plannerPathAllowed(name, WS), false, name)
+    assert.deepEqual(evidenceReferenceIssues(`${name}:1`), [`path reaches a protected file (${hit})`], name)
+  }
+  for (const name of ORDINARY_NAMES) {
+    assert.equal(protectedSegment(name), undefined, name)
+    assert.equal(deny('read', { file_path: name }), undefined, name)
+    assert.equal(deny('grep', { pattern: 'x', path: name }), undefined, name)
+    assert.equal(plannerPathAllowed(name, WS), true, name)
+    assert.deepEqual(evidenceReferenceIssues(`${name}:1`), [], name)
+  }
+  // The protected folder or the file itself is what the message names.
+  assert.equal(protectedSegment('k8s/secrets/db.yaml'), 'secrets')
+  assert.equal(protectedSegment('config/credentials/production.yml.enc'), 'credentials')
+  assert.equal(protectedSegment('deploy/aws-credentials.json'), 'aws-credentials.json')
+  assert.equal(protectedSegment('infra/terraform.tfstate.backup'), 'terraform.tfstate.backup')
+})
+
+test('protectedSegment: an existing folder is judged by exact folder names only, so reset-password/ stays searchable while a file of that name does not', () => {
+  // A separate workspace, so the shared fixtures and their ripgrep checks stay unchanged.
+  const root = path.join(TMP, 'folders-ws')
+  for (const dir of ['app/reset-password', 'src/app/change-admin-api-key', 'vendor/hcl/token', 'aws-credentials', 'k8s/secrets', 'config/credentials/prod', 'app/.secrets/x']) {
+    mkdirSync(path.join(root, dir), { recursive: true })
+  }
+  put(path.join(root, 'app/reset-password/page.tsx'), 'x\n')
+  put(path.join(root, 'keys/aws-credentials'), 'FAKE_SECRET_BARE\n') // a file with the same last word
+  symlinkSync(path.join(root, 'app/reset-password'), path.join(root, 'pw-link'))
+  const guard = (name, value) => plannerPathDenial({ name, arguments: name === 'read' ? { file_path: value } : { pattern: 'x', path: value } }, root, root)
+  for (const dir of ['app/reset-password', 'src/app/change-admin-api-key', 'vendor/hcl/token', 'aws-credentials', 'pw-link']) {
+    assert.equal(guard('grep', dir), undefined, dir)
+    assert.equal(guard('glob', dir), undefined, dir)
+    assert.equal(plannerPathAllowed(dir, root), true, dir)
+    // As a lexical name (an evidence reference, a missing path) the real folder name is protected.
+    const real = path.relative(root, realpathSync(path.join(root, dir)))
+    assert.equal(protectedSegment(real), path.basename(real), dir)
+  }
+  assert.equal(guard('read', 'app/reset-password/page.tsx'), undefined)
+  // Files, missing paths and exact folder names keep every rule.
+  for (const [value, hit] of [
+    ['keys/aws-credentials', 'aws-credentials'], ['app/forgot-password', 'forgot-password'], ['k8s/secrets', 'secrets'],
+    ['config/credentials/prod', 'credentials'], ['app/.secrets/x', '.secrets'], ['app/.secrets', '.secrets'],
+  ]) {
+    assert.equal(guard('grep', value), `path reaches a protected file or directory (${hit}).`, value)
+    assert.equal(plannerPathAllowed(value, root), false, value)
+  }
+  assert.equal(guard('read', 'keys/aws-credentials'), 'file_path reaches a protected file or directory (aws-credentials).')
+  assert.equal(protectedSegment('app/reset-password', true), undefined)
+  assert.equal(protectedSegment('app/.env', true), '.env', 'the older file-name patterns still apply to a folder')
+  assert.equal(protectedSegment('config/credentials/prod', true), 'credentials')
+})
+
+test('text: the README lists the protected names as best-effort and the write-scope character rule', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+  const section = readme.slice(readme.indexOf('### Protected names'), readme.indexOf('## Evidence verification'))
+  assert.ok(section.length > 0 && section.startsWith('### Protected names'))
+  assert.match(section, /The list is best-effort, not a guarantee/)
+  for (const name of ['.envrc', '.htpasswd', '`*.tfstate.*`', '`*.tfvars.json`', '`.secrets`', '`secrets` and `credentials`', '`token`', 'secretary.js', 'tokenizer.js', 'src/token-bucket.js', 'src/secrets-manager/', 'id_ed25519_sk']) {
+    assert.ok(section.includes(name), name)
+  }
+  // Every exempt extension in the code is listed, and nothing else.
+  const source = readFileSync(new URL('../src/planner.js', import.meta.url), 'utf8')
+  const code = [...source.slice(source.indexOf('const SOURCE_EXTENSIONS'), source.indexOf('])', source.indexOf('const SOURCE_EXTENSIONS'))).matchAll(/'([a-z]+)'/g)].map((match) => match[1])
+  const listed = section.slice(section.indexOf('The\n    extensions are'), section.indexOf('Shell scripts'))
+  assert.deepEqual([...listed.matchAll(/`\.([a-z]+)`/g)].map((match) => match[1]), code)
+  assert.match(readme, /Scopes contain no control, format or line separator characters and no\n {2}unpaired surrogates/)
+  assert.match(readme, /`\.git`, `\.ssh`, `\.env\*` \(except templates\), keys, credential files and the\n {2}other \[protected names\]\(#protected-names\) are refused\./)
 })
 
 test('paths: glob patterns and grep includes cannot name parents, absolute or home paths, or .git', () => {
