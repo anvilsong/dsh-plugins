@@ -573,20 +573,26 @@ regard to case.
 - A file in a source, documentation or asset extension stays readable even when
   its name suggests a secret: `passwords.md`, `secrets/dump.sql` and
   `secrets/config.js` are readable. Only the names above and the extension list
-  decide; nothing looks inside a file.
+  decide; nothing looks inside a file. The dotenv templates below are readable
+  inside these folders as well (`secrets/.env.example`); inside the other
+  folders listed first, nothing is.
 - Other folders count only by these exact names. A folder whose name merely
   contains a secret word, such as `src/secrets-manager/`, `src/token-service/`
   or `app/reset-password/`, is ordinary, and its files are judged by their own
   names. An existing folder given as a `grep` or `glob` path is judged the
   same way; a path that does not exist, and every evidence reference, is
-  judged as a file name.
-- dotenv and direnv files: `.env` and `.env.*` except the templates
-  `.env.example`, `.env.sample`, `.env.template` and `.env.dist`; `*.env`
-  (`prod.env`); `.envrc` and `.envrc.*`.
+  judged as a file name. The file rules below also apply to a folder's own
+  name when it is given as a path, so a `grep` path `secret/` or `id_rsa_keys/`
+  is refused even though the files inside `secret/` are judged by their own
+  names.
+- dotenv and direnv files: `.env` and `.env.*` and `.envrc` and `.envrc.*`,
+  except the templates `.env.example`, `.env.sample`, `.env.template` and
+  `.env.dist` and the same four endings after `.envrc`; `*.env` (`prod.env`).
 - Keys and key stores: `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`,
   `*.keystore`, `*.kdbx`, `*.ppk`, `*.asc`, `*.gpg`, and SSH keys named
   `id_rsa`, `id_dsa`, `id_ecdsa` or `id_ed25519`, alone or followed by `.`,
-  `_` or `-` and more (`id_rsa.pub`, `id_ed25519_sk`, `id_rsa_work`).
+  `_` or `-` and more (`id_rsa.pub`, `id_ed25519_sk`, `id_rsa_work`), unless
+  the name ends in a source extension (`id_rsa_parser.go` is code).
 - Credential dotfiles: `.npmrc`, `.netrc`, `.pypirc`, `.pgpass`,
   `.git-credentials` and `.htpasswd`.
 - `credentials` and `secret` or `secrets`, alone or with extensions
