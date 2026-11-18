@@ -96,26 +96,30 @@ column below 720 px of content width.
 
 ## Install
 
+The package is not published on npm yet, so install it from a source checkout
+by its folder path.
+
 ### Desktop app
 
 1. Open **Settings → Plugins → Add plugin**.
-2. Choose **Install a third-party plugin**.
-3. Enter `dsh-plugin-sessions` and install it.
-4. Enable the plugin, **restart the Host**, then **refresh the page**.
+2. Choose the option that installs a local folder and select
+   `packages/sessions` of this repository.
+3. Enable the plugin, **restart the Host**, then **refresh the page**.
+
+If the dialog only accepts a package name, use the command line below on the
+profile the app uses.
 
 ### Web or another CLI profile
 
 ```sh
-dsh plugin --profile web add dsh-plugin-sessions@latest
+dsh plugin --profile web add "$PWD/packages/sessions"
 ```
 
 Replace `web` with your profile name when needed. Restart `dsh web` and refresh
-the page after installation. To try a source checkout, use
-`dsh plugin --profile web add "$PWD/packages/sessions"`.
+the page after installation.
 
-Registry installation requires the package to be published on npm. A change to
-a Host file (`src/index.host.js`, `service.js`, `trash.js`, …) needs a Host
-restart; a change to `src/client.js` needs only a page refresh.
+A change to a Host file (`src/index.host.js`, `service.js`, `trash.js`, …)
+needs a Host restart; a change to `src/client.js` needs only a page refresh.
 
 The bundle patch inserts one row, `sessions-manager`, with the defaults below.
 The plugin declares no Settings form, so to change an option, override the row
@@ -251,7 +255,10 @@ session; that tree's registry steps wait), `registry-step-failed`,
   is about 4 GiB. **High** only says that the store's on-disk size reached
   `indexWarnBytes`. It does not read or measure the search index. A single
   stored session with an event type this build does not know can make every
-  search fail; the page does not look for it.
+  search fail (`session history storage is unavailable`); the page does not
+  look for it and cannot fix it. Move that session's folder out of the store by
+  hand; it is usually a session that belongs to no workspace and is not
+  archived, which v1 does not prune.
 - **Prune is available only on macOS.** It needs the session lock probe:
   `session.lock` is the target of the backend's kernel lock, an empty file that
   exists for every session ever written, so only an open with `O_EXLOCK |
