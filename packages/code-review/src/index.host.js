@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 
@@ -820,7 +820,9 @@ export async function apply(ctx) {
           return { kind: 'error', text: 'No reviewable files were found. Sensitive, generated, binary, and over-budget files are skipped.' }
         }
         const steer = steerMessage(scope, pin, guidance)
+        // The host stores the message in the session log under this id; without one the log is corrupted.
         agent.followup({
+          id: randomUUID(),
           source: { kind: 'user' },
           role: 'user',
           content: [{ type: 'text', text: steer }],

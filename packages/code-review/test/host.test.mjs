@@ -1735,3 +1735,22 @@ test('a queued task too large to relay is named in the command reply; a normal o
     await cleanup(cwd)
   }
 })
+
+test('the queued follow-up message carries a non-empty string id, a fresh one for every run', async () => {
+  const cwd = await temp()
+  try {
+    await writeFile(path.join(cwd, 'a.patch'), 'diff --git a/src/a.js b/src/a.js\n--- /dev/null\n+++ b/src/a.js\n@@ -0,0 +1 @@\n+const a = 1\n')
+    const ids = []
+    for (let run = 0; run < 3; run += 1) {
+      const { h } = await review(cwd, 'a.patch', { git: false })
+      const { id } = h.steered()
+      assert.equal(typeof id, 'string', 'the id is a string')
+      assert.ok(id.length > 0, 'the id is not empty')
+      assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, 'a random UUID')
+      ids.push(id)
+    }
+    assert.equal(new Set(ids).size, ids.length, 'no two runs share an id')
+  } finally {
+    await cleanup(cwd)
+  }
+})
