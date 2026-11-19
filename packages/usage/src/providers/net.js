@@ -18,6 +18,19 @@ export function num(value) {
   return null
 }
 
+/**
+ * Epoch milliseconds → ISO string, or null when the value is not a usable
+ * reset time: not a number (numeric strings are accepted like `num`), NaN,
+ * negative, or outside the range `Date` can represent (new Date(1e20)
+ * .toISOString() throws RangeError, which must not fail the whole provider).
+ */
+export function epochMsToIso(value) {
+  const ms = num(value)
+  if (ms === null || ms < 0) return null
+  const date = new Date(ms)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
 export function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

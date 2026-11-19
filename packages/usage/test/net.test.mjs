@@ -505,9 +505,9 @@ test('mountSurfaces: a command register that throws is logged once and the servi
   }
 })
 
-// --- known drift: desired behaviour, failing today ---
+// --- drift guards ---
 
-test('Codex reset_at 1e20 should give resetAt null with status ready', { todo: "today: status 'error', error 'unexpected', detail 'Invalid time value'" }, async () => {
+test('Codex reset_at 1e20 gives resetAt null with status ready', async () => {
   const body = { plan_type: 'plus', rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 18000, reset_at: 1e20 } } }
   await withFetch(() => json(body), async () => {
     let api

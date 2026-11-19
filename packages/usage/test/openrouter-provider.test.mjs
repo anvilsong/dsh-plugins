@@ -418,11 +418,63 @@ test('OpenRouter catch-all: the poll tick of a refresh that throws is not an unh
   }
 })
 
-// --- known drift: desired behaviour, failing today ---
+// --- drift guards ---
 
-test('OpenRouter renamed /key fields should become bad-response', { todo: 'today: status ready, every figure null (usage, limit, remaining), label null' }, async () => {
+test('OpenRouter renamed /key fields become bad-response', async () => {
   const renamed = { data: { name: 'k', spent: 12.5, cap: 50, cap_remaining: 37.5 } }
   await run({ handler: () => json(renamed) }, async (h) => {
+    const state = await h.api.refresh()
+    assert.equal(state.status, 'error')
+    assert.equal(state.error, 'bad-response')
+    assert.equal(typeof state.attemptedAt, 'number')
+    assert.equal(state.fetchedAt, null)
+  })
+})
+
+test('OpenRouter: a free key (usage 0, limit null) stays ready', async () => {
+  const free = { data: { label: 'free', usage: 0, limit: null, limit_remaining: null, is_free_tier: true } }
+  await run({ handler: () => json(free) }, async (h) => {
+    const state = await h.api.refresh()
+    assert.equal(state.status, 'ready')
+    assert.equal(state.data.usage, 0)
+    assert.equal(state.data.limit, null)
+  })
+})
+
+test('OpenRouter: any one numeric figure is enough to stay ready (usage, limit or limit_remaining)', async () => {
+  for (const data of [{ usage: 3 }, { limit: 10 }, { limit_remaining: 4 }]) {
+    await run({ handler: () => json({ data }) }, async (h) => {
+      const state = await h.api.refresh()
+      assert.equal(state.status, 'ready', JSON.stringify(data))
+    })
+  }
+})
+
+test('OpenRouter: string figures are not numbers, so a reply made only of them is bad-response', async () => {
+  await run({ handler: () => json({ data: { label: 'k', usage: '12.5', limit: '50', limit_remaining: '37.5' } }) }, async (h) => {
+    const state = await h.api.refresh()
+    assert.equal(state.status, 'error')
+    assert.equal(state.error, 'bad-response')
+  })
+})
+
+test('OpenRouter: a bad-response after a good reply keeps the data and sets attemptedAt', async () => {
+  let n = 0
+  const replies = [KEY_REPLY, { data: { name: 'k' } }]
+  await run({ handler: () => json(replies[n++]) }, async (h) => {
+    const good = await h.api.refresh()
+    assert.equal(good.status, 'ready')
+    const bad = await h.api.refresh()
+    assert.equal(bad.status, 'error')
+    assert.equal(bad.error, 'bad-response')
+    assert.equal(bad.fetchedAt, good.fetchedAt)
+    assert.equal(typeof bad.attemptedAt, 'number')
+    assert.deepEqual(bad.data, good.data)
+  })
+})
+
+test('OpenRouter endpoint credits: a reply with no numeric total_credits or total_usage is bad-response', async () => {
+  await run({ config: { endpoint: 'credits', showAccount: true }, handler: () => json({ data: { credits: 40, used: 10 } }) }, async (h) => {
     const state = await h.api.refresh()
     assert.equal(state.status, 'error')
     assert.equal(state.error, 'bad-response')

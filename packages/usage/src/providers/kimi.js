@@ -374,6 +374,19 @@ export function mountKimi(ctx, config = {}) {
       return cache.state
     }
 
+    const data = fromUsages(reply.body)
+    // A reply with no parseable quota, request counter or wallet is drift
+    // (renamed or missing `usages`), not an empty-but-ready account.
+    if (!Object.values(data.quotas).some(Boolean) && data.extra === null && data.requests === null) {
+      publish({
+        status: 'error',
+        error: 'bad-response',
+        detail: 'Reply carried no parseable quota, request counter or wallet.',
+        attemptedAt: Date.now(),
+      })
+      return cache.state
+    }
+
     const now = Date.now()
     publish({
       status: 'ready',
@@ -381,7 +394,7 @@ export function mountKimi(ctx, config = {}) {
       detail: null,
       fetchedAt: now,
       attemptedAt: now,
-      data: fromUsages(reply.body),
+      data,
     })
     return cache.state
   }

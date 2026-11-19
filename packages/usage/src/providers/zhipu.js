@@ -13,7 +13,7 @@
  * window. nextResetTime is epoch ms. `percentage` is the used percent.
  */
 
-import { fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
+import { epochMsToIso, fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
 
 const DEFAULT_CREDENTIAL_REF = 'ZHIPU_API_KEY'
 const BASE_URL_CN = 'https://open.bigmodel.cn'
@@ -55,8 +55,7 @@ function usedRatio(item) {
 }
 
 function resetIso(item) {
-  const ms = num(item.nextResetTime)
-  return ms !== null ? new Date(ms).toISOString() : null
+  return epochMsToIso(item.nextResetTime)
 }
 
 export function mountZhipu(ctx, config = {}) {

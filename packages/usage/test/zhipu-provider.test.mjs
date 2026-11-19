@@ -188,14 +188,43 @@ test('GLM report prints each window and the tool-call details (no footer asserte
   })
 })
 
-// Known drift: a reset time outside the Date range makes new Date(ms).toISOString() throw.
+// A reset time that is not a usable epoch gives resetAt null; it never throws
+// 'Invalid time value' (new Date(1e20).toISOString()) and never fails the provider.
 
-test('GLM nextResetTime 1e20 should give resetAt null with status ready', { todo: "today: status 'error', error 'unexpected', detail 'Invalid time value'" }, async () => {
-  const body = { success: true, data: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, percentage: 25, usage: 100, remaining: 75, nextResetTime: 1e20 }] } }
+const limitWith = (nextResetTime, extra = {}) => ({ success: true, data: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, percentage: 25, usage: 100, remaining: 75, nextResetTime, ...extra }] } })
+
+test('GLM nextResetTime 1e20 gives resetAt null with status ready', async () => {
+  await run({ handler: () => json(limitWith(1e20)) }, async (h) => {
+    const state = await h.api.refresh()
+    assert.equal(state.status, 'ready')
+    assert.equal(state.error, null)
+    assert.equal(state.data.windows[0].resetAt, null)
+    assert.equal(state.data.windows[0].usedRatio, 0.25)
+  })
+})
+
+test('GLM: negative, NaN-like and non-numeric reset times give resetAt null, valid ones still work', async () => {
+  const cases = [[-1, null], [-1797339952000, null], ['not a number', null], [null, null], [Number.MAX_VALUE, null], [8.64e15 + 1, null], [String(RESET_5H), new Date(RESET_5H).toISOString()], [RESET_5H, new Date(RESET_5H).toISOString()]]
+  for (const [value, expected] of cases) {
+    await run({ handler: () => json(limitWith(value)) }, async (h) => {
+      const state = await h.api.refresh()
+      assert.equal(state.status, 'ready', String(value))
+      assert.equal(state.data.windows[0].resetAt, expected, String(value))
+    })
+  }
+})
+
+test('GLM: a bad reset time on one limit does not drop the other windows or the tool-call detail', async () => {
+  const body = { success: true, data: { limits: [
+    { type: 'TOKENS_LIMIT', unit: 3, percentage: 25, usage: 100, remaining: 75, nextResetTime: 1e20 },
+    { type: 'TOKENS_LIMIT', unit: 6, percentage: 40, usage: 1000, remaining: 600, nextResetTime: RESET_7D },
+    { type: 'TIME_LIMIT', unit: 5, percentage: 10, usage: 1000, remaining: 900, nextResetTime: -5, usageDetails: [] },
+  ] } }
   await run({ handler: () => json(body) }, async (h) => {
     const state = await h.api.refresh()
     assert.equal(state.status, 'ready')
     assert.equal(state.data.windows[0].resetAt, null)
-    assert.equal(state.data.windows[0].usedRatio, 0.25)
+    assert.equal(state.data.windows[1].resetAt, new Date(RESET_7D).toISOString())
+    assert.equal(state.data.prompts.resetAt, null)
   })
 })

@@ -150,6 +150,30 @@ test('MiniMax report prints the used percent, not the remaining percent', async 
   })
 })
 
+// A reset time that is not a usable epoch gives resetAt null; it never throws
+// 'Invalid time value' and never fails the provider.
+
+test('MiniMax end_time 1e20 gives resetAt null with status ready, for both windows', async () => {
+  const body = reply({ current_interval_remaining_percent: 80, end_time: 1e20, current_weekly_status: 1, current_weekly_remaining_percent: 55, weekly_end_time: 1e20 })
+  await run({ handler: () => json(body) }, async (h) => {
+    const state = await h.api.refresh()
+    assert.equal(state.status, 'ready')
+    assert.equal(state.error, null)
+    assert.deepEqual(state.data.windows.map((w) => [w.key, w.usedRatio, w.resetAt]), [['fiveHour', 0.2, null], ['sevenDay', 0.45, null]])
+  })
+})
+
+test('MiniMax: negative, non-numeric and absent reset times give resetAt null, valid ones still work', async () => {
+  const cases = [[-1, null], ['garbage', null], [null, null], [undefined, null], [Number.MAX_VALUE, null], [String(END_5H), new Date(END_5H).toISOString()], [END_5H, new Date(END_5H).toISOString()]]
+  for (const [value, expected] of cases) {
+    await run({ handler: () => json(reply({ current_interval_remaining_percent: 80, end_time: value })) }, async (h) => {
+      const state = await h.api.refresh()
+      assert.equal(state.status, 'ready', String(value))
+      assert.equal(state.data.windows[0].resetAt, expected, String(value))
+    })
+  }
+})
+
 // Drift needing a real reply: whether the field is a 0-100 percent or a 0-1
 // fraction is unconfirmed, so no desired value is pinned beyond "not silently
 // read as 0.4 percent".

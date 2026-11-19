@@ -103,3 +103,40 @@ test('Codex usage rejects a malformed response', async () => {
     h.restore()
   }
 })
+
+function windowBody(resetAt) {
+  return { plan_type: 'plus', rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 18000, reset_at: resetAt } } }
+}
+
+test('Codex reset_at that is out of range, negative or not a number gives resetAt null with status ready', async () => {
+  for (const value of [1e20, -1, -1797339952, 'garbage', null, Number.MAX_VALUE, 8.64e12 + 1]) {
+    const h = harness(windowBody(value))
+    try {
+      mountCodex(h.ctx)
+      const state = await h.api().refresh()
+      assert.equal(state.status, 'ready', String(value))
+      assert.equal(state.error, null, String(value))
+      assert.equal(state.data.windows[0].resetAt, null, String(value))
+      assert.equal(state.data.windows[0].usedRatio, 0.1, String(value))
+      const report = await h.command().handler({})
+      assert.equal(report.kind, 'success')
+      assert.doesNotMatch(report.text, /resets /)
+    } finally {
+      h.restore()
+    }
+  }
+})
+
+test('Codex reset_at as a number or a numeric string still gives the ISO time (epoch seconds)', async () => {
+  for (const value of [1797339952, '1797339952']) {
+    const h = harness(windowBody(value))
+    try {
+      mountCodex(h.ctx)
+      const state = await h.api().refresh()
+      assert.equal(state.status, 'ready')
+      assert.equal(state.data.windows[0].resetAt, new Date(1797339952 * 1000).toISOString(), String(value))
+    } finally {
+      h.restore()
+    }
+  }
+})

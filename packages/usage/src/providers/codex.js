@@ -7,7 +7,7 @@
  * spend_control, and rate_limit_reset_credits.
  */
 
-import { fetchUsageJson, mountProvider, num, usageFooter } from './net.js'
+import { epochMsToIso, fetchUsageJson, mountProvider, num, usageFooter } from './net.js'
 
 const DEFAULT_CREDENTIAL_REF = 'llm-pi-ai/openai-codex'
 const DEFAULT_BASE = 'https://chatgpt.com/backend-api'
@@ -26,7 +26,8 @@ function parseWindow(key, value) {
     key,
     label: windowLabel(seconds),
     usedRatio: num(value.used_percent) === null ? null : num(value.used_percent) / 100,
-    resetAt: num(value.reset_at) === null ? null : new Date(num(value.reset_at) * 1000).toISOString(),
+    // reset_at is epoch SECONDS; a bad or out-of-range value gives null, not a throw.
+    resetAt: num(value.reset_at) === null ? null : epochMsToIso(num(value.reset_at) * 1000),
     windowSeconds: seconds,
   }
 }

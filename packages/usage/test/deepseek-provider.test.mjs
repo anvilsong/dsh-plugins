@@ -103,12 +103,12 @@ test('DeepSeek: is_available false is kept as isAvailable false and the report s
   })
 })
 
-test('DeepSeek: amounts that are not numbers stay null instead of becoming 0', async () => {
-  const body = { is_available: true, balance_infos: [{ currency: 'CNY', total_balance: 'n/a', granted_balance: null, topped_up_balance: '' }] }
+test('DeepSeek: granted and topped-up amounts that are not numbers stay null instead of becoming 0', async () => {
+  const body = { is_available: true, balance_infos: [{ currency: 'CNY', total_balance: '5.00', granted_balance: null, topped_up_balance: '' }] }
   await run({ handler: () => json(body) }, async (h) => {
     const state = await h.api.refresh()
     assert.equal(state.status, 'ready')
-    assert.deepEqual(state.data.balances, [{ currency: 'CNY', total: null, granted: null, toppedUp: null }])
+    assert.deepEqual(state.data.balances, [{ currency: 'CNY', total: 5, granted: null, toppedUp: null }])
   })
 })
 
@@ -152,22 +152,68 @@ test('DeepSeek: a command with no good read returns kind error with the detail',
   })
 })
 
-// Known drift: today these pass through as a ready state with invented or
-// empty values. The desired behaviour is pinned here as todo tests.
+// Drift guards: an entry with no string currency or no numeric total is
+// dropped, and a reply with no usable entry left is a bad-response.
 
-test('DeepSeek renamed fields should become bad-response', { todo: 'today: ready with every amount null and currency CNY' }, async () => {
+test('DeepSeek renamed fields become bad-response', async () => {
   const renamed = { is_available: true, balance_infos: [{ cur: 'CNY', total: '12.34', granted: '0', topped_up: '12.34' }] }
   await run({ handler: () => json(renamed) }, async (h) => {
     const state = await h.api.refresh()
     assert.equal(state.status, 'error')
     assert.equal(state.error, 'bad-response')
+    assert.equal(state.data, null)
   })
 })
 
-test('DeepSeek balance without a currency should not be invented as CNY', { todo: 'today: the currency defaults to CNY (deepseek.js:73)' }, async () => {
+test('DeepSeek balance without a currency is dropped, never invented as CNY', async () => {
   const body = { is_available: true, balance_infos: [{ total_balance: '5.00', granted_balance: '0', topped_up_balance: '5.00' }] }
   await run({ handler: () => json(body) }, async (h) => {
     const state = await h.api.refresh()
-    assert.notEqual(state.data?.balances?.[0]?.currency, 'CNY')
+    assert.equal(state.status, 'error')
+    assert.equal(state.error, 'bad-response')
+    assert.equal(state.data, null)
+  })
+})
+
+test('DeepSeek keeps the valid entries and drops the unusable ones', async () => {
+  const body = {
+    is_available: true,
+    balance_infos: [
+      { currency: 'USD', total_balance: '3.5', granted_balance: '0', topped_up_balance: '3.5' },
+      { total_balance: '9.00' },
+      { currency: 'CNY', total_balance: 'n/a' },
+      { currency: 7, total_balance: '1.00' },
+      null,
+    ],
+  }
+  await run({ handler: () => json(body) }, async (h) => {
+    const state = await h.api.refresh()
+    assert.equal(state.status, 'ready')
+    assert.deepEqual(state.data.balances, [{ currency: 'USD', total: 3.5, granted: 0, toppedUp: 3.5 }])
+  })
+})
+
+test('DeepSeek empty balance_infos and a non-numeric total are bad-response', async () => {
+  for (const infos of [[], [{ currency: 'CNY', total_balance: 'n/a', granted_balance: '1' }]]) {
+    await run({ handler: () => json({ is_available: true, balance_infos: infos }) }, async (h) => {
+      const state = await h.api.refresh()
+      assert.equal(state.status, 'error')
+      assert.equal(state.error, 'bad-response')
+    })
+  }
+})
+
+test('DeepSeek bad-response after a good reply keeps the data and sets attemptedAt', async () => {
+  let n = 0
+  const replies = [REPLY, { is_available: true, balance_infos: [{ cur: 'CNY' }] }]
+  await run({ handler: () => json(replies[n++]) }, async (h) => {
+    const good = await h.api.refresh()
+    assert.equal(good.status, 'ready')
+    const bad = await h.api.refresh()
+    assert.equal(bad.status, 'error')
+    assert.equal(bad.error, 'bad-response')
+    assert.equal(bad.fetchedAt, good.fetchedAt)
+    assert.equal(typeof bad.attemptedAt, 'number')
+    assert.deepEqual(bad.data, good.data)
   })
 })

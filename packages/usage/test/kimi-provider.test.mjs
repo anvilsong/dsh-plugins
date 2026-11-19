@@ -345,12 +345,53 @@ test('Kimi catch-all: the poll tick of a refresh that throws is not an unhandled
   }
 })
 
-// --- known drift: desired behaviour, failing today ---
+// --- drift guards ---
 
-test('Kimi reply without usages should become an error bad-response', { todo: 'today: status ready with every quota null, extra null and requests null' }, async () => {
+test('Kimi reply without usages becomes an error bad-response', async () => {
   await run({ handler: () => json({ message: 'ok' }) }, async (h) => {
     const state = await h.api.refresh()
     assert.equal(state.status, 'error')
     assert.equal(state.error, 'bad-response')
+    assert.equal(typeof state.attemptedAt, 'number')
+    assert.equal(state.fetchedAt, null)
+  })
+})
+
+test('Kimi: renamed quota, wallet and counter fields become bad-response', async () => {
+  const renamed = { usages: { five_hour: { ratio: 0.2 } }, wallet: { balance: { type: 'BOOSTER', amount: 5 } }, counter: { limit: 100 } }
+  await run({ handler: () => json(renamed) }, async (h) => {
+    const state = await h.api.refresh()
+    assert.equal(state.status, 'error')
+    assert.equal(state.error, 'bad-response')
+  })
+})
+
+test('Kimi: one parseable part is enough to stay ready (quota only, counter only, wallet only)', async () => {
+  const replies = [
+    { usages: { limit_5h: { used_ratio: 0.3 } } },
+    { usage: { used: 4 } },
+    { boosterWallet: { balance: { type: 'BOOSTER', amount: 1_000_000_000, amountLeft: 250_000_000 } } },
+  ]
+  for (const reply of replies) {
+    await run({ handler: () => json(reply) }, async (h) => {
+      const state = await h.api.refresh()
+      assert.equal(state.status, 'ready', JSON.stringify(reply))
+      assert.equal(state.error, null)
+    })
+  }
+})
+
+test('Kimi: a bad-response after a good reply keeps the data and sets attemptedAt', async () => {
+  let n = 0
+  const replies = [REPLY, { message: 'ok' }]
+  await run({ handler: () => json(replies[n++]) }, async (h) => {
+    const good = await h.api.refresh()
+    assert.equal(good.status, 'ready')
+    const bad = await h.api.refresh()
+    assert.equal(bad.status, 'error')
+    assert.equal(bad.error, 'bad-response')
+    assert.equal(bad.fetchedAt, good.fetchedAt)
+    assert.equal(typeof bad.attemptedAt, 'number')
+    assert.deepEqual(bad.data, good.data)
   })
 })

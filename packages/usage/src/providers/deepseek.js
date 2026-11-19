@@ -63,17 +63,25 @@ export function mountDeepSeek(ctx, config = {}) {
       }
       const infos = Array.isArray(body.balance_infos) ? body.balance_infos : null
       if (!infos) return { failure: 'bad-response', detail: 'Reply lacks balance_infos.' }
+      // An entry with no currency string or no numeric total is drift, not a
+      // balance: drop it rather than inventing a currency or a zero.
+      const balances = infos
+        .filter((info) => typeof info?.currency === 'string' && info.currency.length > 0 && num(info?.total_balance) !== null)
+        .map((info) => ({
+          currency: info.currency,
+          total: num(info.total_balance),
+          granted: num(info.granted_balance),
+          toppedUp: num(info.topped_up_balance),
+        }))
+      if (balances.length === 0) {
+        return { failure: 'bad-response', detail: 'No balance entry has a currency and a numeric total_balance.' }
+      }
       return {
         endpoint: baseUrl,
         data: {
           kind: 'balance',
           isAvailable: body.is_available !== false,
-          balances: infos.map((info) => ({
-            currency: typeof info?.currency === 'string' ? info.currency : 'CNY',
-            total: num(info?.total_balance),
-            granted: num(info?.granted_balance),
-            toppedUp: num(info?.topped_up_balance),
-          })),
+          balances,
         },
       }
     },

@@ -13,7 +13,7 @@
  * end_time / weekly_end_time are epoch ms.
  */
 
-import { fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
+import { epochMsToIso, fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
 
 const DEFAULT_CREDENTIAL_REF = 'MINIMAX_API_KEY'
 const BASE_URL_CN = 'https://api.minimaxi.com'
@@ -36,8 +36,7 @@ function formatReport(state) {
 }
 
 function resetIso(ms) {
-  const n = num(ms)
-  return n !== null ? new Date(n).toISOString() : null
+  return epochMsToIso(ms)
 }
 
 export function mountMiniMax(ctx, config = {}) {

@@ -376,6 +376,19 @@ export function mountOpenRouter(ctx, config = {}) {
       }
     }
 
+    const data = endpoint === ENDPOINT_CREDITS ? fromCredits(primary.data) : fromKey(primary.data)
+    // No numeric usage, limit or remaining means renamed fields, not an empty
+    // account. A free key (usage 0, limit null) still has a numeric usage.
+    if (data.usage === null && data.limit === null && data.remaining === null) {
+      publish({
+        status: 'error',
+        error: 'bad-response',
+        detail: 'Reply carried no numeric usage, limit or remaining figure.',
+        attemptedAt: Date.now(),
+      })
+      return cache.state
+    }
+
     const now = Date.now()
     publish({
       status: 'ready',
@@ -383,7 +396,7 @@ export function mountOpenRouter(ctx, config = {}) {
       detail: null,
       fetchedAt: now,
       attemptedAt: now,
-      data: endpoint === ENDPOINT_CREDITS ? fromCredits(primary.data) : fromKey(primary.data),
+      data,
       account,
     })
     return cache.state
