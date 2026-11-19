@@ -654,7 +654,7 @@ test('the README documents the client switch, its tooltip, its pending spinner a
     'The row shows no line of text under the label, so the menu keeps its size.',
     'Pressing the switch runs `/explain-style on` or `/explain-style off`, the opposite of what the session shows',
     'While a change is pending the switch shows a spinner.',
-    'A press during a pending change is ignored, not queued: the switch accepts a press again when the change finishes, or after 30 seconds if the command never settles.',
+    'A press during a pending change is ignored, not queued: the switch accepts a press again when the change finishes, after 30 seconds if the command itself never settles, or after five minutes if the session keeps showing the change as pending.',
     'If the command fails, the menu shows the error in its composer toast; without that channel the switch shows it inline.',
     'Restart the host after installing and refresh the page. The **Explainer style** switch then appears in the model-options menu.',
     'Then run `/explain-style status`: it should answer `Explainer style: off.`',
