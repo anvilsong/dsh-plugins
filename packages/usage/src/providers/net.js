@@ -141,6 +141,33 @@ export function usageFooter(state) {
 }
 
 /**
+ * Mount one provider's three surfaces in an order that fails whole or not at
+ * all: the service first, then its report command, then the poll effect.
+ *  - `ctx.provide` throws: nothing else is mounted (no command, no poll) and the
+ *    error propagates, so the caller logs the provider as failed to mount.
+ *  - `ctx.commands.register` throws (a duplicate name, say): that is logged once,
+ *    and the service and the poll stay mounted, so the card still refreshes
+ *    instead of sitting at 'idle' with a service nobody polls.
+ * @param ctx - plugin context.
+ * @param parts - id for the log line, serviceKey, the service, the command definition, the poll effect and its label.
+ */
+export function mountSurfaces(ctx, { id, serviceKey, api, command, poll, pollLabel }) {
+  // `ctx.provide`, not `ctx.set`: `set` only overwrites an already-provided
+  // service and throws otherwise. The provide is an effect owned by this
+  // plugin's fiber, so unloading the plugin unregisters the service.
+  ctx.provide(serviceKey, api)
+  try {
+    ctx.commands.register(command)
+  } catch (error) {
+    console.error(`usage: provider "${id}" command "${command.name}" failed to register; the service and its poll stay mounted:`, error)
+  }
+  // First read shortly after mount, then on an interval. The timer is a Cordis
+  // effect, so unloading the plugin clears it.
+  if (pollLabel === undefined) ctx.effect(poll)
+  else ctx.effect(poll, pollLabel)
+}
+
+/**
  * The shared provider runtime: cache, publish, single-flight refresh,
  * Remote service provide, command register, poll timer.
  *
@@ -254,32 +281,35 @@ export function mountProvider(ctx, spec, cfg) {
   const api = new UsageApi()
   api.typertRemote = Object.freeze({ service: api, serviceKey: spec.serviceKey, namespace: spec.serviceKey })
 
-  ctx.provide(spec.serviceKey, api)
-
-  ctx.commands.register({
-    definitionId: `dsh-plugin-provider-usage/${spec.commandName}`,
-    name: spec.commandName,
-    description: spec.commandDescription,
-    handler: async () => {
-      const state = await refresh()
-      if (state.status === 'error' && !state.data) {
-        return { kind: 'error', text: `${spec.title} usage unavailable: ${state.detail ?? state.error}` }
-      }
-      return { kind: 'success', text: spec.formatReport(state) }
+  mountSurfaces(ctx, {
+    id: spec.id,
+    serviceKey: spec.serviceKey,
+    api,
+    command: {
+      definitionId: `dsh-plugin-provider-usage/${spec.commandName}`,
+      name: spec.commandName,
+      description: spec.commandDescription,
+      handler: async () => {
+        const state = await refresh()
+        if (state.status === 'error' && !state.data) {
+          return { kind: 'error', text: `${spec.title} usage unavailable: ${state.detail ?? state.error}` }
+        }
+        return { kind: 'success', text: spec.formatReport(state) }
+      },
     },
+    poll: () => {
+      let cancelled = false
+      const tick = () => {
+        if (!cancelled) void refresh()
+      }
+      const initial = setTimeout(tick, 1_000)
+      const interval = setInterval(tick, refreshMs)
+      return () => {
+        cancelled = true
+        clearTimeout(initial)
+        clearInterval(interval)
+      }
+    },
+    pollLabel: `usage: poll ${spec.id}`,
   })
-
-  ctx.effect(() => {
-    let cancelled = false
-    const tick = () => {
-      if (!cancelled) void refresh()
-    }
-    const initial = setTimeout(tick, 1_000)
-    const interval = setInterval(tick, refreshMs)
-    return () => {
-      cancelled = true
-      clearTimeout(initial)
-      clearInterval(interval)
-    }
-  }, `usage: poll ${spec.id}`)
 }

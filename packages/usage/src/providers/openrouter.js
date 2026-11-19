@@ -34,7 +34,7 @@ import {
   ENDPOINT_CREDITS,
   ENDPOINT_KEY,
 } from './openrouter-defaults.js'
-import { usageFooter } from './net.js'
+import { mountSurfaces, usageFooter } from './net.js'
 
 
 /**
@@ -416,41 +416,38 @@ export function mountOpenRouter(ctx, config = {}) {
     namespace: 'openrouterUsage',
   })
 
-  // `ctx.provide`, not `ctx.set`: `set` only overwrites an already-provided
-  // service and throws otherwise. The provide is an effect owned by this
-  // plugin's fiber, so unloading the plugin unregisters the service.
-  ctx.provide('openrouterUsage', api)
-
   // The `/usage-openrouter` report command. The handler refreshes first, so
   // the report is never a stale read. A failed refresh with no cached data is
   // a command error; a failed refresh WITH cached data reports the numbers
   // plus a warning line.
-  ctx.commands.register({
-    definitionId: 'dsh-plugin-openrouter-usage/usage-openrouter',
-    name: 'usage-openrouter',
-    description: 'OpenRouter credit balance and per-key usage meters',
-    handler: async () => {
-      const state = await refresh()
-      if (state.status === 'error' && !state.data) {
-        return { kind: 'error', text: `OpenRouter usage unavailable: ${state.detail ?? state.error}` }
-      }
-      return { kind: 'success', text: formatReport(state) }
+  mountSurfaces(ctx, {
+    id: 'openrouter',
+    serviceKey: 'openrouterUsage',
+    api,
+    command: {
+      definitionId: 'dsh-plugin-openrouter-usage/usage-openrouter',
+      name: 'usage-openrouter',
+      description: 'OpenRouter credit balance and per-key usage meters',
+      handler: async () => {
+        const state = await refresh()
+        if (state.status === 'error' && !state.data) {
+          return { kind: 'error', text: `OpenRouter usage unavailable: ${state.detail ?? state.error}` }
+        }
+        return { kind: 'success', text: formatReport(state) }
+      },
     },
-  })
-
-  // First read shortly after mount, then on an interval. The timer is a Cordis
-  // effect, so unloading the plugin clears it.
-  ctx.effect(() => {
-    let cancelled = false
-    const tick = () => {
-      if (!cancelled) void refresh()
-    }
-    const initial = setTimeout(tick, 1_000)
-    const interval = setInterval(tick, refreshMs)
-    return () => {
-      cancelled = true
-      clearTimeout(initial)
-      clearInterval(interval)
-    }
+    poll: () => {
+      let cancelled = false
+      const tick = () => {
+        if (!cancelled) void refresh()
+      }
+      const initial = setTimeout(tick, 1_000)
+      const interval = setInterval(tick, refreshMs)
+      return () => {
+        cancelled = true
+        clearTimeout(initial)
+        clearInterval(interval)
+      }
+    },
   })
 }

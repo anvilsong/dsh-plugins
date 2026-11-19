@@ -30,7 +30,7 @@ import {
   FIXED_POINT_CENTS,
   USAGE_PATH,
 } from './kimi-defaults.js'
-import { usageFooter } from './net.js'
+import { mountSurfaces, usageFooter } from './net.js'
 
 
 /** Read a finite number, tolerating strings, null and undefined. */
@@ -410,39 +410,37 @@ export function mountKimi(ctx, config = {}) {
     namespace: 'kimiUsage',
   })
 
-  // `ctx.provide`, not `ctx.set`: `set` only overwrites an already-provided
-  // service and throws otherwise.
-  ctx.provide('kimiUsage', api)
-
   // The `/usage-kimi` report command. The handler refreshes first, so the
   // report is never a stale read. A failed refresh with no cached data is a
   // command error; with cached data it reports the numbers plus a warning.
-  ctx.commands.register({
-    definitionId: 'dsh-plugin-kimi-usage/usage-kimi',
-    name: 'usage-kimi',
-    description: 'Kimi Code subscription quota windows, requests, and extra balance',
-    handler: async () => {
-      const state = await refresh()
-      if (state.status === 'error' && !state.data) {
-        return { kind: 'error', text: `Kimi Code usage unavailable: ${state.detail ?? state.error}` }
-      }
-      return { kind: 'success', text: formatReport(state) }
+  mountSurfaces(ctx, {
+    id: 'kimi',
+    serviceKey: 'kimiUsage',
+    api,
+    command: {
+      definitionId: 'dsh-plugin-kimi-usage/usage-kimi',
+      name: 'usage-kimi',
+      description: 'Kimi Code subscription quota windows, requests, and extra balance',
+      handler: async () => {
+        const state = await refresh()
+        if (state.status === 'error' && !state.data) {
+          return { kind: 'error', text: `Kimi Code usage unavailable: ${state.detail ?? state.error}` }
+        }
+        return { kind: 'success', text: formatReport(state) }
+      },
     },
-  })
-
-  // First read shortly after mount, then on an interval. The timer is a Cordis
-  // effect, so unloading the plugin clears it.
-  ctx.effect(() => {
-    let cancelled = false
-    const tick = () => {
-      if (!cancelled) void refresh()
-    }
-    const initial = setTimeout(tick, 1_000)
-    const interval = setInterval(tick, refreshMs)
-    return () => {
-      cancelled = true
-      clearTimeout(initial)
-      clearInterval(interval)
-    }
+    poll: () => {
+      let cancelled = false
+      const tick = () => {
+        if (!cancelled) void refresh()
+      }
+      const initial = setTimeout(tick, 1_000)
+      const interval = setInterval(tick, refreshMs)
+      return () => {
+        cancelled = true
+        clearTimeout(initial)
+        clearInterval(interval)
+      }
+    },
   })
 }

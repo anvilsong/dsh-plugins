@@ -73,5 +73,10 @@ export function apply(ctx, config = {}) {
   }
 
   // OAuth login and status share the same package and provider cards as usage.
-  mountProviderLogin(ctx)
+  // It never throws on its own; the guard keeps apply() whole if that changes.
+  try {
+    mountProviderLogin(ctx)
+  } catch (error) {
+    console.error('usage: provider sign-in failed to mount:', error)
+  }
 }

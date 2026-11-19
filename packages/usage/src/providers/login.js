@@ -336,9 +336,20 @@ async function signIn(ctx, agent, provider, commandSignal) {
   }
 }
 
+/**
+ * Mount the sign-in service and the `/provider-login` command. They fail
+ * independently and never throw: a duplicate service leaves the command
+ * registered, a duplicate command leaves the service usable by the card. Each
+ * failure is logged once, by name.
+ */
 export function mountProviderLogin(ctx) {
-  new ProviderLoginService(ctx)
-  ctx.commands.register({
+  try {
+    new ProviderLoginService(ctx)
+  } catch (error) {
+    console.error('usage: provider sign-in service "providerLogin" failed to mount:', error)
+  }
+  try {
+    ctx.commands.register({
       name: 'provider-login',
       definitionId: 'dsh-plugin-provider-login',
       description: 'Sign in to a provider with OAuth; the sign-in link appears in a question.',
@@ -352,5 +363,8 @@ export function mountProviderLogin(ctx) {
         if (method === 'api-key') return { kind: 'error', text: refusal(provider) }
         return signIn(ctx, agent, provider, signal)
       },
-  })
+    })
+  } catch (error) {
+    console.error('usage: command "provider-login" failed to register:', error)
+  }
 }
