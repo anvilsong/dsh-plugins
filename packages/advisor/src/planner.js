@@ -1,6 +1,7 @@
 import { realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
+import { mountNativeExecutor, RUN_CODE, runCodeFailure } from './executor.js'
 import { fileSha256Sync as defaultFileHash, LEDGER_FILE, REPLIES_DIR, sha256 } from './ledger.js'
 import { effortReset, routeLabel, spawnArgs, spawnPolicy } from './state.js'
 
@@ -797,6 +798,9 @@ function safeGuard(guard, label) {
  * Before each advisor delegation and child start the data directory is
  * probed (`writableProblem`, from the ledger unless overridden), so a folder
  * that is or becomes unwritable refuses children instead of losing runs.
+ * `deps.nativeExecutor` () => loadNativeExecutor()'s result (src/executor.js):
+ * mounted on each valid child for sessions on the ptc preset. Without it no
+ * mount is made and a run_code call closes the run at once.
  */
 export function installPlannerBoundary(ctx, deps) {
   const {
@@ -814,6 +818,7 @@ export function installPlannerBoundary(ctx, deps) {
     fileHash = defaultFileHash,
     maxMs = MAX_PLANNER_MS,
     maxToolCalls = MAX_PLANNER_TOOL_CALLS,
+    nativeExecutor, // () => { plugin } | { reason } | undefined; read at each valid start
   } = deps
   const ledgerReady = [appendLedger, writeReply, idInUse, ledgerEntriesFor].every((fn) => typeof fn === 'function')
   const records = new Map() // child agent id -> record
@@ -1120,8 +1125,21 @@ export function installPlannerBoundary(ctx, deps) {
     }
   }
 
+  /**
+   * A run_code call of the child itself: always denied by childDenial; closed
+   * at once when no native mount is confirmed (src/executor.js runCodeFailure).
+   */
+  function runCodeFailFast(record, exec) {
+    if (exec.name !== RUN_CODE || exec.agent === undefined || exec.agent !== record.agent) return
+    const reason = runCodeFailure(record.mount, exec, 'advisor child')
+    if (reason !== undefined) fail(record, reason)
+  }
+
   function childDenial(record, exec) {
-    if (!record.spec.tools.includes(exec.name)) return 'Advisor child is read-only: this tool is not permitted.'
+    if (!record.spec.tools.includes(exec.name)) {
+      runCodeFailFast(record, exec)
+      return 'Advisor child is read-only: this tool is not permitted.'
+    }
     if (exec.agent === undefined || exec.agent !== record.agent) return 'Advisor child tool call has no exact agent scope.'
     const definition = record.expected.get(exec.name)
     const actual = record.agent.ctx.tools.get(exec.name, exec.agent, exec.toolSet)
@@ -1145,8 +1163,25 @@ export function installPlannerBoundary(ctx, deps) {
       record.guarded = agent
       tools.guard(safeGuard((exec) => (record.valid ? childDenial(record, exec) : 'Advisor child failed closed: no tools are permitted.'), 'Advisor child'))
     }
+    // A mount belongs to one Agent object; an older object under this id loses it.
+    if (record.mount !== undefined && record.mount.agent !== agent) {
+      record.mount.dispose()
+      record.mount = undefined
+    }
     record.valid = false
     if (!valid) return
+    // The native executor, once per Agent object and outside the per-epoch
+    // disposers: after the guard, before the scoped tools and their capture.
+    // Presentation only; a failed mount leaves the child valid.
+    if (typeof nativeExecutor === 'function' && record.mount === undefined) {
+      let loaded
+      try {
+        loaded = nativeExecutor()
+      } catch (error) {
+        loaded = { reason: `the native executor is unavailable: ${describeError(error)}` }
+      }
+      record.mount = mountNativeExecutor(agent, loaded, (level, line) => log(level, `${record.name}: ${line}`))
+    }
     // Register before capture so the scoped definitions are the trusted ones.
     record.disposers.push(tools.register(submitTool(record)))
     const hostGrep = tools.get('grep', agent)
@@ -1235,6 +1270,7 @@ export function installPlannerBoundary(ctx, deps) {
       guarded: undefined,
       expected: new Map(),
       disposers: [],
+      mount: undefined, // the native executor mount of record.agent (src/executor.js)
       timer: undefined,
     }
     record.agent = agent
@@ -1319,6 +1355,7 @@ export function installPlannerBoundary(ctx, deps) {
     for (const dispose of record.disposers.splice(0)) {
       try { dispose() } catch { /* already disposed */ }
     }
+    record.mount?.dispose()
     records.delete(id)
   }
   const disposeEnd = ctx.on('subagent/end', (info) => { release(info.id) })
@@ -1331,6 +1368,7 @@ export function installPlannerBoundary(ctx, deps) {
       for (const dispose of record.disposers.splice(0)) {
         try { dispose() } catch { /* already disposed */ }
       }
+      record.mount?.dispose()
     }
     records.clear()
     disposeStart()

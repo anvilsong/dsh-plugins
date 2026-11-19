@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { loadNativeExecutor } from './executor.js'
 import { createLedger, resolveDataDir } from './ledger.js'
 import {
   ADVISOR_WORKFLOW,
@@ -198,7 +199,41 @@ function openLedger(ctx, config) {
   return { ledger, problem: undefined }
 }
 
-export async function apply(ctx, config = {}) {
+/**
+ * The loaders apply() uses. Cordis calls apply(ctx, config), so the Host always
+ * runs with these; tests hand in fakes as the third argument.
+ */
+const HOST = Object.freeze({ loadNativeExecutor: () => loadNativeExecutor() })
+
+/**
+ * Start loading the native executor for Advisor children and verifiers in
+ * sessions on the ptc preset (src/executor.js): once, here, never in a start
+ * listener. The boundaries are installed without waiting for it, so their
+ * guards never depend on the import; until it settles a child gets no mount.
+ * @returns {() => object} the current result for the boundaries' deps
+ */
+function startNativeExecutorLoad(ctx, host) {
+  let loaded
+  let loading
+  try {
+    loading = Promise.resolve(host.loadNativeExecutor())
+  } catch (error) {
+    loading = Promise.resolve({ reason: `the native executor loader threw: ${describe(error)}` })
+  }
+  loading
+    .then((value) => value, (error) => ({ reason: `the native executor loader failed: ${describe(error)}` }))
+    .then((value) => {
+      loaded = value
+      const outcome = value?.plugin !== undefined
+        ? 'loaded'
+        : `not loaded (${value?.reason ?? 'no plugin'}); in a session on the ptc agent preset a run_code call stops the advisor child or verifier at once`
+      try { ctx.logger?.info?.(`advisor: native executor for Advisor children: ${outcome}`) } catch { /* no logger */ }
+    })
+  return () => loaded ?? { reason: 'the native executor is still loading' }
+}
+
+export async function apply(ctx, config = {}, host = HOST) {
+  const nativeExecutor = startNativeExecutorLoad(ctx, host)
   const { ledger, problem } = openLedger(ctx, config)
   const workflow = ledger === undefined
     ? undefined
@@ -281,7 +316,7 @@ export async function apply(ctx, config = {}) {
       (agent) => stateFor(agent)?.active === true,
       (agent) => stateFor(agent)?.verifierModel ?? null,
       dataDirProblem,
-      { workspaceOf, ledger },
+      { workspaceOf, ledger, nativeExecutor },
     ), 'advisor: verifier boundary')
   })
 
@@ -322,6 +357,7 @@ export async function apply(ctx, config = {}) {
       },
       workspaceOf,
       ledger,
+      nativeExecutor,
     }), 'advisor: child boundary')
   })
 

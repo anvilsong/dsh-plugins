@@ -52,6 +52,7 @@ import {
 import { createLedger, fileSha256Sync, sha256 } from '../src/ledger.js'
 import { parseModelSetting, spawnArgs } from '../src/state.js'
 import { verifierDelegationDenial } from '../src/verifier.js'
+import { disposals, MOUNT_ERROR, NATIVE, withPlugin } from './helpers/native.mjs'
 
 // ---------------------------------------------------------------------------
 // Fixtures. Everything this file writes lives under TMP. Every ledger is an
@@ -264,6 +265,7 @@ function harness(options = {}) {
   const hostGuards = []
   const agents = new Map()
   const logs = []
+  const infos = []
   const state = {
     settings: { active: true, advisorModel: null },
     routes: [ROUTE],
@@ -338,7 +340,7 @@ function harness(options = {}) {
         if (index !== -1) list.splice(index, 1)
       }
     },
-    logger: { warn: (message) => logs.push(message), info() {}, debug() {} },
+    logger: { warn: (message) => logs.push(message), info: (message) => infos.push(message), debug() {} },
   }
   const fakes = {
     appendLedger: async (line) => {
@@ -507,7 +509,7 @@ function harness(options = {}) {
   const statuses = () => lines().map((line) => line.status)
   const reasons = () => lines().map((line) => [line.status, line.failure_reason])
   return {
-    state, ctx, lead, mate, dir, ledger, deps, logs, boundary, hostGuards, listeners, hostGrep,
+    state, ctx, lead, mate, dir, ledger, deps, logs, infos, boundary, hostGuards, listeners, hostGrep,
     child, start, end, agentDisposed, brief, call, delegate, delegation, toolResult, run, submit, dispose, lines, terminal, statuses, reasons,
   }
 }
@@ -521,7 +523,7 @@ function harness(options = {}) {
  * never runs, as on a Host without that service.
  */
 const HOST_SERVICES = Object.freeze(['agents', 'subagents', 'tools', 'workingDirectory', 'agentTeams', 'commands'])
-async function hostHarness(config, { home, dataDir, services = HOST_SERVICES, ...options } = {}) {
+async function hostHarness(config, { home, dataDir, services = HOST_SERVICES, host, ...options } = {}) {
   const h = harness({ ...options, dataDir, ledgerMode: 'none', install: false })
   h.lead.session = { id: 'lead-session-log' } // index.host.js reads lead state through rootOf(agent).session
   const effects = new Map()
@@ -547,7 +549,8 @@ async function hostHarness(config, { home, dataDir, services = HOST_SERVICES, ..
       })
     },
   }
-  await apply(hostCtx, config)
+  // `host`: the loaders apply() takes as its third argument (cordis passes two).
+  await apply(hostCtx, config, ...(host === undefined ? [] : [host]))
   const boundary = effects.get('advisor: child boundary')
   assert.equal(typeof boundary, 'function', 'apply() installed the child boundary')
   let disposed = false
@@ -3379,4 +3382,196 @@ test('prompt and guards through apply(): in every state the lead policy\'s spawn
       }
     }
   }
+})
+
+// ===========================================================================
+// Sessions on the ptc agent preset: the native executor mount (src/executor.js)
+
+const READ_ONLY = 'Advisor child is read-only: this tool is not permitted.'
+const RUN_CODE_ARGS = Object.freeze({ code: "return await tools.read({ file_path: 'src/a.js' })", description: 'Read a file' })
+const PTC_REMEDY = 'run the Advisor from a session on the standard or cordis agent preset'
+const notMounted = (problem) => `run_code was requested: this session uses the PTC executor and the native executor could not be mounted for the advisor child (${problem}); ${PTC_REMEDY}`
+const MOUNTED_LINE = "native executor mounted on the child's Agent scope (presentation only; the guards and the run_code denial are unchanged); fiber state 2 active; run_code in tools: no"
+
+/** A consult child with a fake ctx.plugin, started and briefed. */
+function ptcChild(h, fiberOptions = {}, childOptions = {}) {
+  const c = withPlugin(h.child({ self: CONSULT, ...childOptions }), fiberOptions)
+  h.start(c)
+  h.brief(c, 'Sanitized briefing.')
+  return c
+}
+
+test('ptc: a valid child mounts the native executor once, after its guard and before its scoped tools; a later epoch does not remount; end disposes it once', async (t) => {
+  const h = harness({ nativeExecutor: () => NATIVE })
+  t.after(h.dispose)
+  assert.equal(h.delegate({ name: CONSULT }), undefined)
+  const c = withPlugin(h.child({ self: CONSULT }))
+  h.start(c)
+  assert.deepEqual(c.sequence, [
+    'guard', 'plugin:native-tool-executor', `register:${ADVICE_TOOL}`, 'get:grep', 'register:grep',
+    'get:glob', 'get:grep', 'get:read', `get:${ADVICE_TOOL}`,
+    'section', 'on:agent/inbox/inserted',
+  ])
+  assert.deepEqual(c.plugins, [NATIVE.plugin], 'the loaded plugin itself is mounted on the child ctx')
+  await settle()
+  assert.equal(h.run(c, 'read', { file_path: 'src/a.js' }), undefined)
+  h.start(c) // a later residency epoch on the same Agent object
+  assert.equal(c.fibers.length, 1, 'not remounted per epoch')
+  assert.deepEqual(disposals(c), [0], 'the epoch refresh keeps the mount')
+  assert.equal(h.run(c, 'read', { file_path: 'src/a.js' }), undefined)
+  h.end(c)
+  assert.deepEqual(disposals(c), [1], 'subagent/end disposes it')
+  h.agentDisposed(c)
+  h.dispose()
+  assert.deepEqual(disposals(c), [1], 'once')
+})
+
+test('ptc: agent/disposed and plugin unload each dispose the mount once; a new Agent object under the same id gets its own mount', async (t) => {
+  const h = harness({ nativeExecutor: () => NATIVE })
+  t.after(h.dispose)
+  const c = ptcChild(h)
+  await settle()
+  h.agentDisposed(c)
+  assert.deepEqual(disposals(c), [1])
+  h.end(c)
+  assert.deepEqual(disposals(c), [1])
+
+  const u = harness({ nativeExecutor: () => NATIVE })
+  const first = ptcChild(u, {}, { id: 'ptc-unload' })
+  const second = withPlugin(u.child({ self: CONSULT, id: 'ptc-unload' })) // same id, new Agent object
+  u.start(second)
+  assert.deepEqual(disposals(first), [1], 'the shut-out object loses its mount')
+  assert.equal(second.fibers.length, 1)
+  u.dispose()
+  assert.deepEqual(disposals(second), [1], 'plugin unload disposes the live mount')
+  u.end(second)
+  assert.deepEqual([...disposals(first), ...disposals(second)], [1, 1])
+})
+
+test('ptc: an invalid child is never mounted', async (t) => {
+  const cases = [
+    ['not a child of the lead', {}, { parent: 'mate' }],
+    ['Advisor off', { settings: { active: false, advisorModel: null } }, {}],
+    ['another route', { settings: { active: true, advisorModel: ROUTE } }, { route: OTHER_ROUTE }],
+    ['no ledger', { ledgerMode: 'none' }, {}],
+  ]
+  for (const [label, setup, childOptions] of cases) {
+    const { ledgerMode, settings } = setup
+    const h = harness({ nativeExecutor: () => NATIVE, ...(ledgerMode === undefined ? {} : { ledgerMode }) })
+    t.after(h.dispose)
+    if (settings !== undefined) h.state.settings = settings
+    const c = ptcChild(h, {}, childOptions)
+    assert.equal(c.agent.cancelled, 1, label)
+    assert.deepEqual(c.plugins, [], `${label}: no mount`)
+  }
+  const h = harness({ nativeExecutor: () => NATIVE })
+  t.after(h.dispose)
+  ptcChild(h, {}, { id: 'holder' })
+  const clash = ptcChild(h, {}, { id: 'clash' }) // its id belongs to the open holder
+  assert.equal(clash.agent.cancelled, 1)
+  assert.deepEqual(clash.plugins, [], 'an id clash is never mounted')
+})
+
+test('ptc: run_code stays denied with the mount active; a later step still on run_code closes the run', async (t) => {
+  const h = harness({ nativeExecutor: () => NATIVE })
+  t.after(h.dispose)
+  const c = ptcChild(h)
+  await settle()
+  const step = {}
+  assert.equal(h.run(c, 'run_code', RUN_CODE_ARGS, { toolSet: step }), READ_ONLY)
+  assert.equal(h.run(c, 'run_code', RUN_CODE_ARGS, { toolSet: step }), READ_ONLY)
+  await settle()
+  assert.deepEqual(h.statuses(), ['started'], 'the run_code calls of one step only get the denial')
+  assert.equal(c.agent.cancelled, 0)
+  assert.equal(h.run(c, 'read', { file_path: 'src/a.js' }), undefined, 'the native tools work')
+  assert.equal(h.run(c, 'run_code', RUN_CODE_ARGS, { toolSet: {} }), READ_ONLY)
+  await settle()
+  assert.deepEqual(h.reasons().at(-1), ['failed', `run_code was requested again after the native executor was mounted for the advisor child: this session uses the PTC executor and the mount did not change the tools it is offered; ${PTC_REMEDY}`])
+  assert.equal(h.terminal()[0].tool_calls, 1)
+  assert.equal(c.agent.cancelled, 1)
+  assert.equal(h.run(c, 'run_code', RUN_CODE_ARGS, { toolSet: {} }), READ_ONLY, 'still denied after the close')
+  await settle()
+  assert.equal(h.terminal().length, 1)
+})
+
+test('ptc: without a confirmed mount nothing changes before run_code; the first run_code call closes the run with the named reason', async (t) => {
+  const cases = [
+    ['missing loader', {}, {}, 'no native executor was provided to the Advisor boundary'],
+    ['package missing', { nativeExecutor: () => ({ reason: '@deepseek-ai/dsh-tool-executor-native did not load: Cannot find package' }) }, {}, '@deepseek-ai/dsh-tool-executor-native did not load: Cannot find package'],
+    ['loader still loading', { nativeExecutor: () => undefined }, {}, 'no native executor plugin was provided'],
+    ['pending fiber', { nativeExecutor: () => NATIVE }, { outcome: 'never' }, 'the executor fiber has not started yet (state 1 loading)'],
+    ['inactive fiber', { nativeExecutor: () => NATIVE }, { initial: 0, outcome: 'never' }, 'the executor fiber is 0 inactive (an injection is unavailable) right after mounting'],
+    ['async rejection', { nativeExecutor: () => NATIVE }, { outcome: 'reject' }, `the executor failed to start: ${MOUNT_ERROR}`],
+    ['synchronous throw', { nativeExecutor: () => NATIVE }, { throws: new Error('service "tools" has been registered at <x>') }, 'mounting threw: service "tools" has been registered at <x>'],
+  ]
+  for (const [label, deps, fiberOptions, problem] of cases) {
+    const h = harness(deps)
+    t.after(h.dispose)
+    const c = ptcChild(h, fiberOptions)
+    await settle()
+    assert.equal(c.agent.cancelled, 0, `${label}: a failed mount does not stop the child`)
+    assert.deepEqual(h.statuses(), ['started'], `${label}: no failed line before run_code`)
+    assert.equal(h.run(c, 'read', { file_path: 'src/a.js' }), undefined, `${label}: the child stays valid`)
+    assert.equal(h.run(c, 'bash', { command: 'true' }), READ_ONLY, `${label}: other denials do not close it`)
+    await settle()
+    assert.deepEqual(h.statuses(), ['started'], label)
+    assert.equal(h.run(c, 'run_code', RUN_CODE_ARGS, { toolSet: {} }), READ_ONLY, `${label}: run_code is denied`)
+    await settle()
+    assert.deepEqual(h.reasons(), [['started', undefined], ['failed', notMounted(problem)]], label)
+    assert.equal(h.terminal()[0].tool_calls, 1, `${label}: only the read counts`)
+    assert.equal(c.agent.cancelled, 1, `${label}: stopped at once`)
+    assert.equal(h.run(c, 'run_code', RUN_CODE_ARGS, { toolSet: {} }), READ_ONLY, label)
+    await settle()
+    assert.equal(h.terminal().length, 1, `${label}: one failed line`)
+  }
+})
+
+test('ptc: one diagnostic line per child names the mount outcome, the fiber state and whether run_code is a tool', async (t) => {
+  const h = harness({ nativeExecutor: () => NATIVE })
+  t.after(h.dispose)
+  const c = ptcChild(h)
+  await settle()
+  h.start(c)
+  await settle()
+  h.end(c)
+  assert.deepEqual(h.infos, [`advisor planner: ${CONSULT}: ${MOUNTED_LINE}`])
+  assert.deepEqual(h.logs, [])
+
+  const failed = harness({ nativeExecutor: () => NATIVE })
+  t.after(failed.dispose)
+  ptcChild(failed, { outcome: 'reject' })
+  await settle()
+  assert.deepEqual(failed.logs, [`advisor planner: ${CONSULT}: native executor not mounted: the executor failed to start: ${MOUNT_ERROR}; fiber state 3 failed; run_code in tools: no`])
+  assert.deepEqual(failed.infos, [])
+})
+
+test('ptc through apply(): the native executor is loaded once at plugin start, never by a start listener, and both boundaries mount it; unload disposes the mounts', async (t) => {
+  const dataDir = path.join(mkdtempSync(path.join(TMP, 'ptc-apply-')), 'data')
+  let loads = 0
+  const host = { loadNativeExecutor: async () => { loads++; return NATIVE } }
+  const h = await hostHarness({ dataDir }, { dataDir, host })
+  t.after(h.dispose)
+  await settle()
+  assert.equal(loads, 1, 'loaded once by apply()')
+  const c = ptcChild(h, {}, { id: 'ptc-apply-consult' })
+  const verifier = withPlugin(h.child({ id: 'ptc-apply-verifier', self: `advisor-verifier-${PLAN_ID_B}` }))
+  h.start(verifier)
+  h.start(c)
+  assert.equal(loads, 1, 'no start loads it again')
+  assert.deepEqual(c.plugins, [NATIVE.plugin])
+  assert.deepEqual(verifier.plugins, [NATIVE.plugin])
+  assert.equal(verifier.agent.cancelled, 0)
+  await settle()
+  assert.equal(h.run(c, 'read', { file_path: 'src/a.js' }), undefined)
+  h.dispose()
+  assert.deepEqual([...disposals(c), ...disposals(verifier)], [1, 1])
+  assert.equal(loads, 1)
+
+  // The default loader: the bare import resolves nothing in this repository, so the
+  // children start unchanged and run_code closes the run with the import's reason.
+  const plainDir = path.join(mkdtempSync(path.join(TMP, 'ptc-apply-')), 'data')
+  const plain = await hostHarness({ dataDir: plainDir }, { dataDir: plainDir })
+  t.after(plain.dispose)
+  await until(() => plain.infos.some((line) => line.startsWith('advisor: native executor for Advisor children')), 'the load line')
+  assert.match(plain.infos.find((line) => line.startsWith('advisor: native executor for Advisor children')), /not loaded \(@deepseek-ai\/dsh-tool-executor-native did not load: /)
 })

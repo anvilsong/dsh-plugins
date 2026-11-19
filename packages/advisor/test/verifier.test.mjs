@@ -35,6 +35,7 @@ import {
   verifierModelPolicy,
   verifierToolDenial,
 } from '../src/verifier.js'
+import { disposals, MOUNT_ERROR, NATIVE, withPlugin } from './helpers/native.mjs'
 
 const TMP = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'advisor-verifier-test-')))
 after(() => rmSync(TMP, { recursive: true, force: true }))
@@ -144,6 +145,7 @@ function harness(options = {}) {
   const hostGuards = []
   const agents = new Map()
   const logs = []
+  const infos = []
   const hostGrep = {
     name: 'grep',
     description: 'Search file contents.',
@@ -195,7 +197,7 @@ function harness(options = {}) {
         if (index !== -1) list.splice(index, 1)
       }
     },
-    logger: { warn: (message) => logs.push(message), info() {}, debug() {} },
+    logger: { warn: (message) => logs.push(message), info: (message) => infos.push(message), debug() {} },
   }
   const workspaceOf = (agent) => (agent === lead ? state.workspace : (Object.hasOwn(agent, 'cwd') ? agent.cwd : state.workspace))
   const defaults = { workspaceOf, ledger, ...(now === undefined ? {} : { now }) }
@@ -287,7 +289,7 @@ function harness(options = {}) {
     start(c, info)
     return c
   }
-  return { state, ctx, lead, ledger, logs, hostGrep, hostGuards, listeners, globalDefs, dispose, child, start, end, agentDisposed, emit, run, hostCall, startChild }
+  return { state, ctx, lead, ledger, logs, infos, hostGrep, hostGuards, listeners, globalDefs, dispose, child, start, end, agentDisposed, emit, run, hostCall, startChild }
 }
 
 /** Call the child's own evidence tool the way the Host executes it. */
@@ -2859,10 +2861,10 @@ test('text: the README documents the report tool, the record file, the verificat
 const ZOD_URL = import.meta.resolve('zod')
 const SOURCES = Object.freeze({ verifier: { installVerifierBoundary }, ledger: { createLedger } })
 
-/** Load a copy of src/ (verifier, ledger, planner, state) with `search` replaced once in `file`. */
+/** Load a copy of src/ (verifier, ledger, planner, state, executor) with `search` replaced once in `file`. */
 async function mutant(file, search, replace) {
   const dir = mkdtempSync(path.join(TMP, 'mutant-'))
-  for (const name of ['verifier.js', 'ledger.js', 'planner.js', 'state.js']) {
+  for (const name of ['verifier.js', 'ledger.js', 'planner.js', 'state.js', 'executor.js']) {
     let text = readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8').replaceAll("from 'zod'", `from ${JSON.stringify(ZOD_URL)}`)
     if (name === file) {
       assert.equal(text.split(search).length - 1, 1, `the mutation target occurs once in ${file}: ${search}`)
@@ -2987,4 +2989,139 @@ test('mutation: the once-only flag is what keeps a second unrecorded line out', 
     h.dispose()
     return appended.length === 1 && appended[0].status === 'unrecorded'
   }, 'verifier.js', 'if (report === undefined || report.recorded || report.finalized) return', 'if (report === undefined || report.recorded) return')
+})
+
+// ---------------------------------------------------------------------------
+// Sessions on the ptc agent preset: the native executor mount (src/executor.js)
+
+const VERIFIER_READ_ONLY = 'Advisor verifier is read-only: this tool is not permitted.'
+const RUN_CODE_ARGS = Object.freeze({ code: "return await tools.read({ file_path: 'src/a.js' })", description: 'Read a file' })
+const PTC_REMEDY = 'run the Advisor from a session on the standard or cordis agent preset'
+const withNative = (nativeExecutor = () => NATIVE, options = {}) => harness({ ...options, depsArg: (defaults) => ({ ...defaults, nativeExecutor }) })
+const ptcVerifier = (h, fiberOptions = {}, childOptions = {}) => {
+  const c = withPlugin(h.child(childOptions), fiberOptions)
+  h.start(c)
+  return c
+}
+
+test('ptc: an allowed verifier mounts the native executor once, after its guard and before its scoped tools; a later epoch does not remount; end disposes it once', async () => {
+  const h = withNative()
+  const c = withPlugin(h.child())
+  h.start(c)
+  assert.deepEqual(c.sequence, ['guard', 'plugin:native-tool-executor', `register:${EVIDENCE_TOOL}`, `register:${REPORT_TOOL}`, 'register:grep', 'section'])
+  assert.deepEqual(c.plugins, [NATIVE.plugin])
+  await settle()
+  assert.equal(h.run(c, 'read', { file_path: 'src/a.js' }), undefined)
+  h.start(c) // a later start of the same Agent object
+  assert.equal(c.fibers.length, 1, 'not remounted per start')
+  assert.deepEqual(disposals(c), [0])
+  assert.equal(h.run(c, 'read', { file_path: 'src/a.js' }), undefined)
+  h.end(c)
+  assert.deepEqual(disposals(c), [1])
+  h.agentDisposed(c)
+  h.dispose()
+  assert.deepEqual(disposals(c), [1], 'once')
+})
+
+test('ptc: agent/disposed and plugin unload dispose the verifier mount once; a new Agent object under the same id shuts the old mount', async () => {
+  const d = withNative()
+  const c = ptcVerifier(d)
+  d.agentDisposed(c)
+  assert.deepEqual(disposals(c), [1])
+  d.end(c)
+  d.dispose()
+  assert.deepEqual(disposals(c), [1])
+
+  const u = withNative()
+  const first = ptcVerifier(u)
+  const second = ptcVerifier(u) // same id, new Agent object
+  assert.deepEqual(disposals(first), [1], 'the shut-out object loses its mount')
+  assert.equal(second.fibers.length, 1)
+  u.dispose()
+  assert.deepEqual(disposals(second), [1])
+  u.end(second)
+  assert.deepEqual([...disposals(first), ...disposals(second)], [1, 1])
+})
+
+test('ptc: an invalid or stopped verifier is never mounted', () => {
+  for (const [label, options, childOptions] of [
+    ['malformed name', {}, { self: 'advisor-verifier-abcdef01234' }],
+    ['not a child of the lead', {}, { parent: 'mate' }],
+    ['data directory unusable', { dataDirProblem: () => 'Advisor data directory is not writable: x.' }, {}],
+    ['working directory outside the workspace', {}, { cwd: OUT }],
+  ]) {
+    const h = withNative(undefined, options)
+    const c = ptcVerifier(h, {}, childOptions)
+    assert.equal(c.agent.cancelled, 1, label)
+    assert.deepEqual(c.plugins, [], `${label}: no mount`)
+    h.dispose()
+  }
+})
+
+test('ptc: run_code stays denied with the verifier mount active; a later step still on run_code warns once and stops the verifier', async () => {
+  const h = withNative()
+  const c = ptcVerifier(h)
+  await settle()
+  const step = {}
+  assert.equal(h.run(c, 'run_code', RUN_CODE_ARGS, { toolSet: step }), VERIFIER_READ_ONLY)
+  assert.equal(h.run(c, 'run_code', RUN_CODE_ARGS, { toolSet: step }), VERIFIER_READ_ONLY)
+  assert.equal(c.agent.cancelled, 0, 'the run_code calls of one step only get the denial')
+  assert.deepEqual(h.logs, [])
+  assert.equal(h.run(c, 'read', { file_path: 'src/a.js' }), undefined)
+  assert.equal(h.run(c, 'run_code', RUN_CODE_ARGS, { toolSet: {} }), VERIFIER_READ_ONLY)
+  assert.equal(h.run(c, 'run_code', RUN_CODE_ARGS, { toolSet: {} }), VERIFIER_READ_ONLY)
+  assert.equal(c.agent.cancelled, 1)
+  assert.deepEqual(h.logs, [`advisor: stopping ${VERIFIER}: run_code was requested again after the native executor was mounted for the advisor verifier: this session uses the PTC executor and the mount did not change the tools it is offered; ${PTC_REMEDY}`])
+  h.dispose()
+})
+
+test('ptc: without a confirmed verifier mount nothing changes before run_code; the first run_code call warns once and stops the verifier', async () => {
+  for (const [label, nativeExecutor, fiberOptions, problem] of [
+    ['missing loader', undefined, {}, 'no native executor was provided to the Advisor boundary'],
+    ['package missing', () => ({ reason: 'the package did not load' }), {}, 'the package did not load'],
+    ['pending fiber', () => NATIVE, { outcome: 'never' }, 'the executor fiber has not started yet (state 1 loading)'],
+    ['inactive fiber', () => NATIVE, { initial: 0, outcome: 'never' }, 'the executor fiber is 0 inactive (an injection is unavailable) right after mounting'],
+    ['async rejection', () => NATIVE, { outcome: 'reject' }, `the executor failed to start: ${MOUNT_ERROR}`],
+    ['synchronous throw', () => NATIVE, { throws: new Error('boom') }, 'mounting threw: boom'],
+  ]) {
+    const h = nativeExecutor === undefined ? harness() : withNative(nativeExecutor)
+    const c = ptcVerifier(h, fiberOptions)
+    await settle()
+    const warnings = h.logs.filter((line) => line.startsWith('advisor: stopping'))
+    assert.deepEqual(warnings, [], `${label}: nothing before run_code`)
+    assert.equal(c.agent.cancelled, 0, label)
+    assert.equal(h.run(c, 'read', { file_path: 'src/a.js' }), undefined, `${label}: the verifier stays allowed`)
+    assert.equal(h.run(c, 'bash', { command: 'true' }), VERIFIER_READ_ONLY, label)
+    assert.equal(c.agent.cancelled, 0, `${label}: other denials do not stop it`)
+    assert.equal(h.run(c, 'run_code', RUN_CODE_ARGS, { toolSet: {} }), VERIFIER_READ_ONLY, `${label}: run_code is denied`)
+    assert.equal(h.run(c, 'run_code', RUN_CODE_ARGS, { toolSet: {} }), VERIFIER_READ_ONLY, label)
+    assert.equal(c.agent.cancelled, 1, `${label}: stopped once`)
+    assert.deepEqual(h.logs.filter((line) => line.startsWith('advisor: stopping')), [
+      `advisor: stopping ${VERIFIER}: run_code was requested: this session uses the PTC executor and the native executor could not be mounted for the advisor verifier (${problem}); ${PTC_REMEDY}`,
+    ], `${label}: one warning`)
+    h.end(c)
+    await until(() => verificationLines(h.ledger).length === 1, `${label}: the unrecorded line`)
+    const [line] = verificationLines(h.ledger)
+    assert.equal(line.status, 'unrecorded', label)
+    assert.equal(line.reason, 'not_called', `${label}: the existing reason; the warning names the cause`)
+    assert.equal(line.tool_calls, 1, `${label}: only the read counts`)
+    h.dispose()
+  }
+})
+
+test('ptc: one diagnostic line per verifier names the mount outcome, the fiber state and whether run_code is a tool', async () => {
+  const h = withNative()
+  const c = ptcVerifier(h)
+  await settle()
+  h.start(c)
+  h.end(c)
+  // This harness models run_code as a registered global tool, so the line says yes;
+  // DSH 0.2.2-rc.3 never registers it (see the planner test, which says no).
+  assert.deepEqual(h.infos, [`advisor: ${VERIFIER}: native executor mounted on the child's Agent scope (presentation only; the guards and the run_code denial are unchanged); fiber state 2 active; run_code in tools: yes`])
+  h.dispose()
+  const failed = withNative(() => ({ reason: 'the package did not load' }))
+  ptcVerifier(failed)
+  assert.deepEqual(failed.logs, [`advisor: ${VERIFIER}: native executor not mounted: the package did not load; fiber state none; run_code in tools: yes`])
+  assert.deepEqual(failed.infos, [])
+  failed.dispose()
 })

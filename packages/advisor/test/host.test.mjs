@@ -27,6 +27,7 @@ import {
   VERIFIER_POLICY,
   verifierModelPolicy,
 } from '../src/verifier.js'
+import { fakeFiber, NATIVE } from './helpers/native.mjs'
 
 const selected = { provider: 'openrouter', model: '~deepseek/deepseek-flash-latest' }
 
@@ -129,6 +130,7 @@ function boundaryHarness({ dataDirProblem } = {}) {
   const dispose = installVerifierBoundary(ctx, undefined, undefined, dataDirProblem, {
     workspaceOf: () => BOUNDARY_WS,
     ledger: createLedger(path.join(BOUNDARY_TMP, 'data')),
+    nativeExecutor: () => NATIVE,
   })
   const sequence = []
   function agent(id, self, parent = 'lead') {
@@ -157,6 +159,8 @@ function boundaryHarness({ dataDirProblem } = {}) {
           getSectionOrder: () => 500,
           section(section) { sections.push(section); sequence.push('section') },
         },
+        // The native executor mount (src/executor.js) on the child's own scope.
+        plugin(plugin) { sequence.push(`plugin:${plugin.name}`); return fakeFiber() },
       },
     }
     agents.set(id, value)
@@ -203,7 +207,8 @@ test('policy and host boundary keep verification read-only and route-exact', () 
   const child = boundary.agent('child', 'advisor-verifier-abcdef012345')
   boundary.listeners['subagent/start']({ id: 'child', local: true, provider: 'spawn' })
   boundary.sequence.push('initial-prompt')
-  assert.deepEqual(boundary.sequence, ['guard', `register:${EVIDENCE_TOOL}`, `register:${REPORT_TOOL}`, 'register:grep', 'section', 'initial-prompt'])
+  // Guard first; the native executor mount is the one step added before the scoped tools.
+  assert.deepEqual(boundary.sequence, ['guard', 'plugin:native-tool-executor', `register:${EVIDENCE_TOOL}`, `register:${REPORT_TOOL}`, 'register:grep', 'section', 'initial-prompt'])
   assert.deepEqual(child.restrictions, [])
   assert.equal(child.guards.length, 1)
   assert.equal(child.value.cancelled, false)
@@ -1103,4 +1108,27 @@ test('no plugin prompt, guard text, README or source names an external CLI, its 
     assert.equal(typeof text, 'string', label)
     for (const banned of BANNED_NAMES) assert.doesNotMatch(text, banned, `${label}: ${banned}`)
   }
+})
+
+test('package.json: the native executor is an optional peer with a lower bound only; no engines pin and no new dependency', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.deepEqual(manifest.peerDependencies, { '@deepseek-ai/dsh-tool-executor-native': '>=0.2.2-rc.3' })
+  assert.deepEqual(manifest.peerDependenciesMeta, { '@deepseek-ai/dsh-tool-executor-native': { optional: true } })
+  assert.equal(Object.hasOwn(manifest, 'engines'), false, 'an engines.dsh mismatch would skip the whole bundle')
+  assert.deepEqual(manifest.dependencies, { zod: '4.4.3' })
+})
+
+test('README: the ptc section names the behaviour, the assumptions, the failure reasons, the peer and the ledger signs; run_code stays denied', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+  const start = readme.indexOf('### Sessions on the ptc preset')
+  assert.ok(start > 0, 'the section exists')
+  const section = readme.slice(start, readme.indexOf('\n## ', start))
+  for (const phrase of [
+    '`@deepseek-ai/dsh-tool-executor-native`', 'once, when the plugin starts', 'own Agent scope', 'once per Agent object',
+    '`subagent/end`', '`agent/disposed`', 'plugin unload', 'presentation only', '`run_code` stays denied',
+    'Host assumptions', 'run_code was requested: this session uses the PTC executor and the native executor could not be mounted for the advisor child (<reason>); run the Advisor from a session on the standard or cordis agent preset',
+    'run_code was requested again after the native executor was mounted', '`peerDependencies`', '`>=0.2.2-rc.3`', 'peerDependenciesMeta',
+    'no `engines.dsh`', 'pnpm', '`tool_calls`', 'reason `not_called`', 'run_code in tools',
+  ]) assert.ok(section.includes(phrase), phrase)
+  assert.ok(readme.includes('mutations, messaging, further delegation, and `run_code` are denied'), 'the verifier line is kept')
 })

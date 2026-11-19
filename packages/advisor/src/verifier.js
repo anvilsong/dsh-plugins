@@ -1,6 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
+import { mountNativeExecutor, RUN_CODE, runCodeFailure } from './executor.js'
 import { MAX_VERIFICATION_BYTES, REPLIES_DIR, sha256 } from './ledger.js'
 import { confinedGrep, evidenceReferenceIssues, plannerPathAllowed, plannerPathDenial } from './planner.js'
 import { effortReset, routeLabel, spawnArgs, spawnPolicy } from './state.js'
@@ -819,14 +820,17 @@ function releaseRegistrations(record) {
  *   writer of verification records and lines, and the folder read, glob and
  *   grep are kept out of. Without either (the default), every verifier is
  *   denied all tools and stopped. `now`: the clock of verification lines.
+ *   `nativeExecutor`: () => loadNativeExecutor()'s result (src/executor.js),
+ *   mounted on each allowed verifier for sessions on the ptc preset; without
+ *   it no mount is made and a run_code call stops the verifier at once.
  */
 export function installVerifierBoundary(ctx, verifierEnabled = () => true, selectedRoute = () => null, dataDirProblem = () => undefined, deps = {}) {
-  const { workspaceOf = () => undefined, ledger, now = () => Date.now() } = deps ?? {}
+  const { workspaceOf = () => undefined, ledger, now = () => Date.now(), nativeExecutor } = deps ?? {}
   const ledgerReady = typeof ledger?.ledgerLinesFor === 'function' && typeof ledger?.replyPath === 'function'
     && typeof ledger?.writableProblem === 'function' && typeof ledger?.ledgerPath === 'string'
     && typeof ledger?.dir === 'string' && path.isAbsolute(ledger.dir)
   const active = new Map() // agent id -> record of its latest start
-  const slots = new WeakMap() // Agent object -> { record } read by its one child guard
+  const slots = new WeakMap() // Agent object -> { record, mount } read by its one child guard
   // agent id -> the verification report of an allowed verifier. It outlives
   // the record of each start and the Agent object (a few fields per verifier
   // for the life of this boundary), so a later start, also on a new Agent
@@ -1073,10 +1077,37 @@ export function installVerifierBoundary(ctx, verifierEnabled = () => true, selec
     return undefined
   })
 
+  /** Release the native executor mount of an Agent object, if it has one. */
+  function releaseMount(agent) {
+    const slot = agent === undefined ? undefined : slots.get(agent)
+    if (slot?.mount === undefined) return
+    const { mount } = slot
+    slot.mount = undefined
+    mount.dispose()
+  }
+
   /**
-   * Guard first, then the scoped evidence and report tools and the
-   * verifier's grep, then the capture, then the policy. Throws when a
-   * registration did not take effect.
+   * A run_code call of an allowed verifier: always denied by childDenial;
+   * without a confirmed native mount (src/executor.js runCodeFailure) the
+   * verifier is warned about once and stopped. Never throws.
+   */
+  function runCodeFailFast(slot, exec) {
+    try {
+      const { record } = slot
+      if (exec?.name !== RUN_CODE || record.denyAll || exec.agent === undefined || exec.agent !== record.agent) return
+      const mount = slot.mount
+      const reason = runCodeFailure(mount, exec, 'advisor verifier')
+      if (reason === undefined || slot.stopped === record) return
+      slot.stopped = record
+      warn(`advisor: stopping ${VERIFIER_NAME_PREFIX}-${record.consultId}: ${reason}`)
+      stopVerifier(ctx, record.agent)
+    } catch { /* the denial stands */ }
+  }
+
+  /**
+   * Guard first, then the native executor mount, the scoped evidence and
+   * report tools and the verifier's grep, then the capture, then the
+   * policy. Throws when a registration did not take effect.
    */
   function installAgentBoundary(record, allowed) {
     const { agent } = record
@@ -1090,13 +1121,33 @@ export function installVerifierBoundary(ctx, verifierEnabled = () => true, selec
     // is the actual security boundary.
     let slot = slots.get(agent)
     if (slot === undefined) {
-      const created = { record }
-      tools.guard((exec) => childDenial(created.record, exec))
+      const created = { record, mount: undefined, stopped: undefined }
+      tools.guard((exec) => {
+        runCodeFailFast(created, exec)
+        return childDenial(created.record, exec)
+      })
       slots.set(agent, created)
       slot = created
     }
     slot.record = record
     if (!allowed) return
+
+    // The native executor, once per Agent object (not per start): after the
+    // guard, before the scoped tools and their capture. Presentation only; a
+    // failed mount leaves the verifier allowed.
+    if (typeof nativeExecutor === 'function' && slot.mount === undefined) {
+      let loaded
+      try {
+        loaded = nativeExecutor()
+      } catch (error) {
+        loaded = { reason: `the native executor is unavailable: ${describe(error)}` }
+      }
+      const name = `${VERIFIER_NAME_PREFIX}-${record.consultId}`
+      slot.mount = mountNativeExecutor(agent, loaded, (level, line) => {
+        if (level === 'info') ctx.logger?.info?.(`advisor: ${name}: ${line}`)
+        else warn(`advisor: ${name}: ${line}`)
+      })
+    }
 
     // Register before capture so the scoped definitions are the trusted ones.
     const evidence = evidenceTool(record, ledger)
@@ -1165,7 +1216,10 @@ export function installVerifierBoundary(ctx, verifierEnabled = () => true, selec
       // A later start of this child: its scoped registrations are refreshed,
       // and an older Agent object under the same id is shut out.
       releaseRegistrations(previous)
-      if (previous.agent !== agent) previous.denyAll = true
+      if (previous.agent !== agent) {
+        previous.denyAll = true
+        releaseMount(previous.agent)
+      }
     }
     const record = {
       agent,
@@ -1210,6 +1264,7 @@ export function installVerifierBoundary(ctx, verifierEnabled = () => true, selec
     const record = active.get(id)
     if (record === undefined || (agent !== undefined && record.agent !== agent)) return
     releaseRegistrations(record)
+    releaseMount(record.agent)
     active.delete(id)
     finalize(record.report)
   }
@@ -1229,6 +1284,7 @@ export function installVerifierBoundary(ctx, verifierEnabled = () => true, selec
     for (const record of active.values()) {
       stopVerifier(ctx, record.agent)
       releaseRegistrations(record)
+      releaseMount(record.agent)
       finalize(record.report)
     }
     active.clear()

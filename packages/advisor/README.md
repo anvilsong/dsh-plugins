@@ -539,6 +539,9 @@ Execution:
 - The child's `grep` is a scoped wrapper around the Host grep that drops
   matches in protected or outside files.
 - After a result is recorded, every further tool call is refused.
+- `run_code` is denied in every session; on the `ptc` agent preset a
+  `run_code` call can also end the run at once (see
+  [Sessions on the ptc preset](#sessions-on-the-ptc-preset)).
 
 Limits of this iteration:
 
@@ -550,6 +553,105 @@ Limits of this iteration:
   hash check still applies.
 - `glob` can still list the names, but not the contents, of protected files.
 - Grep results over 250 matches do not get the saved full-result file.
+
+### Sessions on the ptc preset
+
+In a session on the `ptc` agent preset the PTC tool executor offers the model
+only `run_code`; every other tool is reachable only from inside a `run_code`
+program. Those programs are real Node processes and not read-only, so
+`run_code` stays denied to advisor children and verifiers in every case.
+Without more, such a child can call nothing: it ends without a recorded
+result after 0 tool calls.
+
+What the plugin does:
+
+- It imports the Host's native tool executor,
+  `@deepseek-ai/dsh-tool-executor-native`, once, when the plugin starts, never
+  when a child starts. The guards are installed without waiting for the
+  import.
+- For each valid advisor child and allowed verifier it mounts that plugin with
+  `agent.ctx.plugin` on the child's own Agent scope: after the child's guard,
+  before its scoped tools and their capture, and once per Agent object (a later
+  start of the same object keeps it). The mount is disposed at `subagent/end`,
+  at `agent/disposed` and at plugin unload. An invalid or refused child is never
+  mounted, and the lead's executor is not touched. Once the mount is disposed,
+  the Host keeps the child's scope without an executor, so a child that ran on
+  after that without a new start could call no tool at all; a new start mounts
+  again.
+- The nearest scope selects the executor, so the child is offered `read`,
+  `grep`, `glob` and its scoped tools directly.
+- It mounts in every session, also on the standard and cordis presets, where it
+  changes nothing. The Host gives a plugin no way to ask which executor a scope
+  uses: the `run_code` transport is not a registered tool, so
+  `tools.get('run_code', agent)` cannot tell.
+- The mount is presentation only. The guards and the captured definitions are
+  unchanged, `run_code` stays denied, and a mount that fails does not stop or
+  invalidate a child by itself.
+- Each child gets one Host log line, info when mounted and warn otherwise, such
+  as `advisor planner: advisor-consult-<id>: native executor mounted on the
+  child's Agent scope (…); fiber state 2 active; run_code in tools: no`
+  (verifiers: `advisor: advisor-verifier-<id>: …`). `run_code in tools` is `no`
+  on DSH 0.2.2-rc.3 in either preset; it would show a Host that registers the
+  transport as a tool. At plugin start one line says whether the import worked:
+  `advisor: native executor for Advisor children: loaded`, or `not loaded
+  (<reason>)`.
+
+Fail fast. A `run_code` call by the child is always denied with the usual
+read-only message. It also ends the run at once:
+
+- When no native mount is confirmed: the package did not load, `ctx.plugin`
+  threw, or the mounted fiber stayed inactive, failed to start or has not
+  started yet. An advisor child gets a `failed` line with this
+  `failure_reason`:
+  `run_code was requested: this session uses the PTC executor and the native executor could not be mounted for the advisor child (<reason>); run the Advisor from a session on the standard or cordis agent preset`
+- With a confirmed mount, when the call comes from a later model step than the
+  first step that asked for `run_code`. The `run_code` calls of that first step
+  are only denied, because it may have been assembled before the mount
+  started; a later step that still asks for it means that the mount did not
+  change what the child is offered:
+  `run_code was requested again after the native executor was mounted for the advisor child: this session uses the PTC executor and the mount did not change the tools it is offered; run the Advisor from a session on the standard or cordis agent preset`.
+  A step is told apart by its tool set; a call without one counts as a step of
+  its own.
+
+A verifier is reported once in the Host log, as `advisor: stopping
+advisor-verifier-<id>: ` and the same text with `advisor verifier` in place of
+`advisor child`, and stopped. Its ledger line is the usual `unrecorded` line
+with reason `not_called`.
+
+Host assumptions. Read in the DSH 0.2.2-rc.3 sources: under PTC only
+`run_code` is directly callable; the nearest scope selects the executor, and a
+scope takes one executor; the native plugin injects `tools` and sets its
+executor in the scope it is mounted in; cordis runs a mounted plugin's body one
+microtask after `ctx.plugin` returns. Assumed, and decided only by a live run
+in a ptc session:
+
+- `agent.ctx` carries the child's own Agent scope, which is nearer than the
+  preset scope that holds the PTC executor.
+- The child's first model step is assembled after the mount started; if not,
+  that one step still offers `run_code`, and the bound above applies.
+- The installation resolves the bare import of the peer below.
+
+Peer dependency. `package.json` lists `@deepseek-ai/dsh-tool-executor-native`
+in `peerDependencies` with the range `>=0.2.2-rc.3`, marked optional in
+`peerDependenciesMeta`, and adds no runtime dependency. A bare import of a Host
+package resolves to the installation's copy only when the importing package
+lists it there; an undeclared one is not found, or resolves a private copy. The
+range is a lower bound only: a bundle without `engines.dsh` has its
+`@deepseek-ai/dsh-*` peer ranges checked against the DSH version, and is
+skipped when they do not match, so later DSH versions keep loading the plugin
+and versions before 0.2.2-rc.3 skip it. There is no `engines.dsh` pin, which
+would skip the whole bundle on any other version. `optional` keeps npm (this
+repository's workspace) from installing the package and pnpm from reporting
+it missing; DSH reads only `peerDependencies`. For a linked install pnpm warns
+once that the linked package's peers are not resolved from the profile; that
+is expected, because the Host resolves them. Changes take effect after a Host
+restart.
+
+In the ledger: a run stopped this way has `status: failed`, a `failure_reason`
+that starts with `run_code was requested`, and usually `tool_calls: 0`. Runs in
+a ptc session before this change show `child ended without a recorded result`
+with `tool_calls: 0`. A ptc run that works shows `status: ok` and `tool_calls`
+above 0.
 
 ### Protected names
 
