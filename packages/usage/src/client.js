@@ -41,7 +41,9 @@ window.__ModuleLoader__.load({
      * a surface never adds provider traffic. `state` holds the last unwrapped
      * Host state. `offline` is set when the Remote call itself failed (it was
      * rejected or answered `{ok:false}`): the last state stays, and the next
-     * good reply clears the note.
+     * good reply clears the note. Its `missing` flag says the failure code
+     * means "no such service on the Host" (see MISSING_SERVICE_CODES), which
+     * is not a lost connection.
      */
     function makeStore() {
       return {
@@ -350,6 +352,8 @@ window.__ModuleLoader__.load({
       refreshFailedAt: 'Refresh failed at {time}: {detail}',
       refreshFailed: 'Refresh failed: {detail}',
       hostUnreachable: 'Host not reachable: {message}',
+      notAvailable: 'Usage is not available for this provider',
+      notAvailableWhy: 'Usage is not available for this provider: {message}',
       readFailed: 'Read failed.',
       remoteFailed: 'The Remote call failed.',
     }
@@ -369,18 +373,44 @@ window.__ModuleLoader__.load({
       return null
     }
 
-    /** Clock time as the panels and the Host reports print it. */
+    /**
+     * Clock time as the panels and the Host reports print it: the time alone
+     * for today, the date and the time for any other day (a read from two days
+     * ago must not look like one from this morning). The Host's report footer
+     * (providers/net.js) applies the same rule.
+     */
     function clock(ms) {
-      return new Date(ms).toLocaleTimeString()
+      const at = new Date(ms)
+      return at.toDateString() === new Date(Date.now()).toDateString() ? at.toLocaleTimeString() : at.toLocaleString()
     }
 
-    /** The message and code of a failed or rejected Remote call. */
+    /**
+     * The Remote failure codes that mean the Host has no such service: the
+     * provider row is disabled or its mount failed, so the other providers
+     * still answer. The Gateway raises `gateway/invocation-unavailable` when no
+     * active Remote method exports the endpoint and `gateway/service-unavailable`
+     * when a declared Service is not active (dsh-api-gateway src/index.ts,
+     * resolveSrcDescriptor and the receiver lookup); `gateway/method-unavailable`
+     * and `gateway/definition-unavailable` are the same kind of answer for a
+     * missing method or a withdrawn definition. A lost connection never uses
+     * them: the client folds a carrier throw into `gateway/internal`
+     * (dsh-api-gateway src/client/index.ts, carrierFailure), and a Host method
+     * that threw is `gateway/internal` too.
+     */
+    const MISSING_SERVICE_CODES = [
+      'gateway/invocation-unavailable',
+      'gateway/service-unavailable',
+      'gateway/method-unavailable',
+      'gateway/definition-unavailable',
+    ]
+
+    /** The message and code of a failed or rejected Remote call, and whether the code says the service is missing. */
     function remoteFailure(error) {
       const message = error && typeof error.message === 'string' && error.message.length > 0
         ? error.message
         : typeof error === 'string' && error.length > 0 ? error : HEALTH_TEXT.remoteFailed
       const code = error && typeof error.code === 'string' && error.code.length > 0 ? error.code : null
-      return { message, code }
+      return { message, code, missing: code !== null && MISSING_SERVICE_CODES.includes(code) }
     }
 
     /**
@@ -390,7 +420,10 @@ window.__ModuleLoader__.load({
      *   'stale'    data, but the last attempt failed
      *   'error'    the last attempt failed and there is no data
      *   'offline'  the Remote call itself failed; the last data, if any, stays
-     * The last attempt failed when the Host says so (status 'error', or the
+     * An offline read whose failure code says the service is missing is
+     * `absent`: the provider is simply not mounted, which is neither a lost
+     * connection nor an error, so it never counts as `unavailable` (the chip
+     * hides, the card stays neutral). The last attempt failed when the Host says so (status 'error', or the
      * error it keeps while the next refresh is 'loading') or when it is newer
      * than the last good read (`attemptedAt` after `fetchedAt`).
      */
@@ -409,6 +442,7 @@ window.__ModuleLoader__.load({
         || (attemptedAt !== null && (fetchedAt === null || attemptedAt > fetchedAt))
       )
       const offline = view && view.offline ? view.offline : envelope ? remoteFailure(envelope.error) : null
+      const absent = Boolean(offline) && offline.missing === true
       let kind = 'idle'
       if (offline) kind = 'offline'
       else if (failed) kind = data ? 'stale' : 'error'
@@ -422,8 +456,10 @@ window.__ModuleLoader__.load({
         loading: status === 'loading' && !offline,
         // Data that may be out of date: the last attempt failed, or the Host is not reachable.
         stale: data !== null && (kind === 'stale' || kind === 'offline'),
-        // Nothing to show, and a failure to say why.
-        unavailable: data === null && (kind === 'error' || kind === 'offline'),
+        // Nothing to show, and a failure to say why. A provider that is not mounted is not a failure.
+        unavailable: data === null && (kind === 'error' || (kind === 'offline' && !absent)),
+        // The Host has no such service (the row is disabled or its mount failed).
+        absent,
         failed,
         fetchedAt,
         attemptedAt: failed ? attemptedAt : null,
@@ -440,9 +476,14 @@ window.__ModuleLoader__.load({
         : fill(HEALTH_TEXT.refreshFailed, { detail: health.detail })
     }
 
+    /** The sentence for a failed Remote call: a missing service is neutral, anything else a lost connection. */
+    function offlineText(health) {
+      return fill(health.absent ? HEALTH_TEXT.notAvailableWhy : HEALTH_TEXT.hostUnreachable, { message: health.offline.message })
+    }
+
     /** What a collapsed surface says about a failure: the offline note, else the Host's detail. */
     function healthNote(health) {
-      if (health.offline) return fill(HEALTH_TEXT.hostUnreachable, { message: health.offline.message })
+      if (health.offline) return offlineText(health)
       return health.failed ? health.detail : null
     }
 
@@ -466,7 +507,7 @@ window.__ModuleLoader__.load({
     function healthLines(px, health) {
       const lines = []
       if (health.offline) {
-        lines.push(React.createElement('div', { className: `${px}-err`, key: 'offline' }, fill(HEALTH_TEXT.hostUnreachable, { message: health.offline.message })))
+        lines.push(React.createElement('div', { className: health.absent ? `${px}-msg` : `${px}-err`, key: 'offline' }, offlineText(health)))
         if (health.offline.code) lines.push(React.createElement('div', { className: `${px}-code`, key: 'offline-code' }, health.offline.code))
       }
       if (health.failed) {
@@ -496,7 +537,8 @@ window.__ModuleLoader__.load({
       parts.push(React.createElement('span', { key: 'health', className: health.stale ? `${px}-stale` : `${px}-code` }, mark))
       let label
       if (health.stale || health.unavailable) {
-        const shown = [title, ...(values.length ? values.map((value) => value.text) : [HEALTH_TEXT.unavailable])]
+        // The same words the chip shows: its figures, else 'unavailable' or the empty word.
+        const shown = [title, ...(values.length ? values.map((value) => value.text) : [health.unavailable ? HEALTH_TEXT.unavailable : empty])]
         if (health.stale) shown.push(HEALTH_TEXT.stale)
         const said = [shown.join(' ')]
         if (health.stale && health.fetchedAt !== null) said.push(fill(HEALTH_TEXT.read, { time: clock(health.fetchedAt) }))
@@ -575,7 +617,7 @@ window.__ModuleLoader__.load({
         Promise.resolve()
           .then(() => ns.refresh())
           .then((result) => store.accept(result))
-          // A rejected refresh: the Host is not reachable; the last data stays.
+          // A rejected refresh: the Remote call failed (its code says a lost connection or a missing service); the last data stays.
           .catch((error) => store.fail(error))
           .then(() => setBusy(false))
       }, [getNs, store])
@@ -1575,8 +1617,10 @@ window.__ModuleLoader__.load({
       const plan = health.data ? quotaPlan(health.data) : null
       const lv = healthLevel(summaryLevel(p, s), health)
       // The offline note, else the Host's failure: under the line while collapsed
-      // (the open panel shows it in full, with its time).
-      const failure = healthNote(health)
+      // (the open panel shows it in full, with its time). A provider that is not
+      // mounted says so in plain words, and with nothing else on the line the
+      // note is just the Gateway's own message.
+      const failure = health.absent && !summary ? health.offline.message : healthNote(health)
       // While the refresh after a sign-in runs, what the store holds is from before it.
       if (busy && !summary) {
         return React.createElement(
@@ -1600,12 +1644,12 @@ window.__ModuleLoader__.load({
           },
           React.createElement('span', { className: `${p.px}-dot` + (lv ? ` ${p.px}-${lv}` : '') }),
           plan ? React.createElement('span', { className: `${p.px}-scope` }, plan) : null,
-          React.createElement('span', null, summary ?? HEALTH_TEXT.usageUnavailable),
+          React.createElement('span', null, summary ?? (health.absent ? HEALTH_TEXT.notAvailable : HEALTH_TEXT.usageUnavailable)),
           health.stale ? React.createElement('span', { className: `${p.px}-stale` }, readNote(health)) : null,
           React.createElement('span', { className: `${p.px}-code`, style: { marginTop: 0 } }, open ? '▴ less' : '▾ details'),
         ),
         failure && !open
-          ? React.createElement('div', { className: `${p.px}-err`, role: 'status', style: { marginTop: 6, fontSize: 12, overflowWrap: 'anywhere' } }, failure)
+          ? React.createElement('div', { className: health.absent ? `${p.px}-msg` : `${p.px}-err`, role: 'status', style: { marginTop: 6, fontSize: 12, overflowWrap: 'anywhere' } }, failure)
           : null,
         open ? React.createElement(p.panel, { store, getNs, title: p.title }) : null,
       )
@@ -2167,7 +2211,7 @@ window.__ModuleLoader__.load({
                 const result = await ns.snapshot()
                 if (alive) p.store.accept(result)
               } catch (error) {
-                // The Host is not reachable: keep the last state, show why; the next tick retries.
+                // The Remote call failed: keep the last state, show why (a missing service or a lost connection); the next tick retries.
                 if (alive) p.store.fail(error)
               }
               if (alive) timer = setTimeout(tick, POLL_MS)
@@ -2198,9 +2242,13 @@ window.__ModuleLoader__.load({
           ctx.slots.register(
             { name: CHIP_SLOT, id: p.chipId, order: 10, label: () => p.chipLabel },
             function ChipPanel(props) {
-              const state = p.store.state
+              // Read through the store hook: the chip appears or hides when the state arrives.
+              const health = useHealth(p.store)
+              const state = health.state
               const provider = useActiveProvider(getDirectory, props.sessionId)
               if (state && state.ui && state.ui.composerChip === false) return null
+              // No service on the Host and nothing read: this provider is not mounted, so there is no chip.
+              if (health.absent && health.data === null) return null
               const gates = state && state.ui && Array.isArray(state.ui.gate) ? state.ui.gate : p.gate
               if (!gates.includes(provider)) return null
               return React.createElement(p.chip, { ...props, store: p.store, getNs, title: p.title })

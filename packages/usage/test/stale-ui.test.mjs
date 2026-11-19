@@ -18,7 +18,10 @@ import { renderScenario, SCENARIOS } from './helpers/gallery.mjs'
 import * as fixtures from './helpers/fixtures.mjs'
 
 const SOURCE = readFileSync(new URL('../src/client.js', import.meta.url), 'utf8')
-const clock = (ms) => new Date(ms).toLocaleTimeString()
+// The panels print a time of today as a time and any other day with its date
+// (the same rule as the Host's report footer).
+const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString()
+const clock = (ms) => (sameDay(ms, Date.now()) ? new Date(ms).toLocaleTimeString() : new Date(ms).toLocaleString())
 const READ = clock(fixtures.FETCHED_AT)
 const FAILED = clock(fixtures.FAILED_AT)
 const DETAIL = 'HTTP 429: Rate limit exceeded. Try again in 30 seconds.'
@@ -526,5 +529,305 @@ test('the gallery shows a stale card, a stale chip, a stale panel and an offline
   assert.ok(html.offline.includes(`stale · read ${READ}`), 'the offline card keeps its last data')
   for (const [id, text] of Object.entries(html)) {
     for (const bad of ['undefined', 'NaN', '[object Object]']) assert.ok(!text.includes(bad), `${id} contains ${bad}`)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 9. A provider that is not mounted is not a lost connection
+//
+// dsh-typert-protocol src/types.ts:124-133: a Remote call answers
+// { ok: false, error } for a lost connection, a dispatch failure and a Host
+// method that threw. The code tells them apart: the Gateway answers
+// `gateway/invocation-unavailable` (no active Remote method exports the
+// endpoint) or `gateway/service-unavailable` (the Service is not active) when
+// the provider row is disabled or its mount failed; a carrier throw folds into
+// `gateway/internal`.
+// ---------------------------------------------------------------------------
+
+const NOT_AVAILABLE = 'Usage is not available for this provider'
+const MISSING_CODES = ['gateway/invocation-unavailable', 'gateway/service-unavailable', 'gateway/method-unavailable', 'gateway/definition-unavailable']
+
+/** The visible words of a chip button, without the "!" mark: what its accessible name has to start with. */
+function visibleWords(button) {
+  return button.children.filter((child) => typeof child === 'object').map((child) => textContent(child)).filter((text) => text && text !== '!').join(' ')
+}
+
+for (const family of FAMILIES) {
+  test(`${family.id}: a service that is not mounted gets a neutral card line and no chip, never "Host not reachable"`, { timeout: TEST_TIMEOUT_MS }, async () => {
+    for (const code of MISSING_CODES) {
+      const failure = fixtures.notMounted(family.namespace, code)
+      const { h, mount } = await mountCard(family, family.fixture(), { snapshotFailure: failure })
+      try {
+        const text = textContent(mount.tree)
+        assert.ok(findByText(mount.tree, NOT_AVAILABLE), `${code}: the neutral line: ${text}`)
+        assert.ok(!text.includes('Host not reachable'), `${code}: ${text}`)
+        assert.ok(!text.includes('Usage unavailable'), `${code}: ${text}`)
+        const status = statusOf(mount.tree)
+        assert.equal(textContent(status), failure.message, `${code}: the Gateway's own message`)
+        assert.ok(!String(status.props.className).includes('-err'), `${code}: the note is not an error line: ${status.props.className}`)
+        assert.ok(!String(dotOf(mount.tree, family.px).props.className).includes('-bad'), `${code}: no red dot`)
+      } finally {
+        h.dispose()
+      }
+    }
+    const chip = await mountChip(CHIPS.find((candidate) => candidate.id === family.id), family.fixture(), { snapshotFailure: fixtures.notMounted(family.namespace) })
+    try {
+      assert.equal(chipButton(chip.mount.tree), null, 'no chip for a provider that is not mounted')
+      assert.equal(textContent(chip.mount.tree), '')
+    } finally {
+      chip.h.dispose()
+    }
+  })
+}
+
+test('minimax: a service that is not mounted has no chip', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const family = CHIPS.find((candidate) => candidate.id === 'minimax')
+  const chip = await mountChip(family, family.fixture(), { snapshotFailure: fixtures.notMounted(family.namespace) })
+  try {
+    assert.equal(chipButton(chip.mount.tree), null)
+  } finally {
+    chip.h.dispose()
+  }
+})
+
+for (const family of PANEL_FAMILIES) {
+  test(`${family.id} panel: a service that is not mounted says so in the panel, with the message, not as an error`, { timeout: TEST_TIMEOUT_MS }, async () => {
+    const failure = fixtures.notMounted(family.namespace)
+    const { h, mount } = await mountCard(family, family.fixture(), { snapshotFailure: failure })
+    try {
+      await expand(mount, family)
+      const line = findByText(mount.tree, `${NOT_AVAILABLE}: ${failure.message}`)
+      assert.ok(line, textContent(mount.tree))
+      assert.ok(!String(line.props.className).includes('-err'), line.props.className)
+      assert.ok(!textContent(mount.tree).includes('Host not reachable'))
+      assert.ok(findByText(mount.tree, failure.code), 'the code stays visible')
+    } finally {
+      h.dispose()
+    }
+  })
+}
+
+test('a lost connection stays "Host not reachable" on both channels, with a red "unavailable" chip', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const lost = [
+    ['answered { ok: false } with the carrier code', { snapshotFailure: fixtures.LOST_CONNECTION }],
+    ['answered { ok: false } with another code', { snapshotFailure: { code: 'gateway/cancelled', message: fixtures.HOST_DOWN } }],
+    ['rejected', { snapshotRejection: fixtures.HOST_DOWN }],
+    ['rejected with an unrelated code', { snapshotRejection: { code: 'ECONNREFUSED', message: fixtures.HOST_DOWN } }],
+  ]
+  for (const [how, options] of lost) {
+    const card = await mountCard(ZHIPU, ZHIPU.fixture(), options)
+    try {
+      assert.equal(textContent(statusOf(card.mount.tree)), `Host not reachable: ${fixtures.HOST_DOWN}`, how)
+      assert.ok(!textContent(card.mount.tree).includes(NOT_AVAILABLE), how)
+      assert.ok(findByText(card.mount.tree, 'Usage unavailable'), how)
+    } finally {
+      card.h.dispose()
+    }
+    const chip = await mountChip(CHIPS.find((family) => family.id === 'zhipu'), ZHIPU.fixture(), options)
+    try {
+      const button = chipButton(chip.mount.tree)
+      assert.ok(button, `${how}: the chip stays`)
+      assert.ok(findByText(button, 'unavailable'), how)
+      assert.ok(String(dotOf(chip.mount.tree, 'pup').props.className).includes('-bad'), `${how}: a red dot`)
+    } finally {
+      chip.h.dispose()
+    }
+  }
+})
+
+test('the code, not the channel, tells a missing service from a lost connection: a rejected call with a missing-service code is not "Host not reachable"', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const failure = fixtures.notMounted(ZHIPU.namespace)
+  const { h, mount } = await mountCard(ZHIPU, ZHIPU.fixture(), { snapshotRejection: failure })
+  try {
+    assert.ok(findByText(mount.tree, NOT_AVAILABLE))
+    assert.ok(!textContent(mount.tree).includes('Host not reachable'))
+  } finally {
+    h.dispose()
+  }
+})
+
+test('a Refresh answered "not mounted" shows the neutral line in the open panel and keeps the last data', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const family = PANEL_FAMILIES.find((candidate) => candidate.id === 'deepseek')
+  const failure = fixtures.notMounted(family.namespace)
+  for (const option of ['refreshFailure', 'refreshRejection']) {
+    const { h, mount } = await mountCard(family, family.fixture(), { [option]: failure })
+    try {
+      await expand(mount, family)
+      await click(mount, findByText(mount.tree, 'Refresh'))
+      assert.ok(findByText(mount.tree, `${NOT_AVAILABLE}: ${failure.message}`), `${option}: ${textContent(mount.tree)}`)
+      assert.ok(!textContent(mount.tree).includes('Host not reachable'), option)
+      assert.ok(textContent(mount.tree).includes(family.panel), `${option}: the last data stays`)
+      assert.ok(textContent(mount.tree).includes(`stale · read ${READ}`), option)
+    } finally {
+      h.dispose()
+    }
+  }
+})
+
+test('a service that disappears keeps the last data and its stale chip; one that comes back clears the note and shows the chip', { timeout: TEST_TIMEOUT_MS }, async () => {
+  mock.timers.enable({ apis: ['setTimeout'] })
+  let h
+  try {
+    const usage = createUsageNamespaceStub(fixtures.zhipu(), { snapshotFailure: fixtures.notMounted(ZHIPU.namespace) })
+    h = await bootClient({ namespaces: { zhipuUsage: usage }, activeProvider: ZHIPU.route })
+    const chip = await h.mountChip('zhipu-usage-chip')
+    assert.equal(chipButton(chip.tree), null, 'hidden while the service is missing')
+    usage.snapshotFailure = undefined
+    await pollOnce(chip)
+    assert.ok(chipButton(chip.tree), 'the chip appears when the service answers')
+    assert.ok(!findByText(chipButton(chip.tree), 'stale'))
+    usage.snapshotFailure = fixtures.notMounted(ZHIPU.namespace)
+    const card = await h.mountCard(ZHIPU.ns, cardProps(ZHIPU.route))
+    await pollOnce(chip)
+    await card.settle()
+    assert.ok(chipButton(chip.tree), 'the last data keeps the chip')
+    assert.ok(findByText(chipButton(chip.tree), 'stale'))
+    assert.ok(!textContent(chipButton(chip.tree)).includes('unavailable'))
+    assert.ok(textContent(card.tree).includes(ZHIPU.summary))
+    assert.ok(findByText(card.tree, `stale · read ${READ}`))
+    assert.ok(textContent(statusOf(card.tree)).startsWith(NOT_AVAILABLE))
+    assert.ok(!textContent(card.tree).includes('Host not reachable'))
+  } finally {
+    h?.dispose()
+    mock.timers.reset()
+  }
+})
+
+test('the not-available words are written once, in the string table', () => {
+  assert.equal(SOURCE.split(`'${NOT_AVAILABLE}`).length - 1, 2, 'the line and its detail form')
+  assert.equal(SOURCE.split('Usage is not available').length - 1, 2, 'no other copy of the words')
+})
+
+// ---------------------------------------------------------------------------
+// 10. A time from another day carries its date
+// ---------------------------------------------------------------------------
+
+test('a read from another day prints its date, a time from today prints only the time (card, panel, chip)', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const now = new Date(2026, 10, 19, 10, 0, 0).getTime()
+  const twoDaysAgo = new Date(2026, 10, 17, 9, 15, 0).getTime()
+  const earlierToday = new Date(2026, 10, 19, 0, 30, 0).getTime()
+  const justNow = new Date(2026, 10, 19, 9, 50, 0).getTime()
+  const old = new Date(twoDaysAgo).toLocaleString()
+  assert.notEqual(old, new Date(twoDaysAgo).toLocaleTimeString())
+  mock.timers.enable({ apis: ['Date'], now })
+  try {
+    const state = { ...fixtures.failed(ZHIPU.fixture(), { attemptedAt: justNow }), fetchedAt: twoDaysAgo }
+    const card = await mountCard(ZHIPU, state)
+    try {
+      assert.ok(findByText(card.mount.tree, `stale · read ${old}`), textContent(card.mount.tree))
+      await expand(card.mount, ZHIPU)
+      assert.ok(findByText(card.mount.tree, `Refresh failed at ${new Date(justNow).toLocaleTimeString()}: ${DETAIL}`), textContent(card.mount.tree))
+      assert.ok(textContent(card.mount.tree).includes(`read ${old}`))
+    } finally {
+      card.h.dispose()
+    }
+    const chip = await mountChip(CHIPS.find((family) => family.id === 'zhipu'), state)
+    try {
+      assert.ok(chipButton(chip.mount.tree).props['aria-label'].includes(`read ${old}`), chipButton(chip.mount.tree).props['aria-label'])
+    } finally {
+      chip.h.dispose()
+    }
+    const today = await mountCard(ZHIPU, { ...state, fetchedAt: earlierToday })
+    try {
+      assert.ok(findByText(today.mount.tree, `stale · read ${new Date(earlierToday).toLocaleTimeString()}`), textContent(today.mount.tree))
+    } finally {
+      today.h.dispose()
+    }
+  } finally {
+    mock.timers.reset()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 11. The accessible name starts with the visible words
+// ---------------------------------------------------------------------------
+
+for (const family of CHIPS) {
+  test(`${family.id} chip: with data but no figures the accessible name says what the chip shows, not "unavailable stale"`, { timeout: TEST_TIMEOUT_MS }, async () => {
+    for (const [name, state] of [
+      ['stale, no figures', { ...stale(family), data: {} }],
+      ['no data', noData(family)],
+    ]) {
+      const { h, mount } = await mountChip(family, state)
+      try {
+        const button = chipButton(mount.tree)
+        const label = button.props['aria-label']
+        const visible = visibleWords(button)
+        assert.ok(label.startsWith(visible), `${name}: "${label}" does not start with the visible words "${visible}"`)
+        if (name.startsWith('stale')) assert.ok(!label.includes('unavailable'), `${name}: ${label}`)
+      } finally {
+        h.dispose()
+      }
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 12. An older Host: no attemptedAt, still stale while the next refresh runs
+// ---------------------------------------------------------------------------
+
+for (const family of FAMILIES) {
+  test(`${family.id}: a state from an older Host that is loading again with the failure kept is still stale`, { timeout: TEST_TIMEOUT_MS }, async () => {
+    const state = fixtures.olderHost(fixtures.loading(stale(family)))
+    assert.equal(state.attemptedAt, undefined)
+    assert.equal(state.status, 'loading')
+    const card = await mountCard(family, state)
+    try {
+      assert.ok(findByText(card.mount.tree, `stale · read ${READ}`), textContent(card.mount.tree))
+      assert.equal(textContent(statusOf(card.mount.tree)), DETAIL)
+    } finally {
+      card.h.dispose()
+    }
+    const chip = await mountChip(CHIPS.find((candidate) => candidate.id === family.id), state)
+    try {
+      assert.ok(findByText(chipButton(chip.mount.tree), 'stale'))
+    } finally {
+      chip.h.dispose()
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 13. Gallery: a lost connection on both channels, and a provider that is not mounted
+// ---------------------------------------------------------------------------
+
+test('the gallery shows a lost connection on both channels and a provider that is not mounted', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const byId = new Map(SCENARIOS.map((scenario) => [scenario.id, scenario]))
+  const html = {}
+  for (const id of ['offline', 'offline-answered', 'not-mounted', 'not-mounted-expanded']) {
+    assert.ok(byId.has(id), `scenario ${id}`)
+    html[id] = (await renderScenario(byId.get(id))).html
+  }
+  for (const id of ['offline', 'offline-answered']) {
+    assert.ok(html[id].includes(`Host not reachable: ${fixtures.HOST_DOWN}`), id)
+    assert.ok(html[id].includes(`stale · read ${READ}`), `${id}: the last data stays`)
+  }
+  const message = fixtures.notMounted('deepseekUsage').message
+  assert.ok(html['not-mounted'].includes(NOT_AVAILABLE))
+  assert.ok(html['not-mounted'].includes(message))
+  assert.ok(html['not-mounted-expanded'].includes(`${NOT_AVAILABLE}: ${message}`))
+  for (const id of ['not-mounted', 'not-mounted-expanded']) {
+    assert.ok(!html[id].includes('Host not reachable'), id)
+    assert.ok(!html[id].includes('Usage unavailable'), id)
+    assert.ok(!html[id].includes('-bad'), `${id}: nothing red`)
+    assert.ok(!html[id].includes('-err'), `${id}: no error line`)
+  }
+})
+
+test('a chip that was shown before the state arrived hides when the state says showComposerChip is off', { timeout: TEST_TIMEOUT_MS }, async () => {
+  mock.timers.enable({ apis: ['setTimeout'] })
+  let h
+  try {
+    const usage = createUsageNamespaceStub(fixtures.zhipu(), { snapshotRejection: fixtures.HOST_DOWN })
+    h = await bootClient({ namespaces: { zhipuUsage: usage }, activeProvider: ZHIPU.route })
+    const chip = await h.mountChip('zhipu-usage-chip')
+    assert.ok(chipButton(chip.tree), 'shown (unavailable) while nothing was read')
+    usage.snapshotRejection = undefined
+    usage.state = { ...fixtures.zhipu(), ui: { composerChip: false, gate: null } }
+    await pollOnce(chip)
+    assert.equal(chipButton(chip.tree), null, 'hidden once the Host config says so')
+  } finally {
+    h?.dispose()
+    mock.timers.reset()
   }
 })

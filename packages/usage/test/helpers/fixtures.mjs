@@ -56,6 +56,27 @@ export function olderHost(state) {
 /** The message of a Remote call that could not reach the Host. */
 export const HOST_DOWN = 'connect ECONNREFUSED 127.0.0.1:3080'
 
+/**
+ * A lost connection as the Remote face reports it: the client folds a carrier
+ * throw into `gateway/internal` (dsh-api-gateway src/client/index.ts,
+ * carrierFailure). Its message carries the transport's own text, HOST_DOWN.
+ */
+export const LOST_CONNECTION = { code: 'gateway/internal', message: HOST_DOWN }
+
+/**
+ * A usage service that is not mounted on the Host (the provider row is
+ * disabled, or its mount failed). The Gateway answers `gateway/invocation-unavailable`
+ * when no active Remote method exports the endpoint (dsh-api-gateway
+ * src/index.ts, resolveSrcDescriptor) and `gateway/service-unavailable` when a
+ * declared Service is not active; the message is `typert gateway: <endpoint>: <text>`.
+ */
+export const notMounted = (namespace, code = 'gateway/invocation-unavailable') => ({
+  code,
+  message: code === 'gateway/service-unavailable'
+    ? `typert gateway: ${namespace}/snapshot: active Service "${namespace}" is unavailable`
+    : `typert gateway: ${namespace}/snapshot: no active Remote method exports this endpoint`,
+})
+
 /** A Remote-level failure: the call itself did not complete. */
 export const wireFailure = () => ({
   ok: false,

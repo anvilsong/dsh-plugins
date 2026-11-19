@@ -486,7 +486,8 @@ function createReactRuntime() {
  * way). A client that forgets to unwrap would put the envelope in the store.
  *
  * Options: `refreshState` replaces the state on a refresh; `refreshFailure`
- * makes every refresh answer `{ ok: false, error: { code, message } }`;
+ * makes every refresh answer `{ ok: false, error: { code, message } }` (give
+ * a string for a generic message, or a `{ code, message }` object);
  * `refreshGate` is a promise the refresh awaits before it answers.
  * `snapshotFailure` does the same for `snapshot`; `snapshotRejection` and
  * `refreshRejection` make the call reject with an Error of that message (the
@@ -495,7 +496,15 @@ function createReactRuntime() {
  */
 export function createUsageNamespaceStub(state, { refreshState, refreshFailure, refreshGate, snapshotFailure, snapshotRejection, refreshRejection } = {}) {
   const calls = { snapshot: 0, refresh: 0 }
-  const failure = (message) => ({ ok: false, error: { code: 'remote.failed', message } })
+  // A string is the message of a generic failure; an object `{ code, message }`
+  // is the failure itself (fixtures.NOT_MOUNTED / fixtures.LOST_CONNECTION carry
+  // the real gateway codes).
+  // A rejection takes the same two forms: a string, or `{ code, message }` for an Error that carries a code.
+  const rejection = (value) => (typeof value === 'string' ? new Error(value) : Object.assign(new Error(value.message), { code: value.code }))
+  const failure = (value) => ({
+    ok: false,
+    error: typeof value === 'string' ? { code: 'remote.failed', message: value } : { code: value.code, message: value.message },
+  })
   return {
     calls,
     state,
@@ -505,14 +514,14 @@ export function createUsageNamespaceStub(state, { refreshState, refreshFailure, 
     refreshRejection,
     async snapshot() {
       calls.snapshot += 1
-      if (this.snapshotRejection !== undefined) throw new Error(this.snapshotRejection)
+      if (this.snapshotRejection !== undefined) throw rejection(this.snapshotRejection)
       if (this.snapshotFailure !== undefined) return failure(this.snapshotFailure)
       return { ok: true, value: this.state }
     },
     async refresh() {
       calls.refresh += 1
       if (refreshGate !== undefined) await refreshGate
-      if (this.refreshRejection !== undefined) throw new Error(this.refreshRejection)
+      if (this.refreshRejection !== undefined) throw rejection(this.refreshRejection)
       if (this.refreshFailure !== undefined) return failure(this.refreshFailure)
       if (refreshState !== undefined) this.state = refreshState
       return { ok: true, value: this.state }
