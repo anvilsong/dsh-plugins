@@ -1,5 +1,5 @@
 # Bundle patch for dsh-plugin-explainer.
-# One insert row; the plugin has a Host half only.
+# One insert row; the client half loads through the package's dsh.client entry.
 - insert:
     - id: explainer
       name: dsh-plugin-explainer

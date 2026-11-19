@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  COMMAND_NAME,
   foldExplainer,
   INITIAL_EXPLAINER_STATE,
   parseExplainerArg,
@@ -12,7 +13,7 @@ import {
 const run = (args, commandId = 'cmd-1', time = 100) => ({
   type: 'command/run',
   time,
-  data: { name: 'output-style', args, commandId },
+  data: { name: 'explain-style', args, commandId },
 })
 const done = (kind, commandId = 'cmd-1', text = '') => ({ type: 'command/done', data: { kind, commandId, text } })
 const fold = (events, state = INITIAL_EXPLAINER_STATE) => events.reduce(foldExplainer, state)
@@ -24,13 +25,12 @@ test('a new session starts off with nothing pending', () => {
   assert.deepEqual(viewExplainer(INITIAL_EXPLAINER_STATE), { on: false, pending: false, pendingSince: null, failure: null })
 })
 
-test('parseExplainerArg accepts explainer, on, off and status, case and space insensitive', () => {
-  assert.equal(parseExplainerArg('explainer'), 'on')
-  assert.equal(parseExplainerArg(' Explainer '), 'on')
+test('parseExplainerArg accepts on, off and status, case and space insensitive', () => {
   assert.equal(parseExplainerArg('on'), 'on')
+  assert.equal(parseExplainerArg(' ON '), 'on')
   assert.equal(parseExplainerArg('  OFF '), 'off')
   assert.equal(parseExplainerArg('Status'), 'status')
-  for (const bad of ['manual', 'toggle', 'on off', 'onn', 'explainers', 'explainer on', 5]) {
+  for (const bad of ['explainer', ' Explainer ', 'manual', 'toggle', 'on off', 'onn', 'explainers', 'explainer on', 5]) {
     assert.equal(parseExplainerArg(bad), null, String(bad))
   }
 })
@@ -61,16 +61,18 @@ test('a repeated off is a no-op success', () => {
   assert.deepEqual(fold(turnOff('x')), INITIAL_EXPLAINER_STATE)
 })
 
-test('the argument explainer turns the style on, like its alias on', () => {
-  const viaExplainer = fold([run('explainer', 'e-1', 100), done('success', 'e-1')])
-  assert.deepEqual(viaExplainer, { on: true, pending: null, failure: null })
-  assert.deepEqual(fold([run('  Explainer ', 'e-2', 100), done('success', 'e-2')]), viaExplainer)
-  assert.deepEqual(foldExplainer(INITIAL_EXPLAINER_STATE, run('explainer', 'e-3', 5)).pending, { arg: 'on', commandId: 'e-3', startedAt: 5 })
-  assert.deepEqual(fold([...turnOn('x'), run('explainer', 'e-4', 300), done('success', 'e-4')]), viaExplainer)
+test('the argument on turns the style on, with case and spaces ignored', () => {
+  const viaOn = fold([run('on', 'o-1', 100), done('success', 'o-1')])
+  assert.deepEqual(viaOn, { on: true, pending: null, failure: null })
+  assert.deepEqual(fold([run('  ON ', 'o-2', 100), done('success', 'o-2')]), viaOn)
+  assert.deepEqual(foldExplainer(INITIAL_EXPLAINER_STATE, run('on', 'o-3', 5)).pending, { arg: 'on', commandId: 'o-3', startedAt: 5 })
 })
 
-test('the argument on is an alias of explainer', () => {
-  assert.deepEqual(fold([run('on', 'o-1', 100), done('success', 'o-1')]), { on: true, pending: null, failure: null })
+test('the old argument explainer changes nothing, with or without a done event', () => {
+  const on = fold(turnOn())
+  assert.equal(foldExplainer(INITIAL_EXPLAINER_STATE, run('explainer', 'e-1', 5)), INITIAL_EXPLAINER_STATE)
+  assert.deepEqual(fold([run('explainer', 'e-2', 100), done('success', 'e-2')]), INITIAL_EXPLAINER_STATE)
+  assert.equal(foldExplainer(on, run('Explainer', 'e-3', 5)), on)
 })
 
 test('a bare call changes nothing, like status', () => {
@@ -93,7 +95,7 @@ test('status never changes the state, in any position', () => {
 
 test('invalid or missing arguments leave the state unchanged', () => {
   const on = fold(turnOn())
-  for (const args of ['manual', 'toggle', 'on now', 'level hard', 'explainer now', 7]) {
+  for (const args of ['explainer', 'manual', 'toggle', 'on now', 'level hard', 'explainer now', 7]) {
     assert.equal(foldExplainer(on, run(args, 'bad')), on, String(args))
     assert.equal(foldExplainer(on, done('success', 'bad')), on, String(args))
   }
@@ -142,7 +144,7 @@ test('a done event for another command id is ignored', () => {
 test('events without a string command id never match', () => {
   const pending = foldExplainer(INITIAL_EXPLAINER_STATE, run('on'))
   assert.equal(foldExplainer(pending, { type: 'command/done', data: { kind: 'success' } }), pending)
-  assert.equal(foldExplainer(INITIAL_EXPLAINER_STATE, { type: 'command/run', time: 1, data: { name: 'output-style', args: 'on' } }), INITIAL_EXPLAINER_STATE)
+  assert.equal(foldExplainer(INITIAL_EXPLAINER_STATE, { type: 'command/run', time: 1, data: { name: 'explain-style', args: 'on' } }), INITIAL_EXPLAINER_STATE)
 })
 
 test('commands and events of other plugins are ignored', () => {
@@ -151,19 +153,22 @@ test('commands and events of other plugins are ignored', () => {
   assert.equal(foldExplainer(on, { type: 'turn/start', data: { turn: 1 } }), on)
 })
 
-test('only the command named exactly output-style is folded', () => {
+test('only the command named exactly explain-style is folded', () => {
   const on = fold(turnOn())
   const off = INITIAL_EXPLAINER_STATE
-  for (const name of ['output-style-x', 'output_style', 'explainer', 'router', 'Output-Style', 'output-styles', 'my-output-style', ' output-style', 'output', '']) {
+  for (const name of ['explainer-style', 'explain-style-x', 'explain_style', 'output-style', 'explainer', 'explain', 'router', 'Explain-Style', 'explain-styles', 'my-explain-style', ' explain-style', 'explain-', '']) {
     assert.equal(foldExplainer(off, { type: 'command/run', time: 1, data: { name, args: 'on', commandId: 'n' } }), off, `on via ${JSON.stringify(name)}`)
     assert.equal(foldExplainer(on, { type: 'command/run', time: 1, data: { name, args: 'off', commandId: 'n' } }), on, `off via ${JSON.stringify(name)}`)
   }
   assert.equal(foldExplainer(off, { type: 'command/run', time: 1, data: { args: 'on', commandId: 'n' } }), off)
   assert.equal(foldExplainer(off, { type: 'command/run', time: 1, data: { name: '/router on', args: 'on', commandId: 'n' } }), off)
-  assert.equal(foldExplainer(off, { type: 'command/run', time: 1, data: { name: '/output-style', args: 'on', commandId: 'n' } }), off)
-  // The legacy name no longer turns the style on, even with a matching done event.
-  const legacy = [{ type: 'command/run', time: 1, data: { name: 'explainer', args: 'on', commandId: 'l' } }, done('success', 'l')]
-  assert.deepEqual(fold(legacy), off)
+  assert.equal(foldExplainer(off, { type: 'command/run', time: 1, data: { name: '/explain-style', args: 'on', commandId: 'n' } }), off)
+  // The earlier names no longer turn the style on, even with a matching done event.
+  for (const old of ['explainer', 'explainer-style', 'output-style']) {
+    const legacy = [{ type: 'command/run', time: 1, data: { name: old, args: 'on', commandId: 'l' } }, done('success', 'l')]
+    assert.deepEqual(fold(legacy), off, old)
+  }
+  assert.equal(COMMAND_NAME, 'explain-style')
 })
 
 test('the stale-pending window is five minutes', () => {
@@ -177,7 +182,7 @@ test('a pending command older than five minutes can be replaced, one just under 
 })
 
 test('the fold reads no clock: the same events give the same state at any Date.now', (t) => {
-  const log = [...turnOn('a', 100), run('off', 'b', 200), run('explainer', 'c', 300)]
+  const log = [...turnOn('a', 100), run('off', 'b', 200), run('on', 'c', 300)]
   let now = 1
   t.mock.method(Date, 'now', () => now)
   const early = fold(log)
@@ -190,7 +195,7 @@ test('the fold reads no clock: the same events give the same state at any Date.n
 })
 
 test('an event without a time starts the pending command at 0', () => {
-  const untimed = { type: 'command/run', data: { name: 'output-style', args: 'on', commandId: 'u' } }
+  const untimed = { type: 'command/run', data: { name: 'explain-style', args: 'on', commandId: 'u' } }
   assert.deepEqual(foldExplainer(INITIAL_EXPLAINER_STATE, untimed).pending, { arg: 'on', commandId: 'u', startedAt: 0 })
 })
 
@@ -208,7 +213,7 @@ test('replaying the same log gives the same state, with no clock read', () => {
   assert.deepEqual(fold(log), first)
   assert.equal(first.on, true)
   // An event without a time is deterministic too.
-  const untimed = [{ type: 'command/run', data: { name: 'output-style', args: 'on', commandId: 'u' } }]
+  const untimed = [{ type: 'command/run', data: { name: 'explain-style', args: 'on', commandId: 'u' } }]
   assert.deepEqual(fold(untimed), fold(untimed))
 })
 

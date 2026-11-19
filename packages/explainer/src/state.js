@@ -1,7 +1,7 @@
 export const STALE_PENDING_MS = 5 * 60_000
 
 /** The one command name the fold reads; an exact match, never a prefix. */
-export const COMMAND_NAME = 'output-style'
+export const COMMAND_NAME = 'explain-style'
 
 /** The Explainer state of a Session with no command yet: the style is off. */
 export const INITIAL_EXPLAINER_STATE = Object.freeze({
@@ -11,17 +11,17 @@ export const INITIAL_EXPLAINER_STATE = Object.freeze({
 })
 
 /**
- * `on` (the arguments `explainer` and `on`), `off` or `status` (the argument
- * `status`, or none at all), any case and spaces trimmed; anything else is
- * null. The command handler and the fold parse with this one function, so what
- * the handler accepts is what the fold stores.
+ * `on`, `off` or `status` (the argument `status`, or none at all), any case
+ * and spaces trimmed; anything else, the old `explainer` included, is null.
+ * The command handler and the fold parse with this one function, so what the
+ * handler accepts is what the fold stores.
  */
 export function parseExplainerArg(args) {
   if (args === undefined || args === null) return 'status'
   if (typeof args !== 'string') return null
   const arg = args.trim().toLowerCase()
   if (arg === '' || arg === 'status') return 'status'
-  if (arg === 'explainer' || arg === 'on') return 'on'
+  if (arg === 'on') return 'on'
   return arg === 'off' ? 'off' : null
 }
 

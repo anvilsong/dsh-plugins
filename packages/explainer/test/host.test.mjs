@@ -40,7 +40,7 @@ function harness() {
   // Run a command through the registered handler, then log it as the host does.
   const dispatch = async (rawInput, commandId = `c${Math.random()}`, time = 1000) => {
     const command = commands[0]
-    feed({ type: 'command/run', time, data: { name: 'output-style', args: rawInput, commandId } })
+    feed({ type: 'command/run', time, data: { name: 'explain-style', args: rawInput, commandId } })
     const result = await command.handler({ agent, rawInput, commandId })
     feed({ type: 'command/done', data: { commandId, kind: result.kind, text: result.text } })
     return result
@@ -60,14 +60,27 @@ test('apply registers one command, one projection and one prompt section', async
   assert.equal(h.sections.length, 1)
 })
 
+// In the host's slash menu commands are listed first and a prefix match ranks first. A command whose name
+// starts with `explainer` would win over the user's own `explainer` command when they type `/explainer` and Enter.
+test('the command name does not start with explainer, so it never outranks the user\'s own explainer command', async () => {
+  const h = harness()
+  await apply(h.ctx)
+  for (const command of h.commands) {
+    assert.ok(!command.name.startsWith('explainer'), command.name)
+    assert.ok(!command.name.startsWith('explain-style-') && command.name === 'explain-style', command.name)
+  }
+  assert.ok(!'explain-style'.startsWith('explainer'))
+  assert.ok(!'explainer'.startsWith('explain-style'))
+})
+
 test('the command has the right name, id, description and usage hint', async () => {
   const h = harness()
   await apply(h.ctx)
   const [command] = h.commands
-  assert.equal(command.name, 'output-style')
+  assert.equal(command.name, 'explain-style')
   assert.equal(command.definitionId, 'dsh-plugin-explainer')
   assert.equal(typeof command.description, 'string')
-  assert.deepEqual(command.input, { hint: '[explainer|off|status]' })
+  assert.deepEqual(command.input, { hint: '[on|off|status]' })
   assert.equal(typeof command.handler, 'function')
 })
 
@@ -89,16 +102,28 @@ test('the projection has key explainer, version 1, a schema and a wire view', as
   assert.equal(definition.stateSchema.safeParse(definition.init()).success, true)
   assert.equal(definition.stateSchema.safeParse({ on: 'yes', pending: null, failure: null }).success, false)
   const folded = [
-    { type: 'command/run', time: 1, data: { name: 'output-style', args: 'on', commandId: 'a' } },
+    { type: 'command/run', time: 1, data: { name: 'explain-style', args: 'on', commandId: 'a' } },
   ].reduce(definition.apply, definition.init())
   assert.equal(definition.stateSchema.safeParse(folded).success, true)
   const failed = [
-    { type: 'command/run', time: 1, data: { name: 'output-style', args: 'on', commandId: 'a' } },
-    { type: 'command/done', data: { name: 'output-style', commandId: 'a', kind: 'error', text: 'x' } },
+    { type: 'command/run', time: 1, data: { name: 'explain-style', args: 'on', commandId: 'a' } },
+    { type: 'command/done', data: { name: 'explain-style', commandId: 'a', kind: 'error', text: 'x' } },
   ].reduce(definition.apply, definition.init())
   assert.equal(definition.stateSchema.safeParse(failed).success, true)
   assert.ok(definition.wire.viewSchema instanceof z.ZodType)
   assert.equal(definition.wire.viewSchema.safeParse(definition.wire.view(failed)).success, true)
+})
+
+test('the wire view exposes what the client switch reads: on, pending, pendingSince and failure', async () => {
+  const h = harness()
+  await apply(h.ctx)
+  const [definition] = h.registered
+  assert.deepEqual(Object.keys(definition.wire.viewSchema.shape).sort(), ['failure', 'on', 'pending', 'pendingSince'])
+  const pending = [{ type: 'command/run', time: 7, data: { name: 'explain-style', args: 'on', commandId: 'a' } }].reduce(definition.apply, definition.init())
+  const view = definition.wire.view(pending)
+  assert.deepEqual(view, { on: false, pending: true, pendingSince: 7, failure: null })
+  assert.equal(definition.wire.viewSchema.safeParse(view).success, true)
+  assert.equal(definition.wire.viewSchema.safeParse({ ...view, pending: 'yes' }).success, false)
 })
 
 test('the section has its own name and the router convention for order', async () => {
@@ -118,11 +143,11 @@ test('a new session adds no section text', async () => {
 test('the section holds exactly the policy while on and nothing after off', async () => {
   const h = harness()
   await apply(h.ctx)
-  assert.equal((await h.dispatch('explainer')).kind, 'success')
+  assert.equal((await h.dispatch('on')).kind, 'success')
   assert.equal(h.section().text({ agent: h.agent }), POLICY)
   assert.equal((await h.dispatch('off')).kind, 'success')
   assert.equal(h.section().text({ agent: h.agent }), '')
-  assert.equal((await h.dispatch('explainer')).kind, 'success')
+  assert.equal((await h.dispatch('on')).kind, 'success')
   assert.equal(h.section().text({ agent: h.agent }), POLICY)
 })
 
@@ -136,7 +161,7 @@ test('a section is empty for a context without an agent, even while on', async (
 test('a pending change does not add the section before it commits', async () => {
   const h = harness()
   await apply(h.ctx)
-  h.feed({ type: 'command/run', time: 1, data: { name: 'output-style', args: 'on', commandId: 'p' } })
+  h.feed({ type: 'command/run', time: 1, data: { name: 'explain-style', args: 'on', commandId: 'p' } })
   assert.equal(h.section().text({ agent: h.agent }), '')
 })
 
@@ -147,8 +172,9 @@ test('status, usage errors and a failed on leave the section off', async () => {
   await h.dispatch('')
   await h.dispatch('bogus')
   await h.dispatch('explainer now')
+  await h.dispatch('explainer')
   const id = 'fail-1'
-  h.feed({ type: 'command/run', time: 1, data: { name: 'output-style', args: 'on', commandId: id } })
+  h.feed({ type: 'command/run', time: 1, data: { name: 'explain-style', args: 'on', commandId: id } })
   h.feed({ type: 'command/done', data: { commandId: id, kind: 'error', text: 'x' } })
   assert.equal(h.section().text({ agent: h.agent }), '')
 })
@@ -157,7 +183,7 @@ test('a failed off keeps the section on', async () => {
   const h = harness()
   await apply(h.ctx)
   await h.dispatch('on')
-  h.feed({ type: 'command/run', time: 5, data: { name: 'output-style', args: 'off', commandId: 'f' } })
+  h.feed({ type: 'command/run', time: 5, data: { name: 'explain-style', args: 'off', commandId: 'f' } })
   h.feed({ type: 'command/done', data: { commandId: 'f', kind: 'error', text: 'x' } })
   assert.equal(h.section().text({ agent: h.agent }), POLICY)
 })
@@ -165,9 +191,9 @@ test('a failed off keeps the section on', async () => {
 test('invalid arguments return the usage error and do not turn the style on', async () => {
   const h = harness()
   await apply(h.ctx)
-  for (const arg of ['manual', 'toggle', 'on please', 'onn', 'level hard', 'explainer on', 'explainers', 'status now']) {
+  for (const arg of ['explainer', 'Explainer', 'manual', 'toggle', 'on please', 'onn', 'level hard', 'explainer on', 'explainers', 'status now', 'output-style']) {
     const result = await h.dispatch(arg)
-    assert.deepEqual(result, { kind: 'error', text: 'Usage: /output-style explainer|off|status' }, JSON.stringify(arg))
+    assert.deepEqual(result, { kind: 'error', text: 'Usage: /explain-style on|off|status' }, JSON.stringify(arg))
     assert.equal(h.section().text({ agent: h.agent }), '', JSON.stringify(arg))
   }
 })
@@ -176,34 +202,37 @@ test('a bare call behaves like status, not like a usage error', async () => {
   const h = harness()
   await apply(h.ctx)
   for (const arg of ['', '   ']) {
-    assert.deepEqual(await h.dispatch(arg), { kind: 'success', text: 'Output style: off.' }, JSON.stringify(arg))
+    assert.deepEqual(await h.dispatch(arg), { kind: 'success', text: 'Explainer style: off.' }, JSON.stringify(arg))
   }
-  assert.deepEqual(await h.commands[0].handler({ agent: h.agent, rawInput: undefined, commandId: 'u' }), { kind: 'success', text: 'Output style: off.' })
-  await h.dispatch('explainer')
-  assert.deepEqual(await h.dispatch(''), { kind: 'success', text: 'Output style: explainer.' })
+  assert.deepEqual(await h.commands[0].handler({ agent: h.agent, rawInput: undefined, commandId: 'u' }), { kind: 'success', text: 'Explainer style: off.' })
+  await h.dispatch('on')
+  assert.deepEqual(await h.dispatch(''), { kind: 'success', text: 'Explainer style: on.' })
   assert.equal(h.section().text({ agent: h.agent }), POLICY)
 })
 
-test('on is an alias of explainer', async () => {
+test('on turns the style on and says so', async () => {
   const h = harness()
   await apply(h.ctx)
-  assert.deepEqual(await h.dispatch('on'), { kind: 'success', text: 'Output style set to explainer.' })
+  assert.deepEqual(await h.dispatch('on'), { kind: 'success', text: 'Explainer style set to on.' })
   assert.equal(h.section().text({ agent: h.agent }), POLICY)
 })
 
-test('the explainer argument turns the style on', async () => {
+test('the old explainer argument is rejected and changes nothing', async () => {
   const h = harness()
   await apply(h.ctx)
-  assert.deepEqual(await h.dispatch('explainer'), { kind: 'success', text: 'Output style set to explainer.' })
+  assert.deepEqual(await h.dispatch('explainer'), { kind: 'error', text: 'Usage: /explain-style on|off|status' })
+  assert.equal(h.section().text({ agent: h.agent }), '')
+  await h.dispatch('on')
+  assert.deepEqual(await h.dispatch('explainer'), { kind: 'error', text: 'Usage: /explain-style on|off|status' })
   assert.equal(h.section().text({ agent: h.agent }), POLICY)
-  assert.deepEqual(await h.dispatch('off'), { kind: 'success', text: 'Output style set to off.' })
+  assert.deepEqual(await h.dispatch('off'), { kind: 'success', text: 'Explainer style set to off.' })
   assert.equal(h.section().text({ agent: h.agent }), '')
 })
 
 test('events of any other command name never switch the section', async () => {
   const h = harness()
   await apply(h.ctx)
-  for (const name of ['explainer', 'output-style-x', 'output_style', 'router']) {
+  for (const name of ['explainer-style', 'explain-style-x', 'explain_style', 'explainer', 'explain', 'output-style', 'Explain-Style', 'explain-styles', '/explain-style', 'router', '/router on']) {
     h.feed({ type: 'command/run', time: 1, data: { name, args: 'on', commandId: `o-${name}` } })
     h.feed({ type: 'command/done', data: { commandId: `o-${name}`, kind: 'success', text: '' } })
     assert.equal(h.section().text({ agent: h.agent }), '', name)
@@ -222,19 +251,19 @@ test('arguments are case and space insensitive', async () => {
 test('on and off answer with success texts', async () => {
   const h = harness()
   await apply(h.ctx)
-  assert.deepEqual(await h.dispatch('explainer'), { kind: 'success', text: 'Output style set to explainer.' })
-  assert.deepEqual(await h.dispatch('explainer'), { kind: 'success', text: 'Output style set to explainer.' })
-  assert.deepEqual(await h.dispatch('off'), { kind: 'success', text: 'Output style set to off.' })
+  assert.deepEqual(await h.dispatch('on'), { kind: 'success', text: 'Explainer style set to on.' })
+  assert.deepEqual(await h.dispatch('on'), { kind: 'success', text: 'Explainer style set to on.' })
+  assert.deepEqual(await h.dispatch('off'), { kind: 'success', text: 'Explainer style set to off.' })
 })
 
 test('status reports off, on, and off again', async () => {
   const h = harness()
   await apply(h.ctx)
-  assert.deepEqual(await h.dispatch('status'), { kind: 'success', text: 'Output style: off.' })
-  await h.dispatch('explainer')
-  assert.deepEqual(await h.dispatch('status'), { kind: 'success', text: 'Output style: explainer.' })
+  assert.deepEqual(await h.dispatch('status'), { kind: 'success', text: 'Explainer style: off.' })
+  await h.dispatch('on')
+  assert.deepEqual(await h.dispatch('status'), { kind: 'success', text: 'Explainer style: on.' })
   await h.dispatch('off')
-  assert.deepEqual(await h.dispatch('status'), { kind: 'success', text: 'Output style: off.' })
+  assert.deepEqual(await h.dispatch('status'), { kind: 'success', text: 'Explainer style: off.' })
 })
 
 test('status reports a pending update instead of the setting', async () => {
@@ -242,7 +271,7 @@ test('status reports a pending update instead of the setting', async () => {
   await apply(h.ctx)
   h.setState({ on: false, pending: { arg: 'on', commandId: 'p', startedAt: Date.now() }, failure: null })
   const result = await h.commands[0].handler({ agent: h.agent, rawInput: 'status', commandId: 'q' })
-  assert.deepEqual(result, { kind: 'success', text: 'Output style is updating to explainer for this session.' })
+  assert.deepEqual(result, { kind: 'success', text: 'Explainer style is updating to on.' })
 })
 
 test('status ignores an expired pending update', async () => {
@@ -250,7 +279,7 @@ test('status ignores an expired pending update', async () => {
   await apply(h.ctx)
   h.setState({ on: true, pending: { arg: 'off', commandId: 'p', startedAt: 1 }, failure: null })
   const result = await h.commands[0].handler({ agent: h.agent, rawInput: 'status', commandId: 'q' })
-  assert.equal(result.text, 'Output style: explainer.')
+  assert.equal(result.text, 'Explainer style: on.')
 })
 
 test('a different pending command rejects on and off but not its own', async () => {
@@ -258,8 +287,8 @@ test('a different pending command rejects on and off but not its own', async () 
   await apply(h.ctx)
   h.setState({ on: false, pending: { arg: 'on', commandId: 'p', startedAt: Date.now() }, failure: null })
   const rejected = await h.commands[0].handler({ agent: h.agent, rawInput: 'off', commandId: 'q' })
-  assert.deepEqual(rejected, { kind: 'error', text: 'Output style is already updating. Try again after it finishes.' })
-  const own = await h.commands[0].handler({ agent: h.agent, rawInput: 'explainer', commandId: 'p' })
+  assert.deepEqual(rejected, { kind: 'error', text: 'Explainer style is already updating. Try again after it finishes.' })
+  const own = await h.commands[0].handler({ agent: h.agent, rawInput: 'on', commandId: 'p' })
   assert.equal(own.kind, 'success')
 })
 
@@ -268,7 +297,7 @@ test('the usage error is checked before the pending check', async () => {
   await apply(h.ctx)
   h.setState({ on: false, pending: { arg: 'on', commandId: 'p', startedAt: Date.now() }, failure: null })
   const result = await h.commands[0].handler({ agent: h.agent, rawInput: 'bogus', commandId: 'q' })
-  assert.equal(result.text, 'Usage: /output-style explainer|off|status')
+  assert.equal(result.text, 'Usage: /explain-style on|off|status')
 })
 
 test('the setting belongs to the session whose state is read', async () => {
@@ -333,7 +362,7 @@ test('POLICY mentions Mermaid only to forbid pasting it', () => {
   assert.doesNotMatch(POLICY.replace(forbidden, ''), /mermaid/i)
 })
 
-test('package.json has the identity fields and no client half', () => {
+test('package.json has the identity fields and the client half, as the other switch packages do', () => {
   assert.equal(pkg.name, 'dsh-plugin-explainer')
   assert.equal(pkg.version, '0.1.0')
   assert.equal(pkg.type, 'module')
@@ -343,15 +372,36 @@ test('package.json has the identity fields and no client half', () => {
   assert.deepEqual(pkg.peerDependencies, { '@deepseek-ai/cordis': '^4.0.0' })
   assert.equal(pkg.license, 'MIT')
   assert.equal(pkg.repository.directory, 'packages/explainer')
-  assert.deepEqual(pkg.dsh, { bundle: { patch: './cordis.patch.yml' } })
-  assert.equal(pkg.dsh.client, undefined)
-  assert.equal(pkg.exports['./client'], undefined)
-  assert.deepEqual(Object.keys(pkg.exports), ['.', './cordis.patch.yml', './locale/*.json', './icon', './package.json'])
-  assert.ok(!pkg.files.includes('client.js'))
+  assert.deepEqual(pkg.dsh, {
+    bundle: { patch: './cordis.patch.yml' },
+    client: {
+      platform: 'web',
+      immediately: true,
+      inject: [
+        '@deepseek-ai/dsh-client-ui-conversation',
+        '@deepseek-ai/dsh-client-ui-commands',
+        '@deepseek-ai/dsh-client-ui-primitives',
+        '@deepseek-ai/dsh-api-gateway',
+      ],
+    },
+  })
+  assert.deepEqual(pkg.exports['./client'], { default: './src/client.js' })
+  assert.deepEqual(Object.keys(pkg.exports), ['.', './client', './cordis.patch.yml', './locale/*.json', './icon', './package.json'])
+  // client.js lives under src, which `files` already ships.
+  assert.deepEqual(pkg.files, ['src', 'cordis.patch.yml', 'locale', 'icon.svg', 'README.md', 'LICENSE'])
 })
 
-test('the package ships no client file and the bundle patch has one row', () => {
-  assert.throws(() => read('../src/client.js'), /ENOENT/)
+test('the client entry and the dsh.client block agree with the other switch packages', () => {
+  for (const other of ['ultracode', 'router']) {
+    const otherPkg = JSON.parse(read(`../../${other}/package.json`))
+    assert.deepEqual(pkg.dsh.client, otherPkg.dsh.client, other)
+    assert.deepEqual(pkg.exports['./client'], otherPkg.exports['./client'], other)
+    assert.deepEqual(pkg.files, otherPkg.files, other)
+  }
+  assert.ok(read('../src/client.js').startsWith('window.__ModuleLoader__.load({'))
+})
+
+test('the bundle patch has one row, and the client half needs no patch row of its own', () => {
   const patch = read('../cordis.patch.yml').split('\n').filter((line) => !line.startsWith('#') && line.trim() !== '')
   assert.deepEqual(patch, ['- insert:', '    - id: explainer', '      name: dsh-plugin-explainer'])
 })
@@ -384,12 +434,29 @@ test('the README pins the five-minute stale-pending sentence, and the code agree
 
 test('the README names the new command and not the old one', () => {
   const readme = read('../README.md')
-  for (const line of ['/output-style explainer', '/output-style on', '/output-style off', '/output-style status', 'Usage: /output-style explainer|off|status']) {
+  for (const line of ['/explain-style on', '/explain-style off', '/explain-style status', 'Usage: /explain-style on|off|status']) {
     assert.ok(readme.includes(line), line)
   }
+  assert.doesNotMatch(readme, /output-style|explainer-style/)
   assert.doesNotMatch(readme, /(^|[\s`])\/explainer\b/)
+  assert.doesNotMatch(readme, /\bexplainer\|off/)
   assert.ok(!read('../locale/en.json').includes('/explainer'))
   assert.ok(!read('../locale/zh.json').includes('/explainer'))
+})
+
+test('the README states the argument rules and the status texts', () => {
+  const readme = read('../README.md')
+  assert.ok(readme.includes('A call with no argument behaves like `status`.'))
+  assert.ok(readme.includes('Any other argument, including the old `explainer`, returns `Usage: /explain-style on|off|status`.'))
+  assert.ok(readme.includes('`status` reports `Explainer style: on.` or `Explainer style: off.`, or that an update is pending'))
+  assert.ok(readme.includes('A repeated `on` or `off` succeeds and changes nothing.'))
+})
+
+test('the root README row names the command and the switch, not the old command', () => {
+  const row = read('../../../README.md').split('\n').find((line) => line.includes('`dsh-plugin-explainer`'))
+  assert.ok(row.includes('`/explain-style`'))
+  assert.ok(row.includes('switch'))
+  assert.ok(!row.includes('output-style') && !row.includes('explainer-style'))
 })
 
 test('the README summarises the precedence and how the page is opened', () => {
@@ -397,12 +464,12 @@ test('the README summarises the precedence and how the page is opened', () => {
   assert.ok(readme.includes('The style never makes an answer longer and overrides the page rules; rules that require a section in a status report or final report still apply.'))
   assert.ok(readme.includes('The agent opens the page with the system opener if one exists, gives its path, and confirms that the file exists.'))
   assert.ok(readme.includes('If it cannot write the file, it says so and explains in the chat.'))
-  assert.ok(readme.includes('/output-style status'))
+  assert.ok(readme.includes('/explain-style status'))
   assert.ok(readme.includes('A video is never made on the agent\'s own initiative.'))
 })
 
 test('no package file names the banned helper words', () => {
-  for (const path of ['../README.md', '../package.json', '../src/index.host.js', '../src/state.js', '../locale/en.json', '../locale/zh.json', '../icon.svg']) {
+  for (const path of ['../README.md', '../package.json', '../src/index.host.js', '../src/state.js', '../src/client.js', '../locale/en.json', '../locale/zh.json', '../icon.svg']) {
     assert.doesNotMatch(read(path), bannedPattern, path)
   }
 })
@@ -416,30 +483,30 @@ test('with a fresh own pending entry, status says updating and a second command 
   const h = harness()
   await apply(h.ctx)
   t.mock.method(Date, 'now', () => T0 + 1000)
-  h.feed({ type: 'command/run', time: T0, data: { name: 'output-style', args: 'explainer', commandId: 'own' } })
+  h.feed({ type: 'command/run', time: T0, data: { name: 'explain-style', args: 'on', commandId: 'own' } })
   const status = await h.commands[0].handler({ agent: h.agent, rawInput: 'status', commandId: 'st' })
-  assert.deepEqual(status, { kind: 'success', text: 'Output style is updating to explainer for this session.' })
+  assert.deepEqual(status, { kind: 'success', text: 'Explainer style is updating to on.' })
   const bare = await h.commands[0].handler({ agent: h.agent, rawInput: '', commandId: 'st2' })
-  assert.equal(bare.text, 'Output style is updating to explainer for this session.')
+  assert.equal(bare.text, 'Explainer style is updating to on.')
   // A second, different command is rejected through the real dispatch path too.
   const rejected = await h.dispatch('off', 'other', T0 + 2000)
-  assert.deepEqual(rejected, { kind: 'error', text: 'Output style is already updating. Try again after it finishes.' })
+  assert.deepEqual(rejected, { kind: 'error', text: 'Explainer style is already updating. Try again after it finishes.' })
   assert.equal(h.section().text({ agent: h.agent }), '')
   // The pending entry is still the first command's, and it finishes normally.
-  const own = await h.commands[0].handler({ agent: h.agent, rawInput: 'explainer', commandId: 'own' })
-  assert.deepEqual(own, { kind: 'success', text: 'Output style set to explainer.' })
+  const own = await h.commands[0].handler({ agent: h.agent, rawInput: 'on', commandId: 'own' })
+  assert.deepEqual(own, { kind: 'success', text: 'Explainer style set to on.' })
   h.feed({ type: 'command/done', data: { commandId: 'own', kind: 'success', text: own.text } })
   assert.equal(h.section().text({ agent: h.agent }), POLICY)
-  assert.deepEqual(await h.commands[0].handler({ agent: h.agent, rawInput: 'status', commandId: 'st3' }), { kind: 'success', text: 'Output style: explainer.' })
+  assert.deepEqual(await h.commands[0].handler({ agent: h.agent, rawInput: 'status', commandId: 'st3' }), { kind: 'success', text: 'Explainer style: on.' })
 })
 
 test('a command dispatched with a fresh clock sees its own pending entry as its own', async (t) => {
   const h = harness()
   await apply(h.ctx)
   t.mock.method(Date, 'now', () => T0 + 10)
-  assert.deepEqual(await h.dispatch('explainer', 'c-own', T0), { kind: 'success', text: 'Output style set to explainer.' })
+  assert.deepEqual(await h.dispatch('on', 'c-own', T0), { kind: 'success', text: 'Explainer style set to on.' })
   assert.equal(h.section().text({ agent: h.agent }), POLICY)
-  assert.deepEqual(await h.dispatch('off', 'c-off', T0 + 20), { kind: 'success', text: 'Output style set to off.' })
+  assert.deepEqual(await h.dispatch('off', 'c-off', T0 + 20), { kind: 'success', text: 'Explainer style set to off.' })
   assert.equal(h.section().text({ agent: h.agent }), '')
 })
 
@@ -450,16 +517,16 @@ test('the handler lets a pending command through at exactly five minutes and rej
   let now = T0 + STALE_PENDING_MS - 1
   t.mock.method(Date, 'now', () => now)
   h.setState({ on: false, pending, failure: null })
-  assert.deepEqual(await h.commands[0].handler({ agent: h.agent, rawInput: 'off', commandId: 'q' }), { kind: 'error', text: 'Output style is already updating. Try again after it finishes.' })
+  assert.deepEqual(await h.commands[0].handler({ agent: h.agent, rawInput: 'off', commandId: 'q' }), { kind: 'error', text: 'Explainer style is already updating. Try again after it finishes.' })
   now = T0 + STALE_PENDING_MS
-  assert.deepEqual(await h.commands[0].handler({ agent: h.agent, rawInput: 'off', commandId: 'q' }), { kind: 'success', text: 'Output style set to off.' })
-  assert.equal((await h.commands[0].handler({ agent: h.agent, rawInput: 'status', commandId: 'q' })).text, 'Output style: off.')
+  assert.deepEqual(await h.commands[0].handler({ agent: h.agent, rawInput: 'off', commandId: 'q' }), { kind: 'success', text: 'Explainer style set to off.' })
+  assert.equal((await h.commands[0].handler({ agent: h.agent, rawInput: 'status', commandId: 'q' })).text, 'Explainer style: off.')
 })
 
 test('the whole path replaces a stale pending command but not a fresh one', async (t) => {
   const h = harness()
   await apply(h.ctx)
-  h.feed({ type: 'command/run', time: T0, data: { name: 'output-style', args: 'explainer', commandId: 'p' } })
+  h.feed({ type: 'command/run', time: T0, data: { name: 'explain-style', args: 'on', commandId: 'p' } })
   let now = T0 + STALE_PENDING_MS - 1
   t.mock.method(Date, 'now', () => now)
   assert.equal((await h.dispatch('off', 'fresh-q', T0 + STALE_PENDING_MS - 1)).kind, 'error')
