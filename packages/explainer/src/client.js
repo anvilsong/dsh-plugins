@@ -10,14 +10,14 @@ window.__ModuleLoader__.load({
 
     const en = {
       'chip.label': 'Explainer style (ASD-STE100)',
-      'chip.hint': 'Plain explanations based on ASD-STE100 writing rules (a subset): short prose, text diagrams, offered pages.',
+      'chip.hint': 'Plain explanations. Short prose follows ASD-STE100 writing rules (a subset); text diagrams and offered pages.',
       'chip.pending': 'Updating…',
       'chip.unavailable': 'The command service is unavailable.',
       'chip.failed': 'Could not update Explainer style.',
     }
     const zh = {
       'chip.label': '讲解风格（ASD-STE100）',
-      'chip.hint': '基于 ASD-STE100 写作规则（子集）的通俗讲解：简短文字、文本图示、可选页面。',
+      'chip.hint': '通俗讲解。简短文字遵循 ASD-STE100 写作规则（子集）；另有文本图示和可选页面。',
       'chip.pending': '正在更新…',
       'chip.unavailable': '命令服务不可用。',
       'chip.failed': '无法更新讲解风格。',

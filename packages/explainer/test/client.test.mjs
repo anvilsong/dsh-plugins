@@ -178,7 +178,7 @@ test('it renders the label and a switch; the hint is the row tooltip, not a visi
   const row = find(output, (node) => node.props?.className === 'ex-row')
   assert.ok(row)
   assert.equal(find(row, (node) => node.props?.className === 'ex-label').children[0], 'Explainer style (ASD-STE100)')
-  assert.equal(row.props.title, 'Plain explanations based on ASD-STE100 writing rules (a subset): short prose, text diagrams, offered pages.')
+  assert.equal(row.props.title, 'Plain explanations. Short prose follows ASD-STE100 writing rules (a subset); text diagrams and offered pages.')
   assert.equal(toggle().type, 'Switch')
   // A visible hint widened the menu past its limits: no node but the label holds text.
   assert.equal(findAll(output, (node) => typeof node.props?.className === 'string' && /hint/.test(node.props.className)).length, 0)
@@ -619,9 +619,9 @@ test('locale: en and zh hold the same keys, the client reads exactly those, and 
     for (const [key, value] of Object.entries(tables[language])) assert.ok(typeof value === 'string' && value.trim() !== '', `${language}:${key}`)
   }
   assert.equal(tables.en['chip.label'], 'Explainer style (ASD-STE100)')
-  assert.equal(tables.en['chip.hint'], 'Plain explanations based on ASD-STE100 writing rules (a subset): short prose, text diagrams, offered pages.')
+  assert.equal(tables.en['chip.hint'], 'Plain explanations. Short prose follows ASD-STE100 writing rules (a subset); text diagrams and offered pages.')
   assert.equal(tables.zh['chip.label'], '讲解风格（ASD-STE100）')
-  assert.equal(tables.zh['chip.hint'], '基于 ASD-STE100 写作规则（子集）的通俗讲解：简短文字、文本图示、可选页面。')
+  assert.equal(tables.zh['chip.hint'], '通俗讲解。简短文字遵循 ASD-STE100 写作规则（子集）；另有文本图示和可选页面。')
   // The Chinese text is Chinese: it holds Han characters and no copied English label.
   for (const key of ['chip.label', 'chip.hint', 'chip.pending', 'chip.unavailable', 'chip.failed']) {
     assert.match(tables.zh[key], /[\u4e00-\u9fff]/, key)
@@ -638,7 +638,7 @@ test('locale: the table in use follows the locale service, so zh renders Chinese
   })
   const view = mountSwitch(env, { on: false, pending: true, pendingSince: Date.now(), failure: null })
   assert.match(text(view.output), /讲解风格（ASD-STE100）/)
-  assert.match(text(view.output), /基于 ASD-STE100 写作规则（子集）的通俗讲解：简短文字、文本图示、可选页面。/)
+  assert.match(text(view.output), /通俗讲解。简短文字遵循 ASD-STE100 写作规则（子集）；另有文本图示和可选页面。/)
   assert.match(text(view.output), /正在更新…/)
 })
 
@@ -674,8 +674,8 @@ test('the README documents the client switch, its tooltip, its pending spinner a
   const readme = read('../README.md').replace(/\s+/g, ' ')
   for (const sentence of [
     'The model-options menu of a conversation has an **Explainer style (ASD-STE100)** switch.',
-    'Hover the row to see its tooltip: Plain explanations based on ASD-STE100 writing rules (a subset): short prose, text diagrams, offered pages.',
-    'The label names the standard the style is based on; it is not a claim of conformance. The style follows only a subset of ASD-STE100: sentence length limits, active voice, one term per concept, no idioms, and numbered steps. It does not use the controlled vocabulary.',
+    'Hover the row to see its tooltip: Plain explanations. Short prose follows ASD-STE100 writing rules (a subset); text diagrams and offered pages.',
+    'The label names the standard the style is based on; it is not a claim of conformance. The style follows only a subset of ASD-STE100: sentence length limits (20 words for procedures, 25 for descriptions), active voice, one instruction per sentence, one term per concept, no phrasal verbs or idioms, and numbered steps. It applies them to short prose only, not to text diagrams or pages. It does not use the controlled vocabulary.',
     'The row shows no line of text under the label, so the menu keeps its size.',
     'Pressing the switch runs `/explain-style on` or `/explain-style off`, the opposite of what the session shows',
     'While a change is pending the switch shows a spinner.',
