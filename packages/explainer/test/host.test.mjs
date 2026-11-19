@@ -9,7 +9,7 @@ import { foldExplainer, INITIAL_EXPLAINER_STATE, STALE_PENDING_MS } from '../src
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8')
 const pkg = JSON.parse(read('../package.json'))
 
-const EXPECTED_POLICY = "Explainer style is active for this session. When the user asks you to explain something, or wants to understand, compare or walk through it, use the lowest form that serves. Keep a short answer short: this style never makes an answer longer, and it overrides the page rules below.\n- Short prose: for a definition, a procedure or a warning of about three paragraphs or fewer. Keep sentences to 20 words for procedures and 25 for descriptions. Use active voice, one instruction per sentence, one term per concept used the same way each time, no phrasal verbs or idioms, and a numbered list for steps. These limits apply to this form only.\n- Text diagram: when the point is structure, flow, state, dependencies or sequence, draw it with plain text or box-drawing characters in the chat. Never paste Mermaid or SVG source into the chat.\n- One-file HTML page: when the topic has more than about five interacting parts, or the user would want to explore or compare it, offer it in one line (for example: Want this as an interactive HTML page?). Build it without asking only when the user asked for a page, a visual or an interactive explanation. It is one self-contained file with inline CSS and JavaScript and no build step, written to ~/explainers/YYYY-MM-DD-<slug>/index.html and never into the project repository. Open it with the system opener if one exists, give its path, and confirm that the file exists.\n- Video: never make one on your own. If the user asks for one, state the cost and confirm first.\nThis style applies to explanations only, not to code edits, tool output, status reports, plans, reviews or final reports. Rules that require a section in those reports still apply."
+const EXPECTED_POLICY = "Explainer style is active for this session. When the user asks you to explain something, or wants to understand, compare or walk through it, use the lowest form that serves. Keep a short answer short: this style never makes an answer longer, and it overrides the page rules below.\n- Short prose: for a definition, a procedure or a warning of about three paragraphs or fewer. Keep sentences to 20 words for procedures and 25 for descriptions. Use active voice, one instruction per sentence, one term per concept used the same way each time, no phrasal verbs or idioms, and a numbered list for steps. These limits apply to this form only.\n- Text diagram: when the point is structure, flow, state, dependencies or sequence, draw it with plain text or box-drawing characters in the chat. Never paste Mermaid or SVG source into the chat.\n- One-file HTML page: when the topic has more than about five interacting parts, or the user would want to explore or compare it, offer it in one line (for example: Want this as an interactive HTML page?). Build it without asking only when the user asked for a page, a visual or an interactive explanation. It is one self-contained file with inline CSS and JavaScript and no build step, written to ~/explainers/YYYY-MM-DD-<slug>/index.html and never into the project repository. Open it with the system opener if one exists, give its path, and confirm that the file exists. If you cannot write the file, say so and give the explanation in the chat instead.\n- Video: never make one on your own. If the user asks for one, state the cost and confirm first.\nThis style applies to explanations only, not to code edits, tool output, status reports, plans, reviews or final reports. Section rules from other active modes still apply to every final answer."
 
 // The fake host. The projection state is folded from the events the test feeds
 // in, so the handler, the fold and the prompt section are exercised together.
@@ -298,7 +298,8 @@ test('POLICY keeps pages out of the project repository', () => {
   assert.match(POLICY, /~\/explainers\/YYYY-MM-DD-<slug>\/index\.html/)
   assert.match(POLICY, /never into the project repository/)
   assert.match(POLICY, /Open it with the system opener if one exists, give its path, and confirm that the file exists\./)
-  assert.match(POLICY, /This style applies to explanations only, not to code edits, tool output, status reports, plans, reviews or final reports\. Rules that require a section in those reports still apply\./)
+  assert.match(POLICY, /This style applies to explanations only, not to code edits, tool output, status reports, plans, reviews or final reports\. Section rules from other active modes still apply to every final answer\./)
+  assert.match(POLICY, /If you cannot write the file, say so and give the explanation in the chat instead\./)
 })
 
 test('POLICY says the style overrides the page rules and never lengthens an answer', () => {
@@ -371,7 +372,7 @@ test('the README pins its key sentences and the install command', () => {
   const readme = read('../README.md')
   assert.ok(readme.includes('The plugin generates no files, runs no tools, and makes no model calls.'))
   assert.ok(readme.includes('The setting is per session, and a new session starts off.'))
-  assert.ok(readme.includes('dsh plugin --profile web add /absolute/path/to/packages/explainer'))
+  assert.ok(readme.includes('dsh plugin --profile web add "$PWD/packages/explainer"'))
 })
 
 test('the README pins the five-minute stale-pending sentence, and the code agrees', () => {
@@ -395,6 +396,8 @@ test('the README summarises the precedence and how the page is opened', () => {
   const readme = read('../README.md')
   assert.ok(readme.includes('The style never makes an answer longer and overrides the page rules; rules that require a section in a status report or final report still apply.'))
   assert.ok(readme.includes('The agent opens the page with the system opener if one exists, gives its path, and confirms that the file exists.'))
+  assert.ok(readme.includes('If it cannot write the file, it says so and explains in the chat.'))
+  assert.ok(readme.includes('/output-style status'))
   assert.ok(readme.includes('A video is never made on the agent\'s own initiative.'))
 })
 

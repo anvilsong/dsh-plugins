@@ -8,7 +8,7 @@ A per-session output style for DeepSeek Harness that picks the lowest clear expl
 
 1. **Short prose** for a definition, a procedure or a warning of about three paragraphs or fewer. Sentences stay within 20 words for procedures and 25 for descriptions, in active voice, with one instruction per sentence and a numbered list for steps. These limits apply to this form only.
 2. **Text diagram** when the point is structure, flow, state, dependencies or sequence. The diagram uses plain text or box-drawing characters in the chat. Mermaid and SVG source is never pasted into the chat.
-3. **One-file HTML page** for a topic with more than about five interacting parts, or one the user would want to explore or compare. The agent offers it in one line, and builds it without asking only when the user asked for a page, a visual or an interactive explanation. The page is one self-contained file under `~/explainers/YYYY-MM-DD-<slug>/index.html`, never in the project repository. The agent opens the page with the system opener if one exists, gives its path, and confirms that the file exists.
+3. **One-file HTML page** for a topic with more than about five interacting parts, or one the user would want to explore or compare. The agent offers it in one line, and builds it without asking only when the user asked for a page, a visual or an interactive explanation. The page is one self-contained file under `~/explainers/YYYY-MM-DD-<slug>/index.html`, never in the project repository. The agent opens the page with the system opener if one exists, gives its path, and confirms that the file exists. If it cannot write the file, it says so and explains in the chat.
 
 A video is never made on the agent's own initiative. If the user asks for one, the agent states the cost and confirms first.
 
@@ -40,11 +40,14 @@ The setting is per session, and a new session starts off. It is derived from the
 
 ## Install
 
-```text
-dsh plugin --profile web add /absolute/path/to/packages/explainer
+```sh
+dsh plugin --profile web add "$PWD/packages/explainer"
 ```
 
-Restart the host after installing.
+Run it from the repository root and replace `web` with your profile name when
+needed (a wrong name creates a new profile). Restart the host after installing
+and refresh the page. Then run `/output-style status`: it should answer
+`Output style: off.`
 
 ## Limits
 
