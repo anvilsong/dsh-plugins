@@ -1,11 +1,18 @@
 /**
- * Usage plugin — browser half. One client module, two providers.
+ * Usage plugin — browser half. One client module, eight usage providers
+ * plus the sign-in service.
  *
- * Providers: OpenRouter (credits + key meters) and Kimi Code (subscription
- * quota + Extra Usage wallet). Each provider owns:
- *   - one Typert Remote namespace (`openrouterUsage` / `kimiUsage`),
+ * Providers: OpenRouter (credits + key meters), Kimi Code (subscription
+ * quota + Extra Usage wallet), DeepSeek and NewAPI (balance), GLM and
+ * MiniMax (coding-plan quota), OpenAI Codex (plan quota + credits) and
+ * Claude (subscription quota + extra usage). Each provider owns:
+ *   - one Typert Remote namespace (`openrouterUsage` / `kimiUsage` /
+ *     `deepseekUsage` / `zhipuUsage` / `minimaxUsage` / `newapiUsage` /
+ *     `codexUsage` / `anthropicUsage`),
  *   - one store, one poll loop, one Settings → Models footer panel,
  *   - one composer chip, gated on the session's active provider.
+ * The OAuth sign-in service (`providerLogin`) is shared: it adds the Codex
+ * and Claude sign-in controls to their Settings → Models cards.
  *
  * Built as an installed Client module: a CommonJS-wrapped bundle registered
  * through `window.__ModuleLoader__`. React arrives through `require("react")`;

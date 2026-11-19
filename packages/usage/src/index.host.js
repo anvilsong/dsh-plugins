@@ -1,20 +1,31 @@
 /**
  * Usage plugin — Host half.
  *
- * One plugin, one row in the bundle patch, one fiber. Each provider is an
- * isolated module under `providers/` that mounts its own Remote service,
- * its own `/usage-*` command, and its own poll timer. Isolation rule: one
- * provider's mount failure is logged and skipped — it must never take the
- * other provider down.
+ * One plugin, one row in the bundle patch, one fiber. Each of the eight usage
+ * providers (OpenRouter, Kimi, DeepSeek, GLM, MiniMax, NewAPI, Codex, Claude)
+ * is an isolated module under `providers/` that mounts its own Remote service,
+ * its own `/usage-*` command, and its own poll timer. A ninth module, the
+ * provider sign-in service (`providerLogin`, `/provider-login`), is mounted
+ * once for all of them. Isolation rule: one provider's mount failure is
+ * logged and skipped — it must never take any sibling provider down.
  *
- * Config shape (bundle patch):
+ * Config shape (bundle patch), one key per provider:
  *   providers:
  *     openrouter: { enabled, credentialRef, endpoint, showAccount, refreshMs, timeoutMs, showComposerChip }
  *     kimi:       { enabled, credentialRef, region, baseUrl, refreshMs, timeoutMs, showComposerChip }
+ *     deepseek:   { enabled, credentialRef, baseUrl, refreshMs, timeoutMs, showComposerChip, gate }
+ *     zhipu:      { enabled, credentialRef, region, baseUrl, refreshMs, timeoutMs, showComposerChip, gate }   (GLM)
+ *     minimax:    { enabled, credentialRef, region, baseUrl, refreshMs, timeoutMs, showComposerChip, gate }
+ *     newapi:     { enabled, credentialRef, baseUrl, refreshMs, timeoutMs, showComposerChip, gate }
+ *     codex:      { enabled, credentialRef, baseUrl, refreshMs, timeoutMs, showComposerChip, gate }
+ *     anthropic:  { enabled, credentialRef, baseUrl, refreshMs, timeoutMs, showComposerChip, gate }   (Claude)
  *
- * Remote namespaces stay per provider (`openrouterUsage`, `kimiUsage`), and
- * so do the command names (`/usage-openrouter`, `/usage-kimi`): the package
- * merged, the surfaces did not.
+ * Remote namespaces stay per provider (`openrouterUsage`, `kimiUsage`,
+ * `deepseekUsage`, `zhipuUsage`, `minimaxUsage`, `newapiUsage`, `codexUsage`,
+ * `anthropicUsage`), and so do the command names (`/usage-openrouter`,
+ * `/usage-kimi`, `/usage-deepseek`, `/usage-zhipu`, `/usage-minimax`,
+ * `/usage-newapi`, `/usage-codex`, `/usage-anthropic`): the package merged,
+ * the surfaces did not.
  */
 
 import { mountOpenRouter } from './providers/openrouter.js'
