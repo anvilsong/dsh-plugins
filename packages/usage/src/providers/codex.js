@@ -7,7 +7,7 @@
  * spend_control, and rate_limit_reset_credits.
  */
 
-import { fetchUsageJson, mountProvider, num } from './net.js'
+import { fetchUsageJson, mountProvider, num, usageFooter } from './net.js'
 
 const DEFAULT_CREDENTIAL_REF = 'llm-pi-ai/openai-codex'
 const DEFAULT_BASE = 'https://chatgpt.com/backend-api'
@@ -51,9 +51,8 @@ function formatReport(state) {
     }
     if (d.resetCreditsAvailable !== null) lines.push(`Rate-limit reset credits available: ${d.resetCreditsAvailable}`)
   }
-  if (state.status === 'error') lines.push(`Warning: last refresh failed (${state.error}): ${state.detail ?? ''}`.trim())
   if (state.endpoint) lines.push(`Endpoint: ${String(state.endpoint).replace(/^https:\/\//, '')}`)
-  if (state.fetchedAt) lines.push(`Read at ${new Date(state.fetchedAt).toLocaleTimeString()}`)
+  lines.push(...usageFooter(state))
   return lines.join('\n')
 }
 
@@ -72,7 +71,7 @@ export function mountCodex(ctx, config = {}) {
     defaultGate: ['openai-codex'],
     formatReport,
     fetchState: async (c, cfg) => {
-      const result = await fetchUsageJson(c, { credentialRef, recordKey: credentialRef, url, timeoutMs: cfg.timeoutMs })
+      const result = await fetchUsageJson(c, { credentialRef, recordKey: credentialRef, url, timeoutMs: cfg.timeoutMs, signIn: 'openai-codex' })
       if (result.failure) return result
       const body = result.body
       const rateLimit = body.rate_limit

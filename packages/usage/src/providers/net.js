@@ -46,9 +46,11 @@ export function errorMessage(body, status) {
  * Resolve a credential and GET one JSON endpoint, with the shared error
  * taxonomy. `auth` selects the header shape: 'bearer' (default) sends
  * `Authorization: Bearer <key>`; 'raw' sends the key bare (GLM coding plan).
- * Extra provider headers go in `headers`.
+ * Extra provider headers go in `headers`. `signIn` names the OAuth provider id
+ * (`openai-codex`, `anthropic`): a missing credential then says how to sign in
+ * instead of asking for an API key.
  */
-export async function fetchUsageJson(ctx, { credentialRef, recordKey, url, auth = 'bearer', headers = {}, timeoutMs, hint401 }) {
+export async function fetchUsageJson(ctx, { credentialRef, recordKey, url, auth = 'bearer', headers = {}, timeoutMs, hint401, signIn }) {
   let key
   try {
     if (recordKey) {
@@ -63,7 +65,13 @@ export async function fetchUsageJson(ctx, { credentialRef, recordKey, url, auth 
     return { failure: 'credential-read-failed', detail: `Could not read ${recordKey ?? credentialRef}: ${String(error?.message ?? error)}` }
   }
   if (!key) {
-    return { failure: 'missing-credential', detail: `No value for ${recordKey ?? credentialRef}. Add the API key in Settings → Models.` }
+    const ref = recordKey ?? credentialRef
+    return {
+      failure: 'missing-credential',
+      detail: signIn
+        ? `No sign-in found for ${ref}. Sign in from Settings → Models or run /provider-login ${signIn}.`
+        : `No value for ${ref}. Add the API key in Settings → Models.`,
+    }
   }
 
   const controller = new AbortController()
@@ -110,6 +118,28 @@ export async function fetchUsageJson(ctx, { credentialRef, recordKey, url, auth 
   return { body }
 }
 
+/** Clock time as the text reports print it. */
+function clock(ms) {
+  return new Date(ms).toLocaleTimeString()
+}
+
+/**
+ * The footer every text report ends with, as lines.
+ *
+ * `fetchedAt` is the last GOOD read; `attemptedAt` the last attempt. The
+ * warning appears while the last attempt is a failure (status 'error', or
+ * 'loading' with the failure still on the state). A state from an older host
+ * has no `attemptedAt`: the warning then falls back to `fetchedAt`.
+ */
+export function usageFooter(state) {
+  const lines = [state.fetchedAt ? `Last good read: ${clock(state.fetchedAt)}` : 'Last good read: never']
+  if (state.status === 'error' || state.error) {
+    const at = state.attemptedAt ?? state.fetchedAt
+    lines.push(`Warning: last refresh failed${at ? ` at ${clock(at)}` : ''} (${state.error}): ${state.detail ?? ''}`.trim())
+  }
+  return lines
+}
+
 /**
  * The shared provider runtime: cache, publish, single-flight refresh,
  * Remote service provide, command register, poll timer.
@@ -126,7 +156,9 @@ export function mountProvider(ctx, spec, cfg) {
   const cache = {
     state: {
       status: 'idle',
+      // fetchedAt: the last GOOD read. attemptedAt: the last attempt, good or not.
       fetchedAt: null,
+      attemptedAt: null,
       error: null,
       detail: null,
       endpoint: spec.endpoint ?? null,
@@ -152,21 +184,34 @@ export function mountProvider(ctx, spec, cfg) {
     }
   }
 
-  let inFlight = false
+  /** The refresh in progress, shared by every caller that arrives meanwhile. */
+  let flight = null
 
-  /** Fetch once and publish the outcome; the last good data survives errors. */
-  async function refresh() {
-    if (inFlight) return cache.state
-    inFlight = true
+  /**
+   * Fetch once and publish the outcome; the last good data and fetchedAt
+   * survive a failure. A caller that arrives while a refresh is in flight gets
+   * that flight's final state, never the transient 'loading'.
+   */
+  function refresh() {
+    if (flight) return flight
+    flight = run().finally(() => {
+      flight = null
+    })
+    return flight
+  }
+
+  async function run() {
+    // error and detail keep their last values while loading.
     publish({ status: 'loading' })
     try {
       const result = await spec.fetchState(ctx, { ...cfg, timeoutMs })
+      const now = Date.now()
       if (result.failure) {
         publish({
           status: 'error',
           error: result.failure,
           detail: result.detail ?? null,
-          fetchedAt: Date.now(),
+          attemptedAt: now,
         })
       } else {
         publish({
@@ -175,13 +220,12 @@ export function mountProvider(ctx, spec, cfg) {
           detail: null,
           endpoint: result.endpoint ?? cache.state.endpoint,
           data: result.data,
-          fetchedAt: Date.now(),
+          fetchedAt: now,
+          attemptedAt: now,
         })
       }
     } catch (error) {
-      publish({ status: 'error', error: 'unexpected', detail: String(error?.message ?? error), fetchedAt: Date.now() })
-    } finally {
-      inFlight = false
+      publish({ status: 'error', error: 'unexpected', detail: String(error?.message ?? error), attemptedAt: Date.now() })
     }
     return cache.state
   }

@@ -34,6 +34,7 @@ import {
   ENDPOINT_CREDITS,
   ENDPOINT_KEY,
 } from './openrouter-defaults.js'
+import { usageFooter } from './net.js'
 
 
 /**
@@ -218,8 +219,7 @@ function formatReport(state) {
   } else if (a && a.status === 'error' && a.error === 'management-key-required') {
     lines.push('Account balance: needs a management key (ordinary key refused).')
   }
-  if (state.status === 'error') lines.push(`Warning: last refresh failed (${state.error}): ${state.detail ?? ''}`.trim())
-  if (state.fetchedAt) lines.push(`Read at ${new Date(state.fetchedAt).toLocaleTimeString()}`)
+  lines.push(...usageFooter(state))
   return lines.join('\n')
 }
 
@@ -251,7 +251,9 @@ export function mountOpenRouter(ctx, config = {}) {
   const cache = {
     state: {
       status: 'idle',
+      // fetchedAt: the last GOOD read. attemptedAt: the last attempt, good or not.
       fetchedAt: null,
+      attemptedAt: null,
       error: null,
       detail: null,
       data: null,
@@ -272,8 +274,12 @@ export function mountOpenRouter(ctx, config = {}) {
     }
   }
 
-  /** One refresh at a time: an interval tick and a button press share this. */
-  let inFlight = false
+  /**
+   * One refresh at a time: an interval tick, a button press and the command
+   * share this. A caller that arrives mid-flight gets that flight's final
+   * state, never the transient 'loading'.
+   */
+  let flight = null
 
   /**
    * Fetch once and publish the outcome.
@@ -285,79 +291,89 @@ export function mountOpenRouter(ctx, config = {}) {
    * The key section and the account section are independent: a refused account
    * call never hides the key figures.
    *
+   * `fetchedAt` stays the time of the last GOOD read; a failure moves only
+   * `attemptedAt`. `error` and `detail` keep their last values while loading.
+   *
    * @returns the current state after the attempt.
    */
-  async function refresh() {
-    if (inFlight) return cache.state
-    inFlight = true
+  function refresh() {
+    if (flight) return flight
+    flight = run().finally(() => {
+      flight = null
+    })
+    return flight
+  }
+
+  async function run() {
+    publish({ status: 'loading' })
+
+    // Step 1 — resolve the key. Per-call read, never cached.
+    let resolved
     try {
-      publish({ status: 'loading', error: null, detail: null })
-
-      // Step 1 — resolve the key. Per-call read, never cached.
-      let resolved
-      try {
-        resolved = await ctx.credentials.resolve(credentialRef)
-      } catch (error) {
-        publish({
-          status: 'error',
-          error: 'credential-read-failed',
-          detail: String(error?.message ?? error),
-        })
-        return cache.state
-      }
-
-      if (!resolved || typeof resolved.value !== 'string' || resolved.value.length === 0) {
-        // The credentials service treats an empty stored value as absent, so this
-        // branch covers both "never set" and "set to blank".
-        publish({
-          status: 'error',
-          error: 'missing-credential',
-          detail: `No value for ${credentialRef}. Add an OpenRouter API key in Settings → Models.`,
-        })
-        return cache.state
-      }
-
-      // Step 2 — primary call.
-      const primary = await getOpenRouter(endpoint, resolved.value, timeoutMs)
-      if (primary.failure !== undefined) {
-        publish({
-          status: 'error',
-          error: primary.failure,
-          detail: primary.detail,
-        })
-        return cache.state
-      }
-
-      // Step 3 — account call with the SAME key, independent of the primary.
-      let account = { status: 'unavailable', data: null, error: null, detail: null }
-      if (showAccount && endpoint === ENDPOINT_KEY) {
-        const credits = await getOpenRouter(ENDPOINT_CREDITS, resolved.value, timeoutMs)
-        if (credits.data !== undefined) {
-          account = { status: 'ready', data: accountFromCredits(credits.data), error: null, detail: null }
-        } else {
-          account = {
-            status: 'error',
-            data: null,
-            // An ordinary key is expected here: the refusal is information,
-            // not a fault. The panel renders it as a note.
-            error: credits.failure,
-            detail: credits.detail,
-          }
-        }
-      }
-
+      resolved = await ctx.credentials.resolve(credentialRef)
+    } catch (error) {
       publish({
-        status: 'ready',
-        error: null,
-        detail: null,
-        fetchedAt: Date.now(),
-        data: endpoint === ENDPOINT_CREDITS ? fromCredits(primary.data) : fromKey(primary.data),
-        account,
+        status: 'error',
+        error: 'credential-read-failed',
+        detail: String(error?.message ?? error),
+        attemptedAt: Date.now(),
       })
       return cache.state
-    } finally {
-      inFlight = false
     }
+
+    if (!resolved || typeof resolved.value !== 'string' || resolved.value.length === 0) {
+      // The credentials service treats an empty stored value as absent, so this
+      // branch covers both "never set" and "set to blank".
+      publish({
+        status: 'error',
+        error: 'missing-credential',
+        detail: `No value for ${credentialRef}. Add an OpenRouter API key in Settings → Models.`,
+        attemptedAt: Date.now(),
+      })
+      return cache.state
+    }
+
+    // Step 2 — primary call.
+    const primary = await getOpenRouter(endpoint, resolved.value, timeoutMs)
+    if (primary.failure !== undefined) {
+      publish({
+        status: 'error',
+        error: primary.failure,
+        detail: primary.detail,
+        attemptedAt: Date.now(),
+      })
+      return cache.state
+    }
+
+    // Step 3 — account call with the SAME key, independent of the primary.
+    let account = { status: 'unavailable', data: null, error: null, detail: null }
+    if (showAccount && endpoint === ENDPOINT_KEY) {
+      const credits = await getOpenRouter(ENDPOINT_CREDITS, resolved.value, timeoutMs)
+      if (credits.data !== undefined) {
+        account = { status: 'ready', data: accountFromCredits(credits.data), error: null, detail: null }
+      } else {
+        account = {
+          status: 'error',
+          data: null,
+          // An ordinary key is expected here: the refusal is information,
+          // not a fault. The panel renders it as a note.
+          error: credits.failure,
+          detail: credits.detail,
+        }
+      }
+    }
+
+    const now = Date.now()
+    publish({
+      status: 'ready',
+      error: null,
+      detail: null,
+      fetchedAt: now,
+      attemptedAt: now,
+      data: endpoint === ENDPOINT_CREDITS ? fromCredits(primary.data) : fromKey(primary.data),
+      account,
+    })
+    return cache.state
   }
 
   /**

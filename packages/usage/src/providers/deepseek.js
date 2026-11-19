@@ -7,7 +7,7 @@
  * STRINGS on the wire.
  */
 
-import { fetchUsageJson, mountProvider, num } from './net.js'
+import { fetchUsageJson, mountProvider, num, usageFooter } from './net.js'
 
 const DEFAULT_CREDENTIAL_REF = 'DEEPSEEK_API_KEY'
 const DEFAULT_BASE = 'https://api.deepseek.com'
@@ -31,9 +31,8 @@ function formatReport(state) {
     }
     if (d.isAvailable === false) lines.push('Balance status: insufficient — the API refuses calls until topped up.')
   }
-  if (state.status === 'error') lines.push(`Warning: last refresh failed (${state.error}): ${state.detail ?? ''}`.trim())
   if (state.endpoint) lines.push(`Endpoint: ${String(state.endpoint).replace(/^https:\/\//, '')}`)
-  if (state.fetchedAt) lines.push(`Read at ${new Date(state.fetchedAt).toLocaleTimeString()}`)
+  lines.push(...usageFooter(state))
   return lines.join('\n')
 }
 

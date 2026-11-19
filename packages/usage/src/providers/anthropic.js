@@ -7,7 +7,7 @@
  * seven_day_breakdown.
  */
 
-import { fetchUsageJson, isRecord, mountProvider, num } from './net.js'
+import { fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
 
 const DEFAULT_CREDENTIAL_REF = 'llm-pi-ai/anthropic'
 const DEFAULT_BASE = 'https://api.anthropic.com'
@@ -91,9 +91,8 @@ function formatReport(state) {
       lines.push(`Breakdown: ${d.breakdown.map((row) => `${row.displayName} ${row.percent}%`).join(' · ')}`)
     }
   }
-  if (state.status === 'error') lines.push(`Warning: last refresh failed (${state.error}): ${state.detail ?? ''}`.trim())
   if (state.endpoint) lines.push(`Endpoint: ${String(state.endpoint).replace(/^https:\/\//, '')}`)
-  if (state.fetchedAt) lines.push(`Read at ${new Date(state.fetchedAt).toLocaleTimeString()}`)
+  lines.push(...usageFooter(state))
   return lines.join('\n')
 }
 
@@ -118,6 +117,7 @@ export function mountAnthropic(ctx, config = {}) {
         url,
         timeoutMs: cfg.timeoutMs,
         headers: { 'anthropic-version': '2023-06-01' },
+        signIn: 'anthropic',
       })
       if (result.failure) return result
       const body = result.body

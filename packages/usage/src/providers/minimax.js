@@ -13,7 +13,7 @@
  * end_time / weekly_end_time are epoch ms.
  */
 
-import { fetchUsageJson, isRecord, mountProvider, num } from './net.js'
+import { fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
 
 const DEFAULT_CREDENTIAL_REF = 'MINIMAX_API_KEY'
 const BASE_URL_CN = 'https://api.minimaxi.com'
@@ -30,9 +30,8 @@ function formatReport(state) {
   if (d) {
     for (const w of d.windows) lines.push(windowLine(w.label, w))
   }
-  if (state.status === 'error') lines.push(`Warning: last refresh failed (${state.error}): ${state.detail ?? ''}`.trim())
   if (state.endpoint) lines.push(`Endpoint: ${String(state.endpoint).replace(/^https:\/\//, '')}`)
-  if (state.fetchedAt) lines.push(`Read at ${new Date(state.fetchedAt).toLocaleTimeString()}`)
+  lines.push(...usageFooter(state))
   return lines.join('\n')
 }
 

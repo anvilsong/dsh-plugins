@@ -10,7 +10,7 @@
  * total_available, unlimited_quota } } — quota units; 500000 units = 1 USD.
  */
 
-import { fetchUsageJson, isRecord, mountProvider, num } from './net.js'
+import { fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
 
 const QUOTA_PER_USD = 500000
 
@@ -28,9 +28,8 @@ function formatReport(state) {
   if (d) {
     lines.push(`Granted: ${fmtUsd(d.total)} · used: ${fmtUsd(d.used)} · remaining: ${fmtUsd(d.remaining)}`)
   }
-  if (state.status === 'error') lines.push(`Warning: last refresh failed (${state.error}): ${state.detail ?? ''}`.trim())
   if (state.endpoint) lines.push(`Endpoint: ${String(state.endpoint).replace(/^https:\/\//, '')}`)
-  if (state.fetchedAt) lines.push(`Read at ${new Date(state.fetchedAt).toLocaleTimeString()}`)
+  lines.push(...usageFooter(state))
   return lines.join('\n')
 }
 

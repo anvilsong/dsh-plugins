@@ -13,7 +13,7 @@
  * window. nextResetTime is epoch ms. `percentage` is the used percent.
  */
 
-import { fetchUsageJson, isRecord, mountProvider, num } from './net.js'
+import { fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
 
 const DEFAULT_CREDENTIAL_REF = 'ZHIPU_API_KEY'
 const BASE_URL_CN = 'https://open.bigmodel.cn'
@@ -39,9 +39,8 @@ function formatReport(state) {
       for (const det of p.details.slice(0, 6)) lines.push(`  ${det.model}: ${det.usage}`)
     }
   }
-  if (state.status === 'error') lines.push(`Warning: last refresh failed (${state.error}): ${state.detail ?? ''}`.trim())
   if (state.endpoint) lines.push(`Endpoint: ${String(state.endpoint).replace(/^https:\/\//, '')}`)
-  if (state.fetchedAt) lines.push(`Read at ${new Date(state.fetchedAt).toLocaleTimeString()}`)
+  lines.push(...usageFooter(state))
   return lines.join('\n')
 }
 
