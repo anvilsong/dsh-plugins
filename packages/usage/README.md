@@ -107,12 +107,23 @@ button instead.
 /provider-login anthropic
 ```
 
-The command runs OAuth only. It writes nothing into the conversation: the
+The command runs OAuth only. It appends no message to the conversation: the
 sign-in link, any code, and progress appear in a question in the composer area.
-When the provider asks for something, the link is shown above that request in
-the same question. While the flow waits on the browser, the question offers only
-**Cancel sign-in**. Expand the question text if it is cut off, then copy the link.
-Cancelling or dismissing a question ends the sign-in.
+The host still records the command itself (`command/run` and `command/done`) in
+the session log. When the provider asks for something, the link is shown above
+that request in the same question. In the Claude and Codex browser flows the
+wait happens inside the paste-code question: sign in in the browser, or paste
+the code there. While the flow waits on the browser with nothing to ask, the
+question offers only **Cancel sign-in**. Expand the question text if it is cut
+off, then copy the link.
+
+Where the provider asks for text (the pasted code), you type the answer into the
+question's **Other** field. Everything else cancels the sign-in: **Cancel sign-in**,
+**Skip**, closing the question, and, on a choice between options, text typed into
+**Other** that names none of them. That text is never passed on or logged.
+A question the host cannot show (no question UI, or a session that is not a root
+conversation) ends the sign-in with that reason instead of "cancelled"; use the
+provider card, or add the credential in **Settings → Models**.
 
 API keys are entered in **Settings → Models**. `/provider-login <provider> api-key`
 is refused, because a question cannot mask a typed key. For the same reason, an

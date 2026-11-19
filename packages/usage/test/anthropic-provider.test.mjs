@@ -100,7 +100,7 @@ test('Claude usage parses the live weekly window, scoped limit, extra usage, spe
     const report = await h.command().handler({})
     assert.match(report.text, /Claude usage/)
     assert.match(report.text, /100.0% used/)
-    assert.match(report.text, /Extra usage: 0.00 USD/)
+    assert.match(report.text, /Extra usage used: 0.00 USD \(no monthly limit\)/)
     assert.match(report.text, /Usage credits spent: 0.00 USD/)
     assert.match(report.text, /Fable limit: 4.0% used/)
     assert.match(report.text, /Breakdown: Claude Code 100% · Chats 0% · Cowork 0% · Other 0%/)
@@ -165,4 +165,36 @@ test('Claude usage rejects a response without windows', async () => {
   } finally {
     h.restore()
   }
+})
+
+async function reportFor(extra) {
+  const h = harness({ seven_day: { utilization: 25, resets_at: '2026-11-20T00:00:00Z' }, extra_usage: extra })
+  try {
+    mountAnthropic(h.ctx)
+    await h.api().refresh()
+    return (await h.command().handler({})).text
+  } finally {
+    h.restore()
+  }
+}
+
+test('the report says what extra usage was used and its monthly limit when it is enabled', async () => {
+  const text = await reportFor({ is_enabled: true, used_credits: 12.5, monthly_limit: 50, utilization: 25, currency: 'USD' })
+  assert.match(text, /^Extra usage used: 12\.50 USD of 50\.00 USD$/m)
+  assert.doesNotMatch(text, /disabled/)
+})
+
+test('the report says extra usage is disabled when the account turned it off, with the reason', async () => {
+  const text = await reportFor({ is_enabled: false, used_credits: 0, monthly_limit: null, currency: 'USD', disabled_reason: 'overage_not_provisioned' })
+  assert.match(text, /^Extra usage: disabled$/m)
+  assert.match(text, /Extra usage disabled reason: overage_not_provisioned/)
+  assert.doesNotMatch(text, /Extra usage used/)
+})
+
+test('the report does not call extra usage disabled when the reply does not say, and prints no amount it lacks', async () => {
+  const unknown = await reportFor({ used_credits: 12.5, currency: 'USD' })
+  assert.doesNotMatch(unknown, /disabled/)
+  assert.match(unknown, /^Extra usage used: 12\.50 USD \(no monthly limit\)$/m)
+  const empty = await reportFor({ is_enabled: true, currency: 'USD' })
+  assert.doesNotMatch(empty, /Extra usage/)
 })

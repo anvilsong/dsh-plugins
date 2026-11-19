@@ -74,7 +74,13 @@ function formatReport(state) {
     if (d.extra) {
       const e = d.extra
       const used = moneyMinor(e.balanceCents, 2)
-      lines.push(`Extra usage: ${used === null ? '—' : `${used.toFixed(2)} ${e.currency}`} (${e.enabled ? 'enabled' : 'disabled'})`)
+      const limit = moneyMinor(e.monthlyLimitCents, 2)
+      // is_enabled may be missing (null): then the report claims neither state.
+      if (e.enabled === false) {
+        lines.push('Extra usage: disabled')
+      } else if (used !== null) {
+        lines.push(`Extra usage used: ${used.toFixed(2)} ${e.currency}${limit === null ? ' (no monthly limit)' : ` of ${limit.toFixed(2)} ${e.currency}`}`)
+      }
       if (e.disabledReason) lines.push(`Extra usage disabled reason: ${e.disabledReason}`)
     }
     if (d.spend) {

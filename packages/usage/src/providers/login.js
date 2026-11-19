@@ -5,8 +5,12 @@ const PROVIDER = /^[a-z0-9][a-z0-9-]*$/
 const STATUS_PROVIDERS = new Set(['openai-codex', 'anthropic'])
 const USAGE = 'Usage: /provider-login <provider>. Runs OAuth only; the sign-in link appears in a question. '
   + 'There is no api-key method: enter API keys in Settings → Models. Example: /provider-login openai-codex'
-/** Error text of the card's Remote stream for a malformed request, kept as it was. */
-const REQUEST_USAGE = 'Usage: /provider-login <provider> [oauth|api-key]. Example: /provider-login openai-codex'
+/**
+ * Error text of the card's Remote stream for a malformed request. The card is
+ * the caller here, not the slash command, and the stream does run `api-key`.
+ */
+const REQUEST_USAGE = 'Invalid sign-in request: expected a provider id (lowercase letters, digits and hyphens) '
+  + 'and a method of oauth or api-key.'
 
 function validate(provider, method) {
   if (!PROVIDER.test(provider) || !['oauth', 'api-key'].includes(method)) throw new Error(REQUEST_USAGE)
@@ -148,7 +152,12 @@ function noticeText(notice) {
   return lines.join('\n')
 }
 
-/** The flow's answer to one prompt: the typed text or the chosen option's id; undefined for a skip. */
+/**
+ * The flow's answer to one prompt: the typed text or the chosen option's id;
+ * undefined for a skip. On a select question the typed text counts only when
+ * it names an option (by id or label): anything else is a decline, so what the
+ * user typed never reaches the flow, which echoes unknown methods in its errors.
+ */
 function answerOf(request, result) {
   const answer = result?.answers?.find((item) => item.id === QUESTION_ID)
   const custom = answer?.custom ?? ''
@@ -157,7 +166,43 @@ function answerOf(request, result) {
   const chosen = request.options.find((option) => custom === ''
     ? option.label === label
     : option.label === custom || option.id === custom)
-  return chosen?.id ?? (custom === '' ? undefined : custom)
+  return chosen?.id
+}
+
+const CANCEL_CODES = new Set(['ASK_ABORTED', 'ASK_CANCELLED'])
+const CODE = /^[A-Z][A-Z0-9_]{2,39}$/
+const SETTINGS = 'You can also add the credential in Settings → Models.'
+
+/**
+ * Why a failed question is not a user cancel; undefined when it is one. The
+ * text names the cause class only. The thrown text is never copied: a host or
+ * answerer may put what the user typed into it.
+ */
+function askFailureText(provider, error) {
+  const code = typeof error === 'object' && error !== null ? error.code : undefined
+  if (CANCEL_CODES.has(code) || (typeof error === 'object' && error !== null && error.name === 'AbortError')) return undefined
+  if (code === 'NO_PROVIDER') {
+    return `${provider}: no question UI is available here, so the sign-in cannot start. Run it where questions are shown. ${SETTINGS}`
+  }
+  if (code === 'CALLER_NOT_LIVE' || code === 'DELEGATED_CALLER') {
+    return `${provider}: questions are available only in a root conversation. Run /provider-login there. ${SETTINGS}`
+  }
+  const named = typeof code === 'string' && CODE.test(code) ? ` (${code})` : ''
+  return `${provider}: the sign-in question could not be shown${named}. ${SETTINGS}`
+}
+
+/**
+ * An error from the flow without the answers the user typed to it. Free text
+ * (a pasted code, an organisation name) can come back inside a provider's
+ * error message, and the host writes that message into the session log.
+ */
+function withoutAnswers(error, answers) {
+  if (answers.length === 0) return error
+  let message = error instanceof Error ? error.message : String(error)
+  for (const answer of answers) message = message.split(answer).join('[answer]')
+  const safe = new Error(message)
+  if (error instanceof Error && /^[A-Za-z]+$/.test(error.name)) safe.name = error.name
+  return safe
 }
 
 /**
@@ -167,7 +212,10 @@ function answerOf(request, result) {
  * with no prompt, in a question of its own that offers only Cancel sign-in.
  * That question closes when a prompt or a newer notice replaces it and when
  * the flow settles. A secret prompt, or any kind other than text and select,
- * cancels the sign-in and is never asked.
+ * cancels the sign-in and is never asked. Text typed on a select question that
+ * names no option declines it. A question the host cannot show ends the
+ * sign-in with its cause class; only a dismissal says "cancelled". What the
+ * user typed never appears in an error the command throws or returns.
  * @param ctx - plugin context with authorization and userQuestions.
  * @param agent - the agent whose UI ran the command.
  * @param provider - provider id from the command line.
@@ -188,6 +236,7 @@ async function signIn(ctx, agent, provider, commandSignal) {
   if (commandSignal?.aborted) stop()
 
   const notices = []
+  const typed = []
   let prompts = 0
   let waiting
   let timer
@@ -207,10 +256,12 @@ async function signIn(ctx, agent, provider, commandSignal) {
     if (flow.aborted || prompts > 0 || notices.length === 0) return
     const own = new AbortController()
     waiting = own
-    // Any answer or failure of this question, other than its own withdrawal, cancels the sign-in.
-    const settled = () => { if (!own.signal.aborted) stop() }
+    // Any answer of this question, other than its own withdrawal, cancels the
+    // sign-in; so does a failure, which says why when it is not a dismissal.
+    const answered = () => { if (!own.signal.aborted) stop() }
+    const failed = (error) => { if (!own.signal.aborted) stop(askFailureText(provider, error)) }
     new Promise((resolve) => { resolve(ask(notices.join('\n\n'), [{ label: CANCEL }], AbortSignal.any([own.signal, flow]))) })
-      .then(settled, settled)
+      .then(answered, failed)
   }
   // One task later, so a prompt raised right after its notice carries that
   // notice instead of replacing a question that was shown for an instant.
@@ -246,8 +297,9 @@ async function signIn(ctx, agent, provider, commandSignal) {
         result = await ask([...notices, request.message].join('\n\n'), options, signal)
       } catch (error) {
         // A flow withdrawing its own prompt (a browser callback won the race) keeps running.
-        if (!request.signal?.aborted) stop()
-        throw error
+        if (request.signal?.aborted) throw error
+        stop(askFailureText(provider, error))
+        throw flow.reason
       } finally {
         prompts -= 1
         notices.splice(0, shown)
@@ -258,6 +310,7 @@ async function signIn(ctx, agent, provider, commandSignal) {
         stop()
         throw flow.reason
       }
+      if (request.kind === 'text') typed.push(answer)
       return answer
     },
   }
@@ -274,7 +327,7 @@ async function signIn(ctx, agent, provider, commandSignal) {
       : { kind: 'error', text }
   } catch (error) {
     if (flow.aborted) return { kind: 'error', text }
-    throw error
+    throw withoutAnswers(error, typed)
   } finally {
     commandSignal?.removeEventListener('abort', withdraw)
     closeWaiting()

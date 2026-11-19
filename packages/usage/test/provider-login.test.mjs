@@ -5,8 +5,8 @@ import { mountProviderLogin, ProviderLoginService } from '../src/providers/login
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 10))
 
-function questionError(code) {
-  const error = new Error(`user question ${code}`)
+function questionError(code, message = `user question ${code}`) {
+  const error = new Error(message)
   error.name = 'UserQuestionError'
   error.code = code
   return error
@@ -81,15 +81,15 @@ function harness(run = async () => {}) {
         const item = request.questions[0]
         const entry = { request, text: item.question, options: item.options ?? [], settled: false, aborted: false }
         entry.promise = new Promise((resolve, reject) => {
-          const finish = (settleWith) => (value) => {
+          const finish = (settleWith) => (value, extra) => {
             if (entry.settled) return
             entry.settled = true
             request.signal?.removeEventListener('abort', onAbort)
-            settleWith(value)
+            settleWith(value, extra)
           }
           const onAbort = finish(() => { entry.aborted = true; reject(questionError('ASK_ABORTED')) })
           entry.answer = finish((answer) => resolve({ answers: [{ id: item.id, selected: [], ...answer }] }))
-          entry.reject = finish((code) => reject(questionError(code)))
+          entry.reject = finish((code, message) => reject(questionError(code, message)))
           if (request.signal?.aborted) onAbort()
           else request.signal?.addEventListener('abort', onAbort, { once: true })
         })
@@ -380,4 +380,182 @@ test('status has direct Remote metadata and rejects unsupported providers', asyn
   assert.deepEqual(marker, { method: 'status', invocation: { kind: 'direct' } })
   await assert.rejects(h.service.status({ provider: 'openai' }), /supports only openai-codex and anthropic/)
   assert.deepEqual(h.reads, [])
+})
+
+// ---------------------------------------------------------------------------
+// Follow-up F: typed text never leaves the command, ask failures are not "cancelled"
+// ---------------------------------------------------------------------------
+
+const SECRET = 'sk-ant-api03-SECRET'
+const METHOD_OPTIONS = [
+  { id: 'browser', label: 'Browser login (default)' },
+  { id: 'copy_code', label: 'Copy code login (headless)' },
+]
+/** The flow of pi-ai's Anthropic provider: it throws on a method it does not know and echoes it. */
+const anthropicMethodFlow = async (session) => {
+  const method = await session.prompt({ kind: 'select', message: 'Select Anthropic login method:', options: METHOD_OPTIONS })
+  if (!['browser', 'copy_code'].includes(method)) throw new Error(`Unknown Anthropic login method: ${method}`)
+}
+
+/** Run the command while recording everything the seams and the console saw. */
+async function runObserved(h, rawInput) {
+  const seen = []
+  const levels = ['log', 'info', 'warn', 'error', 'debug']
+  const originals = levels.map((level) => console[level])
+  for (const level of levels) console[level] = (...args) => { seen.push(args.map((arg) => (arg instanceof Error ? `${arg.message}\n${arg.stack}` : String(arg))).join(' ')) }
+  let outcome
+  try {
+    outcome = { value: await h.run(rawInput) }
+  } catch (error) {
+    outcome = { error }
+  } finally {
+    levels.forEach((level, index) => { console[level] = originals[index] })
+  }
+  const everything = [
+    JSON.stringify(outcome.value ?? null),
+    outcome.error ? `${outcome.error.name}: ${outcome.error.message}\n${outcome.error.stack}\n${String(outcome.error.cause ?? '')}` : '',
+    ...h.asks.map((entry) => entry.text),
+    ...h.asks.flatMap((entry) => entry.options.map((option) => JSON.stringify(option))),
+    ...h.appends,
+    ...h.swallowed.map((error) => error.message),
+    ...seen,
+  ].join('\n')
+  return { ...outcome, everything }
+}
+
+test('text typed into Other on a select question is a decline: no flow, error, result or log ever holds it', { timeout: 2000 }, async () => {
+  const h = harness(anthropicMethodFlow)
+  h.onAsk = (entry) => entry.answer({ custom: SECRET })
+  const observed = await runObserved(h, 'anthropic')
+  assert.equal(observed.error, undefined, `the command must not throw: ${observed.error?.message}`)
+  assert.deepEqual(observed.value, { kind: 'error', text: 'anthropic: sign-in cancelled.' })
+  assert.ok(!observed.everything.includes(SECRET), 'the typed text appears nowhere')
+  assert.equal(h.begins[0].signal.aborted, true)
+  assert.ok(h.flowPrompts.every((prompt) => prompt.settled))
+})
+
+test('text typed into Other that names an option id or label still chooses that option', { timeout: 2000 }, async () => {
+  for (const custom of ['copy_code', 'Copy code login (headless)']) {
+    const chosen = []
+    const h = harness(async (session) => {
+      chosen.push(await session.prompt({ kind: 'select', message: 'Select Anthropic login method:', options: METHOD_OPTIONS }))
+    })
+    h.onAsk = (entry) => entry.answer({ custom })
+    const result = await h.run('anthropic')
+    assert.equal(result.kind, 'success')
+    assert.deepEqual(chosen, ['copy_code'])
+  }
+})
+
+test('an error the flow throws after a text answer never carries that answer out of the command', { timeout: 2000 }, async () => {
+  const h = harness(async (session) => {
+    const code = await session.prompt({ kind: 'text', message: 'Paste the code' })
+    throw new Error(`Token exchange failed for code ${code} (HTTP 400)`)
+  })
+  h.onAsk = (entry) => entry.answer({ custom: SECRET })
+  const observed = await runObserved(h, 'anthropic')
+  assert.ok(observed.error, 'a failing flow still fails the command')
+  assert.match(observed.error.message, /Token exchange failed for code .* \(HTTP 400\)/)
+  assert.ok(!observed.everything.includes(SECRET), 'the typed text appears nowhere')
+})
+
+test('an error the flow throws without any typed answer is rethrown unchanged', { timeout: 2000 }, async () => {
+  const failure = new Error('The token endpoint is down.')
+  const h = harness(async () => { throw failure })
+  await assert.rejects(h.run('anthropic'), (error) => error === failure)
+})
+
+for (const [code, expected] of [
+  ['NO_PROVIDER', /no question UI/],
+  ['CALLER_NOT_LIVE', /root conversation/],
+  ['DELEGATED_CALLER', /root conversation/],
+]) {
+  test(`a question that cannot be shown (${code}) is an error with its cause, not "sign-in cancelled"`, { timeout: 2000 }, async () => {
+    const h = harness(async (session) => {
+      session.notify({ message: 'Continue in your browser', url: 'https://example.com/auth' })
+      await session.prompt({ kind: 'text', message: 'Paste the code' })
+    })
+    h.onAsk = (entry) => entry.reject(code, `raw host text ${SECRET}`)
+    const observed = await runObserved(h, 'anthropic')
+    assert.equal(observed.error, undefined)
+    assert.equal(observed.value.kind, 'error')
+    assert.match(observed.value.text, /^anthropic: /)
+    assert.match(observed.value.text, expected)
+    assert.match(observed.value.text, /Settings → Models/)
+    assert.doesNotMatch(observed.value.text, /cancelled/)
+    assert.ok(!observed.everything.includes(SECRET), 'the host text is not copied')
+    assert.equal(h.begins[0].signal.aborted, true)
+    assert.ok(h.flowPrompts.every((prompt) => prompt.settled))
+  })
+}
+
+test('an unknown failure of the question names its code only when it is a plain code, and never copies the text', { timeout: 2000 }, async () => {
+  const known = harness(async (session) => { await session.prompt({ kind: 'text', message: 'Paste the code' }) })
+  known.onAsk = (entry) => entry.reject('BAD_INTENT', `detail ${SECRET}`)
+  const withCode = await runObserved(known, 'anthropic')
+  assert.match(withCode.value.text, /BAD_INTENT/)
+  assert.doesNotMatch(withCode.value.text, /cancelled/)
+  assert.ok(!withCode.everything.includes(SECRET))
+
+  const odd = harness(async (session) => { await session.prompt({ kind: 'text', message: 'Paste the code' }) })
+  odd.onAsk = (entry) => entry.reject(`not a code ${SECRET}`, `detail ${SECRET}`)
+  const withoutCode = await runObserved(odd, 'anthropic')
+  assert.equal(withoutCode.value.kind, 'error')
+  assert.doesNotMatch(withoutCode.value.text, /cancelled/)
+  assert.ok(!withoutCode.everything.includes(SECRET))
+})
+
+test('the waiting question failing to show is an error with its cause too', { timeout: 2000 }, async () => {
+  const h = harness(async (session) => {
+    session.notify({ message: 'Waiting for the browser', url: 'https://example.com/auth' })
+    await waitForAbort(session.signal)
+  })
+  h.onAsk = (entry) => entry.reject('NO_PROVIDER', `raw ${SECRET}`)
+  const observed = await runObserved(h, 'openai-codex')
+  assert.equal(observed.value.kind, 'error')
+  assert.match(observed.value.text, /no question UI/)
+  assert.doesNotMatch(observed.value.text, /cancelled/)
+  assert.ok(!observed.everything.includes(SECRET))
+})
+
+test('dismissing or aborting a question stays a plain cancellation', { timeout: 2000 }, async () => {
+  for (const code of ['ASK_CANCELLED', 'ASK_ABORTED']) {
+    const h = harness(async (session) => { await session.prompt({ kind: 'text', message: 'Paste the code' }) })
+    h.onAsk = (entry) => entry.reject(code)
+    assert.deepEqual(await h.run('anthropic'), { kind: 'error', text: 'anthropic: sign-in cancelled.' }, code)
+  }
+})
+
+test('a prompt closes the waiting question before it asks its own', { timeout: 2000 }, async () => {
+  let next
+  const gate = new Promise((resolve) => { next = resolve })
+  const h = harness(async (session) => {
+    session.notify({ message: 'Open this page to continue signing in.', url: 'https://example.com/auth' })
+    await gate
+    await session.prompt({ kind: 'text', message: 'Paste the code' })
+  })
+  const waitingStateAtPrompt = []
+  h.onAsk = (entry) => {
+    if (entry.options.length === 0) {
+      waitingStateAtPrompt.push(h.asks[0].settled)
+      entry.answer({ custom: 'code' })
+    }
+  }
+  const running = h.run('anthropic')
+  await settle()
+  next()
+  assert.equal((await running).kind, 'success')
+  assert.deepEqual(waitingStateAtPrompt, [true], 'the waiting question was already closed when the prompt was asked')
+})
+
+test('the Remote stream rejects a malformed request with text that fits the card, not the command', () => {
+  const service = new ProviderLoginService({ reflect: { provide() {} } })
+  for (const request of [{ provider: 'Bad Name', method: 'oauth' }, { provider: 'anthropic', method: 'device' }]) {
+    assert.throws(() => service.begin(request), (error) => {
+      assert.doesNotMatch(error.message, /\/provider-login/, 'the slash command is not the caller')
+      assert.match(error.message, /oauth/)
+      assert.match(error.message, /api-key/)
+      return true
+    })
+  }
 })
