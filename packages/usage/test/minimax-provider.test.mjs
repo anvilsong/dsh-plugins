@@ -157,6 +157,8 @@ test('MiniMax report prints the used percent, not the remaining percent', async 
 test('MiniMax remaining 0.4 vs 40 scale', { todo: 'needs a real reply: today 0.4 is read as 0.4 percent remaining (used ratio 0.996); if the live API sends fractions the answer is 0.6' }, async () => {
   await run({ handler: () => json(reply({ current_interval_remaining_percent: 0.4 })) }, async (h) => {
     const state = await h.api.refresh()
-    assert.equal(state.data.windows[0].usedRatio, 0.6)
+    // No desired value is pinned: percent versus fraction needs a real reply. Replace this line with the
+    // confirmed expectation (0.996 if the field is a percent, 0.6 if it is a fraction) and drop the todo.
+    assert.fail(`needs a real reply: usedRatio is ${state.data.windows[0].usedRatio} for remaining 0.4`)
   })
 })
