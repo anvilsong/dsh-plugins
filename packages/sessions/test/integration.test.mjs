@@ -64,6 +64,17 @@ const DARWIN = process.platform === 'darwin'
 const NOT_DARWIN = DARWIN ? false : 'prune needs the darwin session lock probe (design.md D18)'
 const MINUTE = 60_000
 const tick = () => new Promise((resolve) => setImmediate(resolve))
+// A wait for a held call has a wall-clock bound, never a count of event-loop turns. Before the call reaches
+// its hook it writes audit lines and checks paths with node:fs promises, and the libuv thread pool runs that
+// work. On a loaded machine that work waits for a CPU while the event loop keeps turning (thousands of turns),
+// so a bound of 2,000 turns failed these tests at random. WAIT_MS only makes a call that never gets there fail.
+const WAIT_MS = 30_000
+/** Wait until `check()` is true (the test polls it once per event-loop turn). Fail with `label` if it is not true within WAIT_MS. */
+async function until(check, label) {
+  const deadline = Date.now() + WAIT_MS
+  while (!check() && Date.now() < deadline) await tick()
+  assert.ok(check(), label)
+}
 
 async function sandbox(options) {
   const world = await createSandbox(options)
@@ -821,8 +832,7 @@ async function twoHosts(variant) {
   const planA = await a.call('plan', { scope: 'all' })
   const planB = await b.call('plan', { scope: 'all' })
   const running = a.call('apply', { planId: planA.planId, confirmCount: planA.totals.readySessions })
-  for (let i = 0; i < 2000 && !held; i += 1) await tick()
-  assert.ok(held, 'host A is inside its apply')
+  await until(() => held, 'host A is inside its apply')
   const batchId = batchFolders(world)[0]
   return { world, a, b, planB, batchId, running, release }
 }
@@ -994,8 +1004,7 @@ test('a plan is used once, belongs to its process and expires; a wrong count is 
   const plan3 = await proc.call('plan', { scope: 'selection', rootIds: ['tree-c'] })
   world.hold = true
   const running = proc.call('apply', { planId: plan2.planId, confirmCount: plan2.totals.readySessions })
-  for (let i = 0; i < 2000 && !held; i += 1) await tick()
-  assert.ok(held)
+  await until(() => held, 'the first apply is held at its unarchive')
   assert.equal(await proc.codeOf('apply', { planId: plan3.planId, confirmCount: plan3.totals.readySessions }), ERROR.busy)
   assert.equal(await proc.codeOf('apply', { planId: plan2.planId, confirmCount: plan2.totals.readySessions }), ERROR.busy, 'the same plan again')
   assert.equal(await proc.codeOf('restore', { batchId: first.batchId }), ERROR.busy)

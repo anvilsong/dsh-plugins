@@ -181,6 +181,13 @@ const isSessionMove = (world, from, to) => [from, to].some((p) => typeof p === '
 function makeProcess(world, options = {}) {
   const { killAfter = null } = options
   const proc = { dead: false, renames: 0, registryCalls: 0 }
+  // `died` resolves when the process dies at its kill point (settle() awaits it).
+  let resolveDied
+  proc.died = new Promise((resolve) => { resolveDied = resolve })
+  const die = () => {
+    proc.dead = true
+    resolveDied()
+  }
   const hang = () => new Promise(() => {})
   const event = (...entry) => world.events.push({ entry, applyStarts: auditOps(world).filter((op) => op === 'apply-start').length })
 
@@ -196,7 +203,7 @@ function makeProcess(world, options = {}) {
     world.calls.push([name, ...args])
     event(name, ...args)
     proc.registryCalls += 1
-    if (killAfter?.kind === 'registry' && proc.registryCalls === killAfter.n) proc.dead = true
+    if (killAfter?.kind === 'registry' && proc.registryCalls === killAfter.n) die()
     if (proc.dead) return hang()
     return undefined
   }
@@ -286,7 +293,7 @@ function makeProcess(world, options = {}) {
         if (key === 'renameSync' && isSessionMove(world, args[0], args[1])) {
           event('rename', path.basename(args[0]), args[0].startsWith(world.store) ? 'out' : 'back')
           proc.renames += 1
-          if (killAfter?.kind === 'rename' && proc.renames === killAfter.n) proc.dead = true
+          if (killAfter?.kind === 'rename' && proc.renames === killAfter.n) die()
         }
         return result
       }
@@ -375,17 +382,37 @@ const deferred = () => {
   return { promise, resolve }
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve))
+
+// Each wait in these tests waits for an event: a call settles, a process dies, a held registry call is reached.
+// A wall-clock bound limits the wait, never a count of event-loop turns. The audit log (src/audit.js) and the
+// path checks (src/paths.js) use node:fs promises, and the libuv thread pool runs that work. On a loaded machine
+// that work waits for a CPU while the event loop keeps turning. A crash test then needed up to 5,700 turns to reach
+// its kill point (about 100 on an idle machine), so a bound of 2,000 turns failed these tests at random. WAIT_MS only
+// makes a call that never gets there (a real hang) fail. A correct call needs well under a second, even under load.
+const WAIT_MS = 30_000
+const TIMED_OUT = Symbol('timed out')
+/** The value of `promise`, or TIMED_OUT when it has not settled within `ms`. */
+async function within(promise, ms) {
+  let timer
+  const bound = new Promise((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), ms) })
+  try {
+    return await Promise.race([promise, bound])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Wait until the call settles or its process dies at its kill point. A call that does neither within WAIT_MS fails. */
 async function settle(promise, proc) {
   let done = false
-  promise.then(() => { done = true }, () => { done = true })
-  for (let i = 0; i < 2000 && !done; i += 1) {
-    if (proc.dead) {
-      for (let j = 0; j < 50 && !done; j += 1) await tick()
-      return
-    }
-    await tick()
+  const settled = promise.then(() => { done = true }, () => { done = true })
+  await within(Promise.race([settled, proc.died]), WAIT_MS)
+  if (proc.dead) {
+    // A few turns for a dead call that still settles (it throws the crash error); a call that hangs at its kill point stays pending.
+    for (let j = 0; j < 50 && !done; j += 1) await tick()
+    return
   }
-  assert.ok(done || proc.dead, 'the call neither finished nor crashed')
+  assert.ok(done, 'the call neither finished nor crashed')
 }
 
 const codeOf = async (promise) => {
@@ -397,12 +424,10 @@ const codeOf = async (promise) => {
   return 'resolved'
 }
 
-/** The code a call settles with within a few event-loop turns, or 'pending' while it still waits (on a held registry call, say). */
-async function settledCode(promise, turns = 300) {
-  let out = null
-  codeOf(promise).then((code) => { out = code })
-  for (let i = 0; i < turns && out === null; i += 1) await tick()
-  return out ?? 'pending'
+/** The code a call settles with, or 'pending' while it still waits after WAIT_MS (on a held registry call, for example). */
+async function settledCode(promise, ms = WAIT_MS) {
+  const code = await within(codeOf(promise), ms)
+  return code === TIMED_OUT ? 'pending' : code
 }
 
 /** Hold every registry mutation `name` of every process until open(); `reached` turns true once one waits. */
@@ -420,8 +445,10 @@ function holdRegistry(world, name) {
   return held
 }
 
+/** Wait until `check()` is true (the test polls it once per event-loop turn). Fail with `label` if it is not true within WAIT_MS. */
 async function until(check, label) {
-  for (let i = 0; i < 2000 && !check(); i += 1) await tick()
+  const deadline = Date.now() + WAIT_MS
+  while (!check() && Date.now() < deadline) await tick()
   assert.ok(check(), label)
 }
 
@@ -1142,7 +1169,8 @@ test('single flight: a second mutation gets busy while one runs; reads stay avai
   const plan = await service.plan({ scope: 'all' })
   world.block.detach = deferred()
   const running = service.apply({ planId: plan.planId, confirmCount: 5 })
-  for (let i = 0; i < 200 && !world.events.some(({ entry }) => entry[0] === 'rename'); i += 1) await tick()
+  // The first rename happens under the trash lock, so from then on the other process below sees the lock as held.
+  await until(() => world.events.some(({ entry }) => entry[0] === 'rename'), 'the apply has moved its first session')
   await tick()
   assert.equal(service.core.inspectState().mutating, 'apply')
   assert.equal(await codeOf(service.unarchive({ ids: ['k1'] })), ERROR.busy)
@@ -1754,18 +1782,6 @@ test('F2: recovery runs once when the service starts, never throws, logs, and ev
   assert.equal(existsSync(bare.trashDir), false, 'and no trash folder is created')
 })
 
-const TIMED_OUT = Symbol('timed out')
-/** The value of `promise`, or TIMED_OUT when it has not settled within `ms`. */
-async function within(promise, ms) {
-  let timer
-  const bound = new Promise((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), ms) })
-  try {
-    return await Promise.race([promise, bound])
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
 /** A prune whose unarchive steps the registry refused: archived ids whose folders are in the trash, owed to recovery. */
 async function owedBatch(world) {
   world.fail.add('unarchive')
@@ -1862,7 +1878,8 @@ test('recovery at start: a registry call that never settles holds no call past t
     assert.notEqual(list, TIMED_OUT, 'a fresh Trash read answers: it skips its own recovery while one runs')
     assertTrashList(list)
     assert.deepEqual(trashRows(list), [[result.batchId, 3, 5, 'needs-recovery']])
-    // The recovery still holds the one mutation slot: a change gets busy at once, it does not hang.
+    // The recovery still holds the one mutation slot: a change gets busy while the recovery holds it, it does not wait for it
+    // (a call that waited would stay pending until the recovery ends and fail here after WAIT_MS).
     assert.equal(next.service.core.inspectState().mutating, 'recover')
     assert.equal(await settledCode(next.service.restore({ batchId: result.batchId })), ERROR.busy)
     assert.equal(await settledCode(next.service.recover()), ERROR.busy)
