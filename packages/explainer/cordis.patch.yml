@@ -1,0 +1,5 @@
+# Bundle patch for dsh-plugin-explainer.
+# One insert row; the plugin has a Host half only.
+- insert:
+    - id: explainer
+      name: dsh-plugin-explainer

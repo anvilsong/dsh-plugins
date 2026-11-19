@@ -1,0 +1,46 @@
+{
+  "name": "dsh-plugin-explainer",
+  "version": "0.1.0",
+  "description": "A per-session output style that picks the lowest clear explanation form.",
+  "type": "module",
+  "main": "src/index.host.js",
+  "meta": {
+    "title": "Explainer",
+    "description": "Per-session output style that picks the lowest clear explanation form."
+  },
+  "exports": {
+    ".": {
+      "default": "./src/index.host.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.0"
+  },
+  "license": "MIT",
+  "author": "anvilsong",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anvilsong/dsh-plugin-provider-usage.git",
+    "directory": "packages/explainer"
+  }
+}

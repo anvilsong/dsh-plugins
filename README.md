@@ -44,6 +44,7 @@ active provider.
 | [`packages/ultracode`](packages/ultracode) | `dsh-plugin-ultracode` | Per-session exhaustive orchestration mode, a composer switch, and `/ultracode` |
 | [`packages/advisor`](packages/advisor) | `dsh-plugin-advisor` | In-process read-only advisor (task plans and design/review advice) on a chosen model, a read-only evidence verifier, and `/advisor` |
 | [`packages/router`](packages/router) | `dsh-plugin-router` | Lead-controlled model routing with three complexity-level shortlists and `/router` |
+| [`packages/explainer`](packages/explainer) | `dsh-plugin-explainer` | Per-session output style that picks the lowest clear explanation form, and `/output-style` |
 | [`packages/code-review`](packages/code-review) | `dsh-plugin-code-review` | Bounded code review with two independent finders and one refuter |
 | [`packages/sessions`](packages/sessions) | `dsh-plugin-sessions` | Owner-only Sessions page: store sizes, archived sessions, and a reversible prune into a trash folder (macOS) |
 | [`packages/session-search-patched`](packages/session-search-patched) | `dsh-plugin-session-search-patched` | Unofficial patched engine for the optional session search (bounded index; pinned to DSH 0.2.2-rc.3, the shipped engine serves otherwise); install by folder path |
