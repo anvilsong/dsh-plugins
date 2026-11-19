@@ -267,6 +267,18 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Whether an extra-usage record has an amount worth showing in a chip or a
+     * summary line. Claude's record shows nothing when the account turned extra
+     * usage off or the reply carried no amount; a wallet or credit balance
+     * (Kimi, Codex) always shows.
+     */
+    function hasExtraAmount(extra) {
+      if (!extra) return false
+      if (!isExtraUsed(extra)) return true
+      return extra.enabled !== false && typeof extra.balanceCents === 'number' && Number.isFinite(extra.balanceCents)
+    }
+
+    /**
      * Indicator level of an extra-usage amount. Claude: the used ratio the
      * provider computed. Wallet: balance left against the topped-up total.
      * A balance with no total (Codex credits) has no level.
@@ -844,7 +856,7 @@ window.__ModuleLoader__.load({
 
       const worst = d ? (d.quotas ? worstRatio(d.quotas) : worstWindow(d.windows)) : null
       const wlv = worst !== null ? quotaLevel(worst) : null
-      const extra = d && d.extra ? d.extra : null
+      const extra = d && hasExtraAmount(d.extra) ? d.extra : null
       const elv = extraLevel(extra)
       const dot = wlv === 'bad' || elv === 'bad' ? 'bad' : wlv === 'warn' || elv === 'warn' ? 'warn' : wlv || elv ? 'ok' : ''
 
@@ -1307,7 +1319,7 @@ window.__ModuleLoader__.load({
         }
         const credits = creditText(d.credits)
         if (credits !== null) parts.push(`credits ${credits}`)
-        if (d.extra) {
+        if (hasExtraAmount(d.extra)) {
           parts.push(isExtraUsed(d.extra)
             ? `extra used ${centsMoney(d.extra.balanceCents, d.extra.currency)}`
             : `extra ${centsMoney(d.extra.balanceCents, d.extra.currency)}`)
@@ -1380,28 +1392,54 @@ window.__ModuleLoader__.load({
       const state = useStore(store)
       const [open, setOpen] = React.useState(false)
       const [oauthConfigured, setOauthConfigured] = React.useState(null)
+      // `busy` is true from the card's own sign-in until the refresh it triggers settles.
+      const { busy, onRefresh } = useRefresher(store, getNs)
+      const refreshRef = React.useRef(onRefresh)
+      refreshRef.current = onRefresh
       const route = provider?.provider
       React.useEffect(() => {
         if (!['openai-codex', 'anthropic'].includes(route)) return undefined
         let active = true
-        const ns = getLoginNs?.()
-        if (!ns?.status) return undefined
+        let timer
+        const startedAt = Date.now()
         // A sign-in that settles while this read is in flight must win.
         const seen = signInSignal.version(route)
-        void ns.status({ provider: route }).then((result) => {
-          const value = result?.ok === true ? result.value : result
-          if (active) setOauthConfigured(value?.configured === true || signInSignal.version(route) !== seen)
-        }).catch(() => {
-          if (active) setOauthConfigured(signInSignal.version(route) !== seen)
-        })
-        return () => { active = false }
+        const signedMeanwhile = () => signInSignal.version(route) !== seen
+        // The login service can appear just after the card does: retry briefly
+        // instead of leaving an OAuth-only user without the usage line.
+        const read = () => {
+          const ns = getLoginNs?.()
+          if (!ns?.status) {
+            if (!active) return
+            if (Date.now() - startedAt >= MOUNT_GRACE_MS) {
+              setOauthConfigured(signedMeanwhile())
+              return
+            }
+            timer = setTimeout(read, MOUNT_RETRY_MS)
+            return
+          }
+          void Promise.resolve().then(() => ns.status({ provider: route })).then((result) => {
+            const value = result?.ok === true ? result.value : result
+            if (active) setOauthConfigured(value?.configured === true || signedMeanwhile())
+          }).catch(() => {
+            if (active) setOauthConfigured(signedMeanwhile())
+          })
+        }
+        read()
+        return () => {
+          active = false
+          clearTimeout(timer)
+        }
       }, [route])
       // The card's own sign-in action settled as authorized: show the usage
-      // line now instead of after the next remount.
+      // line now and refresh the provider once, so the error the missing
+      // credential left in the store does not stay on screen.
       React.useEffect(() => {
         if (!['openai-codex', 'anthropic'].includes(route)) return undefined
         return signInSignal.subscribe((signedRoute) => {
-          if (signedRoute === route) setOauthConfigured(true)
+          if (signedRoute !== route) return
+          setOauthConfigured(true)
+          refreshRef.current()
         })
       }, [route])
       if (keyConfigured === false && oauthConfigured !== true) return null
@@ -1415,6 +1453,14 @@ window.__ModuleLoader__.load({
         : s && s.status === 'error'
           ? s.detail || 'Read failed.'
           : null
+      // While the refresh after a sign-in runs, what the store holds is from before it.
+      if (busy && !summary) {
+        return React.createElement(
+          'div',
+          { className: `${p.px}-root`, style: { marginTop: '12px', padding: '12px 14px' }, role: 'status' },
+          'Loading usage…',
+        )
+      }
       if (!summary && !errText) return null
 
       return React.createElement(
@@ -1620,7 +1666,15 @@ window.__ModuleLoader__.load({
         if (!promptEvent || !streamRef.current) return
         if (answeredRef.current === promptEvent.id) return
         answeredRef.current = promptEvent.id
-        streamRef.current.send({ type: 'answer', id: promptEvent.id, answer })
+        try {
+          streamRef.current.send({ type: 'answer', id: promptEvent.id, answer })
+        } catch {
+          // The stream ended between the prompt and this click: send throws then.
+          setPromptEvent(null)
+          setAnswer('')
+          showFailure('The sign-in already ended. Start it again.')
+          return
+        }
         setPromptEvent(null)
         setAnswer('')
       }

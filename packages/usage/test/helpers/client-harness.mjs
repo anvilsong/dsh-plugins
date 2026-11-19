@@ -30,6 +30,7 @@ export const PACKAGE_ID = 'dsh-plugin-provider-usage'
 
 const PRIMITIVES_SPECIFIER = '@deepseek-ai/dsh-client-ui-primitives'
 const PROVIDERS_DECLARATION = 'const PROVIDERS = ['
+const MOUNT_LABEL = 'usage: mount remotes'
 
 export const immediate = () => new Promise((resolve) => setImmediate(resolve))
 
@@ -98,6 +99,33 @@ export function textContent(tree) {
   }
   visit(tree)
   return text
+}
+
+/**
+ * The identity of every host element in a tree, the way React matches them
+ * between renders: parent identity, element type, and the key or the position
+ * among the parent's children (empty slots count). An element whose path
+ * differs between two renders is a different DOM node: React unmounts the old
+ * one and mounts a new one, which drops focus, selection and input state.
+ */
+export function hostPaths(tree) {
+  const out = []
+  const visit = (value, prefix) => {
+    const list = Array.isArray(value) ? value : [value]
+    list.forEach((child, index) => {
+      if (Array.isArray(child)) {
+        visit(child, `${prefix}.${index}`)
+        return
+      }
+      if (child === null || typeof child !== 'object') return
+      const key = child.props?.key
+      const path = `${prefix}/${String(child.type)}${key !== undefined && key !== null ? `[${key}]` : `:${index}`}`
+      out.push(path)
+      visit(child.children, path)
+    })
+  }
+  visit(tree, '')
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +320,15 @@ function createReactRuntime() {
       const previous = frame
       frame = { path, counts: new Map(), instance, runtime }
       try {
-        return type({ ...rest, children })
+        const output = type({ ...rest, children })
+        // React throws when a component calls another number of hooks than on
+        // its previous render (an early return above a hook, a conditional hook).
+        const hooks = instance.cursor
+        if (instance.hookCount !== undefined && instance.hookCount !== hooks) {
+          throw new Error(`${label} called ${hooks} hooks, but ${instance.hookCount} on its previous render`)
+        }
+        instance.hookCount = hooks
+        return output
       } finally {
         frame = previous
       }
@@ -386,6 +422,8 @@ function createReactRuntime() {
       get renders() { return renders },
       get dirty() { return runtime.dirty },
       get instancePaths() { return [...runtime.instances.keys()] },
+      /** Host-element identities of the current tree (see `hostPaths`). */
+      get hostPaths() { return hostPaths(tree) },
       render(nextProps) {
         if (unmounted) throw new Error('render on an unmounted root')
         if (nextProps !== undefined) props = nextProps
@@ -440,30 +478,46 @@ function createReactRuntime() {
 // Stubs a caller can hand to bootClient
 // ---------------------------------------------------------------------------
 
-/** A usage Remote namespace: `snapshot` and `refresh` answer with `state`. */
-export function createUsageNamespaceStub(state, { refreshState } = {}) {
+/**
+ * A usage Remote namespace. Like a generated Remote client, `snapshot` and
+ * `refresh` answer with a Result: `{ ok: true, value: state }`, or
+ * `{ ok: false, error }` when the call itself failed (dsh-client-ui-commands
+ * src/client/service.ts:423-424 reads `result.ok` / `result.value` the same
+ * way). A client that forgets to unwrap would put the envelope in the store.
+ *
+ * Options: `refreshState` replaces the state on a refresh; `refreshFailure`
+ * makes every refresh answer `{ ok: false, error: { code, message } }`;
+ * `refreshGate` is a promise the refresh awaits before it answers.
+ */
+export function createUsageNamespaceStub(state, { refreshState, refreshFailure, refreshGate } = {}) {
   const calls = { snapshot: 0, refresh: 0 }
   return {
     calls,
     state,
-    async snapshot() { calls.snapshot += 1; return this.state },
+    async snapshot() { calls.snapshot += 1; return { ok: true, value: this.state } },
     async refresh() {
       calls.refresh += 1
+      if (refreshGate !== undefined) await refreshGate
+      if (refreshFailure !== undefined) return { ok: false, error: { code: 'remote.failed', message: refreshFailure } }
       if (refreshState !== undefined) this.state = refreshState
-      return this.state
+      return { ok: true, value: this.state }
     },
   }
 }
 
 /**
- * A providerLogin namespace. `status` answers `{ configured }` (or errors, or
- * never answers); `begin` returns a stream handle that yields `events`, waits
+ * A providerLogin namespace. `status` answers a Result, `{ ok: true, value:
+ * { configured } }` (or `{ ok: false, error }`, or never answers); `begin`
+ * returns a stream handle that yields `events`, waits
  * for an answer after each prompt, and then either ends, (hold) never ends, or
  * (failWith) throws that message.
  *
  * Like the real RemoteStreamHandle the handle has `dispose()`: it ends the
  * iteration quietly (no further event, no error) and is counted in
- * `disposeCalls`. `handles` lists every stream `begin` opened.
+ * `disposeCalls`. `send` throws once the handle was disposed or its iteration
+ * ended, as the real handle does "once the stream has terminated"
+ * (dsh-typert-protocol src/types.ts:166-169). `handles` lists every stream
+ * `begin` opened.
  */
 export function createProviderLoginStub({ configured = false, status = 'answer', statusError, events = [], hold = false, failWith } = {}) {
   const statusCalls = []
@@ -480,7 +534,7 @@ export function createProviderLoginStub({ configured = false, status = 'answer',
       statusCalls.push(request)
       if (status === 'pending') return new Promise(() => {})
       if (status === 'error') return { ok: false, error: { message: statusError ?? 'The sign-in state could not be read.' } }
-      return { configured }
+      return { ok: true, value: { configured } }
     },
     begin(request) {
       beginCalls.push(request)
@@ -488,8 +542,10 @@ export function createProviderLoginStub({ configured = false, status = 'answer',
       let resolveAnswer
       const handle = {
         disposed: false,
+        finished: false,
         disposeCount: 0,
         send(value) {
+          if (handle.disposed || handle.finished) throw new Error('RemoteStreamHandle.send: the stream has terminated')
           answers.push(value)
           resolveAnswer?.()
           resolveAnswer = undefined
@@ -501,17 +557,21 @@ export function createProviderLoginStub({ configured = false, status = 'answer',
           resolveAnswer?.()
         },
         async *[Symbol.asyncIterator]() {
-          const stopped = new Promise((resolve) => { wake = resolve })
-          for (const event of events) {
-            if (handle.disposed) return
-            yield event
-            if (event.type === 'prompt') {
-              await Promise.race([new Promise((resolve) => { resolveAnswer = resolve }), stopped])
+          try {
+            const stopped = new Promise((resolve) => { wake = resolve })
+            for (const event of events) {
+              if (handle.disposed) return
+              yield event
+              if (event.type === 'prompt') {
+                await Promise.race([new Promise((resolve) => { resolveAnswer = resolve }), stopped])
+              }
             }
+            if (handle.disposed) return
+            if (failWith !== undefined) throw new Error(failWith)
+            if (hold) await stopped
+          } finally {
+            handle.finished = true
           }
-          if (handle.disposed) return
-          if (failWith !== undefined) throw new Error(failWith)
-          if (hold) await stopped
         },
       }
       handles.push(handle)
@@ -616,6 +676,8 @@ function effectFilter(option) {
  *   services        extra ctx.get(name) values
  *   primitives      host primitives (default `{ Button: 'Button' }`)
  *   mountError      make `remote.$mount` reject with this message
+ *   mountGate       a promise `remote.$mount` waits for; boot does not wait for the mount then,
+ *                   so a card can mount before the Remote namespaces exist (`h.mounting` settles later)
  *   effects         'all' (default) | 'none' | [labels] | (label) => boolean
  */
 function withBrowserGlobals(fakeWindow, document, fn) {
@@ -643,6 +705,7 @@ export async function bootClient(options = {}) {
     services = {},
     primitives = { Button: 'Button' },
     mountError,
+    mountGate,
     effects = 'all',
   } = options
   const modelDirectory = options.modelDirectory ?? (activeProvider !== undefined ? createFakeModelDirectory({ provider: activeProvider }) : undefined)
@@ -693,6 +756,7 @@ export async function bootClient(options = {}) {
     },
     remote: {
       async $mount(contribution) {
+        if (mountGate !== undefined) await mountGate
         if (mountError !== undefined) throw new Error(mountError)
         mounted.push(contribution)
         remoteMounted = true
@@ -719,6 +783,7 @@ export async function bootClient(options = {}) {
   // poll loops that follow already see their namespaces.
   const wanted = effectFilter(effects)
   const cleanups = []
+  let mounting = Promise.resolve()
   const ranEffects = []
   const skippedEffects = []
   try {
@@ -729,8 +794,14 @@ export async function bootClient(options = {}) {
       }
       ranEffects.push(entry.label)
       const result = withBrowserGlobals(fakeWindow, document, entry.fn)
-      const cleanup = result && typeof result.then === 'function' ? await result : result
-      if (typeof cleanup === 'function') cleanups.push(() => withBrowserGlobals(fakeWindow, document, cleanup))
+      const register = (cleanup) => {
+        if (typeof cleanup === 'function') cleanups.push(() => withBrowserGlobals(fakeWindow, document, cleanup))
+      }
+      if (mountGate !== undefined && entry.label === MOUNT_LABEL) {
+        mounting = result.then(register)
+        continue
+      }
+      register(result && typeof result.then === 'function' ? await result : result)
     }
   } catch (error) {
     // A failed boot must not leave poll timers running.
@@ -764,6 +835,8 @@ export async function bootClient(options = {}) {
     primitives,
     ranEffects,
     skippedEffects,
+    /** Settles once the gated Remote mount (`mountGate`) finished; already settled otherwise. */
+    get mounting() { return mounting },
     /** The stylesheet text the client inserted through document.head. */
     get stylesheet() { return document.getElementById('usage-plugin-styles')?.textContent ?? '' },
     /** Publish a provider state through its store (notifies every subscriber). */

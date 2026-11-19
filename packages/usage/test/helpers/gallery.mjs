@@ -180,6 +180,42 @@ function signInScenario({ id, provider, title, note, login = {}, clickSignIn = f
   }
 }
 
+/**
+ * The card right after a sign-in settled: the usage namespace still holds the
+ * error the missing credential left, and its refresh has not answered yet.
+ */
+function refreshingAfterSignInScenario({ id, provider, title, note }) {
+  const spec = PROVIDERS[provider]
+  return {
+    id,
+    group: 'Sign-in',
+    title,
+    note,
+    async run() {
+      let release
+      const gate = new Promise((resolve) => { release = resolve })
+      const stale = fixtures.failed(ready(provider), { error: 'missing-credential', detail: 'No value for llm-pi-ai/anthropic. Add the API key in Settings → Models.', keepData: false })
+      const usage = createUsageNamespaceStub(stale, { refreshState: ready(provider), refreshGate: gate })
+      const login = createProviderLoginStub({ events: [{ type: 'settled', status: 'authorized' }] })
+      const h = await bootClient({ namespaces: { providerLogin: login, [spec.namespace]: usage } })
+      try {
+        const mount = await h.mountCard(spec.settingsNs, cardProps(spec.route, { oauth: true, keyConfigured: false }))
+        const button = must(findByText(mount.tree, spec.signIn), `${id}: no "${spec.signIn}" button`)
+        await click(mount, button)
+        return { html: toHtml(mount.tree), css: h.stylesheet }
+      } finally {
+        release()
+        h.dispose()
+      }
+    },
+  }
+}
+
+const withClaudeExtra = (extra) => {
+  const state = fixtures.anthropic()
+  return { ...state, data: { ...state.data, extra } }
+}
+
 const notice = { type: 'notice', notice: { message: 'Finish signing in in the browser window that opened.', url: 'https://auth.example.com/device', code: 'ABCD-1234' } }
 const selectPrompt = {
   type: 'prompt',
@@ -272,6 +308,13 @@ export const SCENARIOS = [
   chipScenario({ id: 'chip-openrouter-low', provider: 'openrouter', title: 'OpenRouter chip, low budget', note: 'Remaining budget under 20%: amber dot.', state: fixtures.openrouter({ remaining: 6, limit: 50, account: { totalCredits: 100, totalUsage: 99, remaining: 1 } }) }),
   chipScenario({ id: 'chip-kimi', provider: 'kimi', title: 'Kimi chip (quota chip with extra balance)', note: 'Worst quota percentage plus the Extra Usage balance; amber dot at 81%.', state: ready('kimi') }),
   chipScenario({ id: 'chip-codex', provider: 'codex', title: 'Codex chip (same chip type as Kimi)', note: 'Worst window percentage plus the credit balance.', state: ready('codex') }),
+  chipScenario({
+    id: 'chip-claude-extra-disabled',
+    provider: 'anthropic',
+    title: 'Claude chip, extra usage disabled',
+    note: 'The account turned extra usage off: the chip shows the weekly percentage only, no extra amount.',
+    state: withClaudeExtra({ enabled: false, balanceCents: 0, monthlyLimitCents: null, usedRatio: null, currency: 'USD', disabledReason: 'overage_not_provisioned' }),
+  }),
   chipScenario({ id: 'chip-glm', provider: 'zhipu', title: 'GLM chip (generic quota chip)', note: 'Worst window percentage.', state: ready('zhipu') }),
   chipScenario({ id: 'chip-deepseek', provider: 'deepseek', title: 'DeepSeek chip (balance chip)', note: 'First balance entry.', state: ready('deepseek') }),
   chipScenario({ id: 'chip-deepseek-low', provider: 'deepseek', title: 'DeepSeek chip, nearly empty', note: 'Balance of one unit or less: amber dot.', state: fixtures.deepseek({ cny: 0.6 }) }),
@@ -295,6 +338,12 @@ export const SCENARIOS = [
   signInScenario({ id: 'signin-cancelled-by-user', provider: 'codex', title: 'Sign-in: cancelled with the Cancel button', note: 'The user pressed Cancel while the flow waited: the stream is closed, the button comes back and a note says so.', login: { events: [longLinkNotice], hold: true }, clickSignIn: true, cancel: true }),
   signInScenario({ id: 'signin-error', provider: 'anthropic', title: 'Sign-in: the flow failed', note: 'The stream broke: the error shows in red and is announced as an alert (a notice is only a status).', login: { events: [fixtures.signInNotice()], failWith: 'The browser callback timed out. Try signing in again.' }, clickSignIn: true }),
   signInScenario({ id: 'signin-signed-in', provider: 'codex', title: 'Sign-in: signed in (ChatGPT)', note: 'A stored OAuth record: the status row and a re-authenticate button.', login: { configured: true } }),
+  refreshingAfterSignInScenario({
+    id: 'signin-claude-refreshing',
+    provider: 'anthropic',
+    title: 'Sign-in: signed in, usage refreshing (Claude)',
+    note: 'Right after the sign-in settled: "Signed in with Claude" and a loading line, not the old missing-credential error.',
+  }),
   signInScenario({ id: 'signin-signed-in-claude', provider: 'anthropic', title: 'Sign-in: signed in (Claude)', note: 'The same row for the Claude route.', login: { configured: true } }),
 ]
 

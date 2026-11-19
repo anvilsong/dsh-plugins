@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict'
 import test, { after } from 'node:test'
 import {
-  bootClient as bootHarness, cardProps, change, createProviderLoginStub, createUsageNamespaceStub, find, findAll, findByText, findByType, textContent,
+  bootClient as bootHarness, cardProps, change, click, createProviderLoginStub, createUsageNamespaceStub, find, findAll, findByText, findByType, hostPaths, textContent,
 } from './helpers/client-harness.mjs'
 import { renderScenario, SCENARIOS } from './helpers/gallery.mjs'
 import * as fixtures from './helpers/fixtures.mjs'
@@ -378,4 +378,290 @@ test('the gallery shows the sign-in prompt with its message, a cancelled flow an
   assert.match(failed, /role="alert"/)
   assert.ok(failed.includes('pup-err'))
   assert.ok(failed.includes('The browser callback timed out.'))
+})
+
+// ---------------------------------------------------------------------------
+// Follow-up F
+// ---------------------------------------------------------------------------
+
+const AUTHORIZED = { type: 'settled', status: 'authorized' }
+const MISSING_CREDENTIAL = 'No value for llm-pi-ai/anthropic. Add the API key in Settings → Models.'
+const staleClaude = () => fixtures.failed(fixtures.anthropic(), { error: 'missing-credential', detail: MISSING_CREDENTIAL, keepData: false })
+const claudeLine = (tree) => find(tree, (node) => node.props?.title === 'Claude usage')
+const deferred = () => {
+  let resolve
+  const promise = new Promise((done) => { resolve = done })
+  return { promise, resolve }
+}
+
+/** Boot, mount one provider card (OAuth only, no API key) and click its sign-in button. */
+async function signInOn(route, { login, namespaces, label }) {
+  const stub = createProviderLoginStub(login)
+  const h = await bootClient({ namespaces: { providerLogin: stub, ...namespaces } })
+  const mount = await h.mountCard(SETTINGS_NS, cardProps(route, { oauth: true, keyConfigured: false }))
+  const button = findByText(mount.tree, label)
+  assert.ok(button, `${label} is shown`)
+  const pending = button.props.onClick()
+  await mount.settle()
+  return { h, mount, stub, pending }
+}
+
+test('a settled sign-in refreshes the provider once and shows loading, not the stale error, until it settles', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const gate = deferred()
+  const usage = createUsageNamespaceStub(staleClaude(), { refreshState: fixtures.anthropic(), refreshGate: gate.promise })
+  const { h, mount, pending } = await signInOn('anthropic', {
+    login: { events: [AUTHORIZED] }, namespaces: { anthropicUsage: usage }, label: 'Sign in with Claude',
+  })
+  try {
+    await pending
+    await mount.settle()
+    assert.ok(findByText(mount.tree, 'Signed in with Claude'))
+    assert.equal(usage.calls.refresh, 1, 'the refresh runs once, right after the sign-in settles')
+    const shown = textContent(mount.tree)
+    assert.ok(!shown.includes('Add the API key'), 'the stale error is not shown')
+    assert.ok(!shown.includes('Usage unavailable'))
+    assert.ok(shown.includes('Loading usage'), 'a loading line stands in until the refresh answers')
+    gate.resolve()
+    await mount.settle()
+    assert.ok(claudeLine(mount.tree), 'the usage line is shown')
+    assert.ok(textContent(mount.tree).includes('7d 88.0%'), 'with the refreshed figures')
+    assert.ok(!textContent(mount.tree).includes('Loading usage'))
+    assert.equal(usage.calls.refresh, 1, 'and it was not refreshed again')
+  } finally {
+    gate.resolve()
+    h.dispose()
+  }
+})
+
+test('no refresh before the sign-in settles, and none for a stored sign-in', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const usage = createUsageNamespaceStub(fixtures.anthropic())
+  const h = await bootClient({ namespaces: { providerLogin: createProviderLoginStub({ configured: true }), anthropicUsage: usage } })
+  try {
+    const mount = await h.mountCard(SETTINGS_NS, cardProps('anthropic', { oauth: true, keyConfigured: false }))
+    assert.ok(claudeLine(mount.tree))
+    assert.equal(usage.calls.refresh, 0)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('a refresh that fails after the sign-in shows its own error, not a loading line', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const usage = createUsageNamespaceStub(staleClaude(), { refreshFailure: 'The usage Remote call failed: the connection was closed.' })
+  const { h, mount, pending } = await signInOn('anthropic', {
+    login: { events: [AUTHORIZED] }, namespaces: { anthropicUsage: usage }, label: 'Sign in with Claude',
+  })
+  try {
+    await pending
+    await mount.settle()
+    assert.equal(usage.calls.refresh, 1)
+    const shown = textContent(mount.tree)
+    assert.ok(shown.includes('The usage Remote call failed: the connection was closed.'))
+    assert.ok(!shown.includes('Loading usage'))
+  } finally {
+    h.dispose()
+  }
+})
+
+test('the sign-in signal belongs to its route: another provider card neither shows a line nor refreshes', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const claude = createUsageNamespaceStub(staleClaude(), { refreshState: fixtures.anthropic() })
+  const codex = createUsageNamespaceStub(fixtures.codex())
+  const stub = createProviderLoginStub({ configured: false, events: [AUTHORIZED] })
+  const h = await bootClient({ namespaces: { providerLogin: stub, anthropicUsage: claude, codexUsage: codex } })
+  try {
+    const other = await h.mountCard(SETTINGS_NS, cardProps('anthropic', { oauth: true, keyConfigured: false }))
+    const signing = await h.mountCard(SETTINGS_NS, cardProps(ROUTE, { oauth: true, keyConfigured: false }))
+    assert.equal(claudeLine(other.tree), null)
+    await findByText(signing.tree, SIGN_IN).props.onClick()
+    await signing.settle()
+    await other.settle()
+    assert.ok(find(signing.tree, (node) => node.props?.title === 'OpenAI Codex usage'), 'the signed-in card shows its line')
+    assert.equal(codex.calls.refresh, 1)
+    assert.equal(claudeLine(other.tree), null, 'the other card still shows nothing')
+    assert.ok(findByText(other.tree, 'Sign in with Claude'), 'and still offers its own sign-in')
+    assert.equal(claude.calls.refresh, 0, 'the other provider was not refreshed')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('the usage line appears when the login service answers only after the card mounted', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const gate = deferred()
+  const usage = createUsageNamespaceStub(fixtures.anthropic())
+  const h = await bootClient({
+    namespaces: { providerLogin: createProviderLoginStub({ configured: true }), anthropicUsage: usage },
+    mountGate: gate.promise,
+  })
+  try {
+    const mount = await h.mountCard(SETTINGS_NS, cardProps('anthropic', { oauth: true, keyConfigured: false }))
+    assert.equal(claudeLine(mount.tree), null, 'nothing is known yet')
+    gate.resolve()
+    await h.mounting
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    await mount.settle()
+    assert.ok(findByText(mount.tree, 'Signed in with Claude'), 'the sign-in action found the service')
+    assert.ok(claudeLine(mount.tree), 'so did the usage line')
+  } finally {
+    gate.resolve()
+    h.dispose()
+  }
+})
+
+test('a stored sign-in, a snapshot and a refresh arrive as Results and are unwrapped', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const state = fixtures.codex()
+  const usage = createUsageNamespaceStub(state)
+  const stub = createProviderLoginStub({ configured: true })
+  assert.deepEqual(await stub.status({ provider: ROUTE }), { ok: true, value: { configured: true } })
+  assert.deepEqual(await usage.snapshot(), { ok: true, value: state })
+  const h = await bootClient({ namespaces: { providerLogin: stub, codexUsage: usage } })
+  try {
+    assert.equal(h.stores.get('codex').state, state, 'the store holds the state, not its Result')
+    const mount = await h.mountCard(SETTINGS_NS, cardProps(ROUTE, { oauth: true, keyConfigured: false }))
+    assert.ok(findByText(mount.tree, 'Signed in with ChatGPT'), 'the sign-in action read the status')
+    const line = find(mount.tree, (node) => node.props?.title === 'OpenAI Codex usage')
+    assert.ok(line, 'the usage line read the status')
+    await click(mount, line)
+    const refresh = findByText(mount.tree, 'Refresh')
+    assert.ok(refresh, 'the open panel has a Refresh button')
+    await click(mount, refresh)
+    assert.equal(usage.calls.refresh, 1)
+    assert.equal(h.stores.get('codex').state, state, 'a refresh stores the state too')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('pressing Submit twice sends the answer once', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const { h, mount, stub } = await openSignIn({ events: [textPrompt], hold: true })
+  try {
+    await change(mount, findByType(mount.tree, 'input'), 'acme')
+    const submit = findByText(mount.tree, 'Submit')
+    submit.props.onClick()
+    submit.props.onClick()
+    await mount.settle()
+    assert.deepEqual(stub.answers, [{ type: 'answer', id: 'prompt-1', answer: 'acme' }])
+  } finally {
+    h.dispose()
+  }
+})
+
+test('a settled stream sends nothing more and Cancel after the end does not touch the stream', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const { h, mount, stub, pending } = await openSignIn({ events: [textPrompt, AUTHORIZED] })
+  try {
+    await change(mount, findByType(mount.tree, 'input'), 'acme')
+    findByType(mount.tree, 'input').props.onKeyDown({ key: 'Enter', keyCode: 13, preventDefault() {} })
+    await pending
+    await mount.settle()
+    assert.equal(stub.answers.length, 1)
+    assert.equal(stub.handles[0].finished, true)
+    assert.equal(findByType(mount.tree, 'input'), null, 'the prompt is gone once the flow settled')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('Submit on a stream that has just ended does not throw and says the sign-in ended', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const { h, mount, stub } = await openSignIn({ events: [textPrompt], hold: true })
+  try {
+    await change(mount, findByType(mount.tree, 'input'), 'acme')
+    // The real handle throws on send once the stream terminated.
+    stub.handles[0].finished = true
+    assert.doesNotThrow(() => findByText(mount.tree, 'Submit').props.onClick())
+    await mount.settle()
+    assert.deepEqual(stub.answers, [])
+    const failure = find(mount.tree, (node) => node.props?.role === 'alert')
+    assert.ok(failure, 'a failure line is shown')
+    assert.match(textContent(failure), /already ended/)
+    assert.equal(findByType(mount.tree, 'input'), null, 'the dead prompt is gone')
+  } finally {
+    h.dispose()
+  }
+})
+
+// ---- chip and card summary of an extra-usage amount ----
+
+const claudeWith = (extra) => {
+  const state = fixtures.anthropic()
+  return { ...state, data: { ...state.data, extra } }
+}
+
+for (const [name, extra, expected] of [
+  ['an enabled extra amount is shown as used', { enabled: true, balanceCents: 1250, monthlyLimitCents: 5000, usedRatio: 0.25, currency: 'USD', disabledReason: null }, ['$12.50 extra used', 'extra used $12.50']],
+  ['a disabled extra is not shown', { enabled: false, balanceCents: 0, monthlyLimitCents: null, usedRatio: null, currency: 'USD', disabledReason: 'overage_not_provisioned' }, null],
+  ['an extra without an amount is not shown', { enabled: true, balanceCents: null, monthlyLimitCents: null, usedRatio: null, currency: 'USD', disabledReason: null }, null],
+  ['an extra whose enabled flag is unknown but whose amount is known is shown as used', { enabled: null, balanceCents: 1250, monthlyLimitCents: null, usedRatio: null, currency: 'USD', disabledReason: null }, ['$12.50 extra used', 'extra used $12.50']],
+]) {
+  test(`the Claude chip and card line: ${name}`, { timeout: TEST_TIMEOUT_MS }, async () => {
+    const usage = createUsageNamespaceStub(claudeWith(extra))
+    const h = await bootClient({
+      namespaces: { providerLogin: createProviderLoginStub({ configured: true }), anthropicUsage: usage },
+      activeProvider: 'anthropic',
+    })
+    try {
+      const chip = await h.mountChip('anthropic-usage-chip')
+      const card = await h.mountCard(SETTINGS_NS, cardProps('anthropic', { oauth: true, keyConfigured: false }))
+      for (const [where, tree, wanted] of [['chip', chip.tree, expected?.[0]], ['card line', card.tree, expected?.[1]]]) {
+        const shown = textContent(tree)
+        assert.ok(shown.includes('88.0%'), `${where} shows the weekly window`)
+        if (wanted === undefined) assert.ok(!/extra/.test(shown), `${where} says nothing about extra: ${shown}`)
+        else assert.ok(shown.includes(wanted), `${where} shows ${wanted}: ${shown}`)
+        assert.ok(!shown.includes('—'), `${where} never shows a missing amount: ${shown}`)
+      }
+    } finally {
+      h.dispose()
+    }
+  })
+}
+
+// ---- the harness itself ----
+
+test('the harness stubs answer like the real Remote and its stream handle', async () => {
+  const stub = createProviderLoginStub({ events: [textPrompt], hold: true })
+  const handle = stub.begin({ provider: 'anthropic', method: 'oauth' })
+  handle.send({ type: 'answer', id: 'x', answer: 'a' })
+  handle.dispose()
+  assert.throws(() => handle.send({ type: 'answer', id: 'x', answer: 'b' }), /terminated/)
+  assert.equal(stub.answers.length, 1)
+  const failing = createUsageNamespaceStub(fixtures.codex(), { refreshFailure: 'down' })
+  assert.deepEqual(await failing.refresh(), { ok: false, error: { code: 'remote.failed', message: 'down' } })
+})
+
+test('the fake React throws when a component calls another number of hooks than on its previous render', async () => {
+  const h = await bootClient({ effects: 'none' })
+  try {
+    function Fickle({ extra }) {
+      const [value] = h.React.useState(0)
+      if (extra) h.React.useState(1)
+      return h.React.createElement('i', null, String(value))
+    }
+    const mount = await h.mount(Fickle, { extra: false })
+    assert.throws(() => mount.render({ extra: true }), /called 2 hooks, but 1 on its previous render/)
+    function EarlyReturn({ show }) {
+      if (!show) return null
+      h.React.useState(0)
+      return h.React.createElement('i', null)
+    }
+    const early = await h.mount(EarlyReturn, { show: true })
+    assert.throws(() => early.render({ show: false }), /called 0 hooks, but 1 on its previous render/)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('host elements are tracked: a changed element type or key at the same place is a remount', async () => {
+  const h = await bootClient({ effects: 'none' })
+  try {
+    const el = h.React.createElement
+    function Box({ tag, id }) { return el('div', null, el(tag, { key: id }, 'x'), el('span', null, 'y')) }
+    const mount = await h.mount(Box, { tag: 'p', id: 'one' })
+    const first = mount.hostPaths
+    mount.render({ tag: 'p', id: 'one' })
+    assert.deepEqual(mount.hostPaths, first, 'an unchanged tree keeps every host element')
+    mount.render({ tag: 'section', id: 'one' })
+    assert.notDeepEqual(mount.hostPaths, first, 'another type at the same place is another element')
+    mount.render({ tag: 'p', id: 'two' })
+    assert.notDeepEqual(mount.hostPaths, first, 'another key is another element')
+    assert.deepEqual(hostPaths(el('ul', null, [el('li', { key: 'a' }), null, el('li', { key: 'b' })])), ['/ul:0', '/ul:0.0/li[a]', '/ul:0.0/li[b]'])
+  } finally {
+    h.dispose()
+  }
 })
