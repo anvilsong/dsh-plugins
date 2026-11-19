@@ -6,13 +6,19 @@
  */
 
 export const FETCHED_AT = Date.UTC(2026, 10, 18, 14, 30, 0)
+/** When the failed refresh after the good read at FETCHED_AT ran: 7 minutes later. */
+export const FAILED_AT = FETCHED_AT + 7 * 60_000
 const hours = (count) => new Date(FETCHED_AT + count * 3_600_000).toISOString()
 
-/** The status envelope around a provider's data. */
+/**
+ * The status envelope around a provider's data. Like the Host: `fetchedAt` is
+ * the last GOOD read, `attemptedAt` the last attempt (equal after a success).
+ */
 export function envelope(data, patch = {}) {
   return {
     status: 'ready',
     fetchedAt: FETCHED_AT,
+    attemptedAt: FETCHED_AT,
     error: null,
     detail: null,
     endpoint: null,
@@ -22,20 +28,33 @@ export function envelope(data, patch = {}) {
   }
 }
 
+/** No good read yet: no data and no read times. */
 function withoutData(state) {
   const { account, ...rest } = state
-  return { ...rest, data: null }
+  return { ...rest, data: null, fetchedAt: null, attemptedAt: null }
 }
 
-/** The same envelope after a failed read: last good data kept (or not). */
-export function failed(state, { error = 'http-429', detail = 'HTTP 429: Rate limit exceeded. Try again in 30 seconds.', keepData = true } = {}) {
-  return { ...(keepData ? state : withoutData(state)), status: 'error', error, detail }
+/**
+ * The same envelope after a failed read: last good data and fetchedAt kept
+ * (or no good read at all), attemptedAt moved to the failure.
+ */
+export function failed(state, { error = 'http-429', detail = 'HTTP 429: Rate limit exceeded. Try again in 30 seconds.', keepData = true, attemptedAt = FAILED_AT } = {}) {
+  return { ...(keepData ? state : withoutData(state)), status: 'error', error, detail, attemptedAt }
 }
 
-/** The same envelope while a refresh is running. */
+/** The same envelope while a refresh is running (error and detail stay, like the Host). */
 export function loading(state, { keepData = true } = {}) {
   return { ...(keepData ? state : withoutData(state)), status: 'loading' }
 }
+
+/** The same state as an older Host publishes it: no `attemptedAt` field. */
+export function olderHost(state) {
+  const { attemptedAt, ...rest } = state
+  return rest
+}
+
+/** The message of a Remote call that could not reach the Host. */
+export const HOST_DOWN = 'connect ECONNREFUSED 127.0.0.1:3080'
 
 /** A Remote-level failure: the call itself did not complete. */
 export const wireFailure = () => ({

@@ -91,8 +91,19 @@ const must = (value, message) => {
   return value
 }
 
-/** A provider card (usage line), optionally expanded to its full panel. */
-function cardScenario({ id, provider, title, note, state, expand = false, expectEmpty = false, group = 'Provider cards' }) {
+/** Press the panel's Refresh button (the panel must be open). */
+async function pressRefresh(id, mount) {
+  const button = must(findByText(mount.tree, 'Refresh'), `${id}: no "Refresh" button`)
+  await click(mount, button)
+}
+
+/**
+ * A provider card (usage line), optionally expanded to its full panel.
+ * `stub` passes options to the usage namespace stub (a failing snapshot or
+ * refresh); `refresh` presses Refresh once (the card is opened for it and
+ * closed again unless `expand`).
+ */
+function cardScenario({ id, provider, title, note, state, stub, refresh = false, expand = false, expectEmpty = false, group = 'Provider cards' }) {
   const spec = PROVIDERS[provider]
   return {
     id,
@@ -102,14 +113,16 @@ function cardScenario({ id, provider, title, note, state, expand = false, expect
     expectEmpty,
     async run() {
       const namespaces = { providerLogin: createProviderLoginStub({ configured: true }) }
-      if (state) namespaces[spec.namespace] = createUsageNamespaceStub(state)
+      if (state || stub) namespaces[spec.namespace] = createUsageNamespaceStub(state, stub)
       const h = await bootClient({ namespaces })
       try {
         const props = cardProps(spec.route, { oauth: spec.oauth === true, keyConfigured: spec.oauth !== true })
         const mount = await h.mountCard(spec.settingsNs, props)
-        if (expand) {
-          const toggle = must(findByType(mount.tree, 'button'), `${id}: the card has no expand button`)
-          await click(mount, toggle)
+        const toggle = () => must(findByType(mount.tree, 'button'), `${id}: the card has no expand button`)
+        if (expand || refresh) await click(mount, toggle())
+        if (refresh) {
+          await pressRefresh(id, mount)
+          if (!expand) await click(mount, toggle())
         }
         return { html: toHtml(mount.tree), css: h.stylesheet }
       } finally {
@@ -119,24 +132,30 @@ function cardScenario({ id, provider, title, note, state, expand = false, expect
   }
 }
 
-/** A composer dock chip, optionally with its popover open. */
-function chipScenario({ id, provider, title, note, state, open = false, waiting = false }) {
+/**
+ * A composer dock chip, optionally with its popover open. `stub` and
+ * `refresh` work as for cards: the popover opens for the Refresh and closes
+ * again unless `open`.
+ */
+function chipScenario({ id, provider, title, note, state, stub, refresh = false, open = false, waiting = false, group = 'Composer chips' }) {
   const spec = PROVIDERS[provider]
   return {
     id,
-    group: 'Composer chips',
+    group,
     title,
     note,
     popover: open,
     async run() {
-      const namespaces = state ? { [spec.namespace]: createUsageNamespaceStub(state) } : {}
+      const namespaces = state || stub ? { [spec.namespace]: createUsageNamespaceStub(state, stub) } : {}
       const h = await bootClient({ namespaces, activeProvider: spec.route })
       try {
         if (waiting) h.stores.get(provider).waiting = true
         const mount = await h.mountChip(`${provider}-usage-chip`)
-        if (open) {
-          const chip = must(findByType(mount.tree, 'button'), `${id}: the chip has no button`)
-          await click(mount, chip)
+        const chip = () => must(findByType(mount.tree, 'button'), `${id}: the chip has no button`)
+        if (open || refresh) await click(mount, chip())
+        if (refresh) {
+          await pressRefresh(id, mount)
+          if (!open) await click(mount, chip())
         }
         return { html: toHtml(mount.tree), css: h.stylesheet }
       } finally {
@@ -194,7 +213,7 @@ function refreshingAfterSignInScenario({ id, provider, title, note }) {
     async run() {
       let release
       const gate = new Promise((resolve) => { release = resolve })
-      const stale = fixtures.failed(ready(provider), { error: 'missing-credential', detail: 'No value for llm-pi-ai/anthropic. Add the API key in Settings → Models.', keepData: false })
+      const stale = fixtures.failed(ready(provider), { error: 'missing-credential', detail: 'No sign-in found for llm-pi-ai/anthropic. Sign in from Settings → Models or run /provider-login anthropic.', keepData: false })
       const usage = createUsageNamespaceStub(stale, { refreshState: ready(provider), refreshGate: gate })
       const login = createProviderLoginStub({ events: [{ type: 'settled', status: 'authorized' }] })
       const h = await bootClient({ namespaces: { providerLogin: login, [spec.namespace]: usage } })
@@ -247,7 +266,7 @@ export const SCENARIOS = [
     id: 'openrouter-error-with-data',
     provider: 'openrouter',
     title: 'OpenRouter: error with data (expanded)',
-    note: 'A failed refresh keeps the last good figures and shows the error above them. The detail text holds characters that must be escaped.',
+    note: 'A failed refresh keeps the last good figures; the panel says when the refresh failed and why, above them. The detail text holds characters that must be escaped.',
     state: errorWithData('openrouter', { error: 'http-400', detail: 'HTTP 400: unknown field <model> in "limit" & more' }),
     expand: true,
     group: 'Error and loading',
@@ -256,7 +275,7 @@ export const SCENARIOS = [
     id: 'glm-error-with-data-collapsed',
     provider: 'zhipu',
     title: 'GLM: error with data (collapsed)',
-    note: 'Error status with data: the summary stays and the dot turns red.',
+    note: 'Error status with data: the summary stays, marked "stale · read <time>", the dot turns amber and the failure shows under the line.',
     state: errorWithData('zhipu'),
     group: 'Error and loading',
   }),
@@ -280,9 +299,9 @@ export const SCENARIOS = [
   cardScenario({
     id: 'deepseek-wire-error',
     provider: 'deepseek',
-    title: 'DeepSeek: Remote call failed',
-    note: 'The Remote call itself failed (wire error), not the provider read.',
-    state: fixtures.wireFailure(),
+    title: 'DeepSeek: Remote call failed, no data yet',
+    note: 'The snapshot Remote call itself answered { ok: false } before any good read: "Usage unavailable" and the Host-not-reachable note.',
+    stub: { snapshotFailure: fixtures.wireFailure().error.message },
     group: 'Error and loading',
   }),
   cardScenario({
@@ -303,6 +322,89 @@ export const SCENARIOS = [
     expectEmpty: true,
     group: 'Error and loading',
   }),
+  // ---- stale and offline: the last good data with an honest mark ----
+  cardScenario({
+    id: 'stale-card',
+    provider: 'zhipu',
+    title: 'GLM: stale card (collapsed)',
+    note: 'The last refresh failed 7 minutes after the last good read: the old summary, "stale · read <good read time>", an amber dot, and the failure under the line as a status.',
+    state: errorWithData('zhipu'),
+    group: 'Stale and offline',
+  }),
+  cardScenario({
+    id: 'stale-card-loading',
+    provider: 'zhipu',
+    title: 'GLM: stale card while the next refresh runs',
+    note: 'Status "loading" after the failure: the Host keeps the error, so the stale mark and the failure stay instead of flickering away.',
+    state: fixtures.loading(errorWithData('zhipu')),
+    group: 'Stale and offline',
+  }),
+  cardScenario({
+    id: 'stale-panel',
+    provider: 'anthropic',
+    title: 'Claude: stale panel (expanded)',
+    note: '"Refresh failed at <attempt time>: <detail>" above the figures and "stale · read <good read time>" in the footer: two different times.',
+    state: errorWithData('anthropic'),
+    expand: true,
+    group: 'Stale and offline',
+  }),
+  cardScenario({
+    id: 'stale-panel-older-host',
+    provider: 'deepseek',
+    title: 'DeepSeek: stale panel from an older Host',
+    note: 'An older Host sends no attemptedAt: the failure shows without a time ("Refresh failed: <detail>").',
+    state: fixtures.olderHost(errorWithData('deepseek', { error: 'timeout', detail: 'No reply within 15000 ms.' })),
+    expand: true,
+    group: 'Stale and offline',
+  }),
+  chipScenario({
+    id: 'stale-chip',
+    provider: 'zhipu',
+    title: 'GLM chip: stale',
+    note: 'The value stays with the word "stale" beside it; the dot is raised from green to amber.',
+    state: errorWithData('zhipu'),
+    group: 'Stale and offline',
+  }),
+  chipScenario({
+    id: 'stale-chip-popover',
+    provider: 'kimi',
+    title: 'Kimi chip: stale, popover open',
+    note: 'The stale chip and its panel: the failure with its time, the figures, and the stale read time.',
+    state: errorWithData('kimi'),
+    open: true,
+    group: 'Stale and offline',
+  }),
+  cardScenario({
+    id: 'offline',
+    provider: 'deepseek',
+    title: 'DeepSeek: Host not reachable (expanded)',
+    note: 'The Refresh Remote call was rejected: "Host not reachable: <message>" while the last data stays, marked stale. The next good reply clears it.',
+    state: ready('deepseek'),
+    stub: { refreshRejection: fixtures.HOST_DOWN },
+    refresh: true,
+    expand: true,
+    group: 'Stale and offline',
+  }),
+  cardScenario({
+    id: 'offline-collapsed',
+    provider: 'openrouter',
+    title: 'OpenRouter: Host not reachable (collapsed)',
+    note: 'The same on the collapsed line: old summary, stale mark, and the note as a status.',
+    state: ready('openrouter'),
+    stub: { refreshRejection: fixtures.HOST_DOWN },
+    refresh: true,
+    group: 'Stale and offline',
+  }),
+  chipScenario({
+    id: 'offline-chip',
+    provider: 'openrouter',
+    title: 'OpenRouter chip: Host not reachable',
+    note: 'After a rejected Refresh the chip keeps its values with the word "stale".',
+    state: ready('openrouter'),
+    stub: { refreshRejection: fixtures.HOST_DOWN },
+    refresh: true,
+    group: 'Stale and offline',
+  }),
   // ---- chips ----
   chipScenario({ id: 'chip-openrouter', provider: 'openrouter', title: 'OpenRouter chip', note: 'Used amount plus the account balance left; green dot.', state: ready('openrouter') }),
   chipScenario({ id: 'chip-openrouter-low', provider: 'openrouter', title: 'OpenRouter chip, low budget', note: 'Remaining budget under 20%: amber dot.', state: fixtures.openrouter({ remaining: 6, limit: 50, account: { totalCredits: 100, totalUsage: 99, remaining: 1 } }) }),
@@ -318,7 +420,7 @@ export const SCENARIOS = [
   chipScenario({ id: 'chip-glm', provider: 'zhipu', title: 'GLM chip (generic quota chip)', note: 'Worst window percentage.', state: ready('zhipu') }),
   chipScenario({ id: 'chip-deepseek', provider: 'deepseek', title: 'DeepSeek chip (balance chip)', note: 'First balance entry.', state: ready('deepseek') }),
   chipScenario({ id: 'chip-deepseek-low', provider: 'deepseek', title: 'DeepSeek chip, nearly empty', note: 'Balance of one unit or less: amber dot.', state: fixtures.deepseek({ cny: 0.6 }) }),
-  chipScenario({ id: 'chip-error', provider: 'zhipu', title: 'Chip after a failed first read', note: 'No data and an error: the chip says "unavailable" with a "!" mark.', state: errorWithoutData('zhipu') }),
+  chipScenario({ id: 'chip-error', provider: 'zhipu', title: 'Chip after a failed first read', note: 'No data and an error: the chip says "unavailable" (the "!" mark only beside it) and the dot is red.', state: errorWithoutData('zhipu') }),
   chipScenario({ id: 'chip-loading', provider: 'kimi', title: 'Chip while loading', note: 'No data yet: the chip shows the word "usage".', state: fixtures.loading(ready('kimi'), { keepData: false }) }),
   chipScenario({ id: 'chip-popover-glm', provider: 'zhipu', title: 'GLM chip, popover open', note: 'Clicking the chip opens the full panel above it.', state: ready('zhipu'), open: true }),
   chipScenario({ id: 'chip-popover-openrouter', provider: 'openrouter', title: 'OpenRouter chip, popover open', note: 'The key and account sections in the popover.', state: ready('openrouter'), open: true }),

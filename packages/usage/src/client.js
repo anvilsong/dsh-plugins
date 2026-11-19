@@ -38,28 +38,57 @@ window.__ModuleLoader__.load({
     /**
      * One store per provider: ONE poll loop feeds every surface of that
      * provider (the Settings → Models panel and the composer chip), so adding
-     * a surface never adds provider traffic. `state` holds the unwrapped Host
-     * state, or the `{ok:false, error}` envelope when the Remote call failed.
+     * a surface never adds provider traffic. `state` holds the last unwrapped
+     * Host state. `offline` is set when the Remote call itself failed (it was
+     * rejected or answered `{ok:false}`): the last state stays, and the next
+     * good reply clears the note.
      */
     function makeStore() {
       return {
         state: null,
+        offline: null,
         waiting: false,
+        lastView: null,
 
         listeners: new Set(),
-        set(next) {
-          this.state = next
+        /** What the surfaces render; a new object only when one of its parts changed. */
+        view() {
+          const last = this.lastView
+          if (!last || last.state !== this.state || last.offline !== this.offline || last.waiting !== this.waiting) {
+            this.lastView = { state: this.state, offline: this.offline, waiting: this.waiting }
+          }
+          return this.lastView
+        },
+        notify() {
+          const view = this.view()
           for (const fn of this.listeners) {
             try {
-              fn(next)
+              fn(view)
             } catch {
               // A broken subscriber must not break the others.
             }
           }
         },
+        /** A good reply: the new Host state, and the Host is reachable again. */
+        set(next) {
+          this.state = next
+          this.offline = null
+          this.notify()
+        },
+        /** One Remote reply: a Result, or the bare state an older Remote returns. */
+        accept(result) {
+          if (!result || typeof result !== 'object') return
+          if (result.ok === false) this.fail(result.error)
+          else this.set(result.ok === true ? result.value : result)
+        },
+        /** The Remote call failed or was rejected: keep the last state and say why. */
+        fail(error) {
+          this.offline = remoteFailure(error)
+          this.notify()
+        },
         subscribe(fn) {
           this.listeners.add(fn)
-          if (this.state !== null) fn(this.state)
+          fn(this.view())
           return () => this.listeners.delete(fn)
         },
       }
@@ -97,6 +126,7 @@ window.__ModuleLoader__.load({
       '.orup-ok{color:var(--dsw-alias-state-success-primary)}',
       '.orup-warn{color:var(--dsw-alias-state-warn-primary)}',
       '.orup-bad{color:var(--dsw-alias-state-error-primary)}',
+      '.orup-stale{font-size:11px;color:var(--dsw-alias-state-warn-primary);white-space:nowrap}',
       '.orup-chipwrap{position:relative;display:inline-flex}',
       '.orup-chip{font:inherit;font-size:12px;display:inline-flex;align-items:center;gap:6px;',
       'color:var(--dsw-alias-label-secondary);background:transparent;',
@@ -141,6 +171,7 @@ window.__ModuleLoader__.load({
       '.kmup-ok{color:var(--dsw-alias-state-success-primary)}',
       '.kmup-warn{color:var(--dsw-alias-state-warn-primary)}',
       '.kmup-bad{color:var(--dsw-alias-state-error-primary)}',
+      '.kmup-stale{font-size:11px;color:var(--dsw-alias-state-warn-primary);white-space:nowrap}',
       '.kmup-chipwrap{position:relative;display:inline-flex}',
       '.kmup-chip{font:inherit;font-size:12px;display:inline-flex;align-items:center;gap:6px;',
       'color:var(--dsw-alias-label-secondary);background:transparent;',
@@ -187,6 +218,7 @@ window.__ModuleLoader__.load({
       '.pup-ok{color:var(--dsw-alias-state-success-primary)}',
       '.pup-warn{color:var(--dsw-alias-state-warn-primary)}',
       '.pup-bad{color:var(--dsw-alias-state-error-primary)}',
+      '.pup-stale{font-size:11px;color:var(--dsw-alias-state-warn-primary);white-space:nowrap}',
       '.pup-chipwrap{position:relative;display:inline-flex}',
       '.pup-chip{font:inherit;font-size:12px;display:inline-flex;align-items:center;gap:6px;',
       'color:var(--dsw-alias-label-secondary);background:transparent;',
@@ -302,6 +334,179 @@ window.__ModuleLoader__.load({
       return worst
     }
 
+    // ---------- read health: stale, failed and offline reads ----------
+
+    /**
+     * Every visible word about the health of a read, in one place. `{name}`
+     * marks a value filled in by `fill`.
+     */
+    const HEALTH_TEXT = {
+      stale: 'stale',
+      unavailable: 'unavailable',
+      unavailableMark: '!',
+      usageUnavailable: 'Usage unavailable',
+      read: 'read {time}',
+      staleRead: 'stale · read {time}',
+      refreshFailedAt: 'Refresh failed at {time}: {detail}',
+      refreshFailed: 'Refresh failed: {detail}',
+      hostUnreachable: 'Host not reachable: {message}',
+      readFailed: 'Read failed.',
+      remoteFailed: 'The Remote call failed.',
+    }
+
+    /** Put values into a HEALTH_TEXT template. */
+    function fill(template, values) {
+      return template.replace(/\{(\w+)\}/g, (match, name) => (name in values ? String(values[name]) : match))
+    }
+
+    /** A read time (epoch ms, or an ISO string from an older state) as ms, or null. */
+    function toTime(value) {
+      if (typeof value === 'number') return Number.isFinite(value) ? value : null
+      if (typeof value === 'string' && value.length > 0) {
+        const ms = Date.parse(value)
+        return Number.isFinite(ms) ? ms : null
+      }
+      return null
+    }
+
+    /** Clock time as the panels and the Host reports print it. */
+    function clock(ms) {
+      return new Date(ms).toLocaleTimeString()
+    }
+
+    /** The message and code of a failed or rejected Remote call. */
+    function remoteFailure(error) {
+      const message = error && typeof error.message === 'string' && error.message.length > 0
+        ? error.message
+        : typeof error === 'string' && error.length > 0 ? error : HEALTH_TEXT.remoteFailed
+      const code = error && typeof error.code === 'string' && error.code.length > 0 ? error.code : null
+      return { message, code }
+    }
+
+    /**
+     * The health of one provider read, for every surface:
+     *   'idle'     nothing read yet, or the first read is still running
+     *   'ok'       data from a good last attempt
+     *   'stale'    data, but the last attempt failed
+     *   'error'    the last attempt failed and there is no data
+     *   'offline'  the Remote call itself failed; the last data, if any, stays
+     * The last attempt failed when the Host says so (status 'error', or the
+     * error it keeps while the next refresh is 'loading') or when it is newer
+     * than the last good read (`attemptedAt` after `fetchedAt`).
+     */
+    function healthOf(view) {
+      const raw = view ? view.state : null
+      // A store filled by an older client holds the Remote failure envelope itself.
+      const envelope = raw && raw.ok === false ? raw : null
+      const state = envelope ? null : raw
+      const data = state && state.data ? state.data : null
+      const status = state && typeof state.status === 'string' ? state.status : 'idle'
+      const fetchedAt = state ? toTime(state.fetchedAt) : null
+      const attemptedAt = state ? toTime(state.attemptedAt) : null
+      const failed = Boolean(state) && (
+        status === 'error'
+        || Boolean(state.error)
+        || (attemptedAt !== null && (fetchedAt === null || attemptedAt > fetchedAt))
+      )
+      const offline = view && view.offline ? view.offline : envelope ? remoteFailure(envelope.error) : null
+      let kind = 'idle'
+      if (offline) kind = 'offline'
+      else if (failed) kind = data ? 'stale' : 'error'
+      else if (data) kind = 'ok'
+      return {
+        kind,
+        state,
+        data,
+        status,
+        // A refresh the Host reports as running; unknown while the Host is not reachable.
+        loading: status === 'loading' && !offline,
+        // Data that may be out of date: the last attempt failed, or the Host is not reachable.
+        stale: data !== null && (kind === 'stale' || kind === 'offline'),
+        // Nothing to show, and a failure to say why.
+        unavailable: data === null && (kind === 'error' || kind === 'offline'),
+        failed,
+        fetchedAt,
+        attemptedAt: failed ? attemptedAt : null,
+        detail: failed ? state.detail || state.error || HEALTH_TEXT.readFailed : null,
+        code: failed && state.error ? state.error : null,
+        offline,
+      }
+    }
+
+    /** The Host's failure, with its time when the Host sends `attemptedAt`. */
+    function failureLine(health) {
+      return health.attemptedAt !== null
+        ? fill(HEALTH_TEXT.refreshFailedAt, { time: clock(health.attemptedAt), detail: health.detail })
+        : fill(HEALTH_TEXT.refreshFailed, { detail: health.detail })
+    }
+
+    /** What a collapsed surface says about a failure: the offline note, else the Host's detail. */
+    function healthNote(health) {
+      if (health.offline) return fill(HEALTH_TEXT.hostUnreachable, { message: health.offline.message })
+      return health.failed ? health.detail : null
+    }
+
+    /** 'read <fetchedAt>', marked stale when the data may be out of date; null with no read time. */
+    function readNote(health) {
+      if (health.fetchedAt === null) return health.stale ? HEALTH_TEXT.stale : null
+      return fill(health.stale ? HEALTH_TEXT.staleRead : HEALTH_TEXT.read, { time: clock(health.fetchedAt) })
+    }
+
+    /**
+     * The indicator dot of a surface: stale data is at least 'warn', a failure
+     * with nothing to show is 'bad'. The numbers keep their own level.
+     */
+    function healthLevel(level, health) {
+      if (health.unavailable) return 'bad'
+      if (health.stale) return level === 'bad' ? 'bad' : 'warn'
+      return level || ''
+    }
+
+    /** The failure lines of a panel: the offline note, the Host's failure, their codes. */
+    function healthLines(px, health) {
+      const lines = []
+      if (health.offline) {
+        lines.push(React.createElement('div', { className: `${px}-err`, key: 'offline' }, fill(HEALTH_TEXT.hostUnreachable, { message: health.offline.message })))
+        if (health.offline.code) lines.push(React.createElement('div', { className: `${px}-code`, key: 'offline-code' }, health.offline.code))
+      }
+      if (health.failed) {
+        lines.push(React.createElement('div', { className: `${px}-err`, key: 'failure' }, failureLine(health)))
+        if (health.code) lines.push(React.createElement('div', { className: `${px}-code`, key: 'failure-code' }, health.code))
+      }
+      return lines.length ? React.createElement('div', { key: 'health', role: 'status' }, lines) : null
+    }
+
+    /**
+     * The face of a composer chip, shared by the four chip components: the
+     * values in bold, the word 'stale' beside stale values, 'unavailable' (with
+     * an exclamation mark) when there is nothing to show, the dot level, and an
+     * accessible label that starts with the visible words and adds the read
+     * time and the failure. The mark is never the only signal.
+     *
+     *   values  [{ key, text }]  the figures, when there is data
+     *   empty   the word for a chip with nothing read yet ('usage', 'balance')
+     *   level   the worst level of the figures
+     */
+    function chipFace({ px, title, health, values, empty, level }) {
+      const parts = values.map((value) => React.createElement('b', { key: value.key }, value.text))
+      if (!parts.length) {
+        parts.push(React.createElement('span', { key: 'empty' }, health.unavailable ? HEALTH_TEXT.unavailable : empty))
+      }
+      const mark = health.stale ? HEALTH_TEXT.stale : health.unavailable ? HEALTH_TEXT.unavailableMark : ''
+      parts.push(React.createElement('span', { key: 'health', className: health.stale ? `${px}-stale` : `${px}-code` }, mark))
+      let label
+      if (health.stale || health.unavailable) {
+        const shown = [title, ...(values.length ? values.map((value) => value.text) : [HEALTH_TEXT.unavailable])]
+        if (health.stale) shown.push(HEALTH_TEXT.stale)
+        const said = [shown.join(' ')]
+        if (health.stale && health.fetchedAt !== null) said.push(fill(HEALTH_TEXT.read, { time: clock(health.fetchedAt) }))
+        const note = healthNote(health)
+        if (note) said.push(note)
+        label = said.join(', ')
+      }
+      return { parts, dot: healthLevel(level, health), label }
+    }
+
     // ---------- shared components / hooks ----------
 
     /** One label/value metric cell. `px` selects the stylesheet family. */
@@ -315,11 +520,20 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** Subscribe a component to one provider store. */
+    /**
+     * Subscribe a component to one provider store. Returns the store's current
+     * view ({ state, offline, waiting }); the hook state only schedules the
+     * re-render when the view changes.
+     */
     function useStore(store) {
-      const [state, setState] = React.useState(store.state)
-      React.useEffect(() => store.subscribe((next) => setState(next)), [store])
-      return state
+      const [, setView] = React.useState(() => store.view())
+      React.useEffect(() => store.subscribe((next) => setView(next)), [store])
+      return store.view()
+    }
+
+    /** The health of one provider store (see healthOf), for every surface. */
+    function useHealth(store) {
+      return healthOf(useStore(store))
     }
 
     /**
@@ -360,12 +574,9 @@ window.__ModuleLoader__.load({
         setBusy(true)
         Promise.resolve()
           .then(() => ns.refresh())
-          .then((result) => {
-            if (result && typeof result === 'object') {
-              store.set(result.ok === true ? result.value : result)
-            }
-          })
-          .catch(() => {})
+          .then((result) => store.accept(result))
+          // A rejected refresh: the Host is not reachable; the last data stays.
+          .catch((error) => store.fail(error))
           .then(() => setBusy(false))
       }, [getNs, store])
       return { busy, onRefresh }
@@ -374,16 +585,14 @@ window.__ModuleLoader__.load({
     // ---------- OpenRouter ----------
 
     function OpenRouterPanel({ store, getNs }) {
-      const state = useStore(store)
+      const health = useHealth(store)
       const { busy, onRefresh } = useRefresher(store, getNs)
 
-      // A Remote call failure arrives as { ok: false, error: { code, message } }.
-      const wireError = state && state.ok === false ? state.error : null
-      const s = wireError ? null : state
-      const d = s && s.data ? s.data : null
+      const s = health.state
+      const d = health.data
       const scope = d && d.scope === 'account' ? 'account' : 'key'
       const lv = d ? budgetLevel(d.remaining, d.limit) : null
-      const status = s ? s.status : 'idle'
+      const status = health.status
       // The account section rides beside the key section; it has its own
       // status so a refused account call never hides the key figures.
       const acct = s && s.account ? s.account : null
@@ -433,7 +642,8 @@ window.__ModuleLoader__.load({
       if (d && d.freeModels && typeof d.freeModels.remaining === 'number') {
         note.push('free models left today: ' + d.freeModels.remaining)
       }
-      if (s && s.fetchedAt) note.push('read ' + new Date(s.fetchedAt).toLocaleTimeString())
+      const read = readNote(health)
+      if (read) note.push(read)
 
       // The account section: balance figures when available, a plain note when
       // the key is ordinary, nothing when the section is switched off.
@@ -499,14 +709,14 @@ window.__ModuleLoader__.load({
             'button',
             {
               className: 'orup-btn', type: 'button', onClick: onRefresh,
-              disabled: busy || status === 'loading',
+              disabled: busy || health.loading,
             },
-            busy || status === 'loading' ? 'Refreshing…' : 'Refresh',
+            busy || health.loading ? 'Refreshing…' : 'Refresh',
           ),
         ),
       ]
 
-      if (status === 'idle' && !wireError) {
+      if (status === 'idle' && !health.offline) {
         children.push(
           React.createElement(
             'div',
@@ -517,26 +727,7 @@ window.__ModuleLoader__.load({
           ),
         )
       }
-      if (s && s.status === 'error') {
-        children.push(
-          React.createElement(
-            'div',
-            { key: 'err' },
-            React.createElement('div', { className: 'orup-err' }, s.detail || 'Read failed.'),
-            React.createElement('div', { className: 'orup-code' }, s.error || ''),
-          ),
-        )
-      }
-      if (wireError) {
-        children.push(
-          React.createElement(
-            'div',
-            { key: 'wire' },
-            React.createElement('div', { className: 'orup-err' }, wireError.message || 'The Remote call failed.'),
-            React.createElement('div', { className: 'orup-code' }, wireError.code || ''),
-          ),
-        )
-      }
+      children.push(healthLines('orup', health))
       if (d) {
         children.push(React.createElement('div', { className: 'orup-grid', key: 'grid' }, rows))
         if (lv) {
@@ -568,24 +759,23 @@ window.__ModuleLoader__.load({
      * balance, with a colour dot for the budget level. Click opens the panel.
      */
     function OpenRouterChip({ store, getNs }) {
-      const state = useStore(store)
+      const health = useHealth(store)
       const [open, setOpen] = React.useState(false)
 
-      const wireError = state && state.ok === false ? state.error : null
-      const s = wireError ? null : state
-      const d = s && s.data ? s.data : null
+      const s = health.state
+      const d = health.data
       const acct = s && s.account ? s.account : null
       const a = acct && acct.status === 'ready' ? acct.data : null
 
       // Dot colour: the worst of the two levels we can compute.
       const lvk = d ? budgetLevel(d.remaining, d.limit) : null
       const alv = a ? budgetLevel(a.remaining, a.totalCredits) : null
-      const dot = lvk === 'bad' || alv === 'bad' ? 'bad' : lvk === 'warn' || alv === 'warn' ? 'warn' : lvk || alv ? 'ok' : ''
+      const level = lvk === 'bad' || alv === 'bad' ? 'bad' : lvk === 'warn' || alv === 'warn' ? 'warn' : lvk || alv ? 'ok' : ''
 
-      const parts = []
-      if (d) parts.push(React.createElement('b', { key: 'used' }, usd(d.usage)))
-      if (a && a.remaining !== null) parts.push(React.createElement('b', { key: 'left' }, usd(a.remaining) + ' left'))
-      if (!parts.length) parts.push(React.createElement('span', { key: 'empty' }, s && s.status === 'error' ? 'unavailable' : 'usage'))
+      const values = []
+      if (d) values.push({ key: 'used', text: usd(d.usage) })
+      if (a && a.remaining !== null) values.push({ key: 'left', text: usd(a.remaining) + ' left' })
+      const face = chipFace({ px: 'orup', title: 'OpenRouter', health, values, empty: 'usage', level })
 
       return React.createElement(
         'span',
@@ -596,11 +786,11 @@ window.__ModuleLoader__.load({
             className: 'orup-chip', type: 'button',
             onClick: () => setOpen((v) => !v),
             title: 'OpenRouter usage',
+            'aria-label': face.label,
           },
-          React.createElement('span', { className: 'orup-dot' + (dot ? ' orup-' + dot : '') }),
+          React.createElement('span', { className: 'orup-dot' + (face.dot ? ' orup-' + face.dot : '') }),
           React.createElement('span', null, 'OpenRouter'),
-          ...parts,
-          React.createElement('span', { className: 'orup-code' }, wireError ? '!' : s && s.status === 'error' ? '!' : ''),
+          ...face.parts,
         ),
         open
           ? React.createElement('div', { className: 'orup-pop' }, React.createElement(OpenRouterPanel, { store, getNs }))
@@ -622,13 +812,12 @@ window.__ModuleLoader__.load({
     }
 
     function KimiPanel({ store, getNs, title = 'Kimi Code' }) {
-      const state = useStore(store)
+      const health = useHealth(store)
       const { busy, onRefresh } = useRefresher(store, getNs)
 
-      const wireError = state && state.ok === false ? state.error : null
-      const s = wireError ? null : state
-      const d = s && s.data ? s.data : null
-      const status = s ? s.status : 'idle'
+      const s = health.state
+      const d = health.data
+      const status = health.status
       const worst = d ? (d.quotas ? worstRatio(d.quotas) : worstWindow(d.windows)) : null
       const wlv = worst !== null ? quotaLevel(worst) : null
       const plan = d && (d.planType || d.level)
@@ -701,7 +890,8 @@ window.__ModuleLoader__.load({
 
       const note = []
       if (s && s.endpoint) note.push(s.endpoint.replace(/^https:\/\//, ''))
-      if (s && s.fetchedAt) note.push('read ' + new Date(s.fetchedAt).toLocaleTimeString())
+      const read = readNote(health)
+      if (read) note.push(read)
 
       // Extra Usage: Claude reports money USED against a monthly limit; a Kimi
       // booster wallet reports a BALANCE. Only when the account has one.
@@ -779,14 +969,14 @@ window.__ModuleLoader__.load({
             'button',
             {
               className: 'kmup-btn', type: 'button', onClick: onRefresh,
-              disabled: busy || status === 'loading',
+              disabled: busy || health.loading,
             },
-            busy || status === 'loading' ? 'Refreshing…' : 'Refresh',
+            busy || health.loading ? 'Refreshing…' : 'Refresh',
           ),
         ),
       ]
 
-      if (status === 'idle' && !wireError) {
+      if (status === 'idle' && !health.offline) {
         children.push(
           React.createElement(
             'div',
@@ -797,26 +987,7 @@ window.__ModuleLoader__.load({
           ),
         )
       }
-      if (s && s.status === 'error') {
-        children.push(
-          React.createElement(
-            'div',
-            { key: 'err' },
-            React.createElement('div', { className: 'kmup-err' }, s.detail || 'Read failed.'),
-            React.createElement('div', { className: 'kmup-code' }, s.error || ''),
-          ),
-        )
-      }
-      if (wireError) {
-        children.push(
-          React.createElement(
-            'div',
-            { key: 'wire' },
-            React.createElement('div', { className: 'kmup-err' }, wireError.message || 'The Remote call failed.'),
-            React.createElement('div', { className: 'kmup-code' }, wireError.code || ''),
-          ),
-        )
-      }
+      children.push(healthLines('kmup', health))
       if (d && rows.length) {
         children.push(React.createElement('div', { className: 'kmup-grid', key: 'grid' }, rows))
         if (wlv) {
@@ -847,27 +1018,23 @@ window.__ModuleLoader__.load({
      * panel in a popover.
      */
     function KimiChip({ store, getNs, title = 'Kimi Code' }) {
-      const state = useStore(store)
+      const health = useHealth(store)
       const [open, setOpen] = React.useState(false)
 
-      const wireError = state && state.ok === false ? state.error : null
-      const s = wireError ? null : state
-      const d = s && s.data ? s.data : null
+      const d = health.data
 
       const worst = d ? (d.quotas ? worstRatio(d.quotas) : worstWindow(d.windows)) : null
       const wlv = worst !== null ? quotaLevel(worst) : null
       const extra = d && hasExtraAmount(d.extra) ? d.extra : null
       const elv = extraLevel(extra)
-      const dot = wlv === 'bad' || elv === 'bad' ? 'bad' : wlv === 'warn' || elv === 'warn' ? 'warn' : wlv || elv ? 'ok' : ''
+      const level = wlv === 'bad' || elv === 'bad' ? 'bad' : wlv === 'warn' || elv === 'warn' ? 'warn' : wlv || elv ? 'ok' : ''
 
-      const parts = []
-      if (worst !== null) parts.push(React.createElement('b', { key: 'q' }, pct(worst)))
+      const values = []
+      if (worst !== null) values.push({ key: 'q', text: pct(worst) })
       if (extra) {
-        parts.push(React.createElement('b', { key: 'x' }, centsMoney(extra.balanceCents, extra.currency) + (isExtraUsed(extra) ? ' extra used' : ' extra')))
+        values.push({ key: 'x', text: centsMoney(extra.balanceCents, extra.currency) + (isExtraUsed(extra) ? ' extra used' : ' extra') })
       }
-      if (!parts.length) {
-        parts.push(React.createElement('span', { key: 'empty' }, s && s.status === 'error' ? 'unavailable' : 'usage'))
-      }
+      const face = chipFace({ px: 'kmup', title, health, values, empty: 'usage', level })
 
       return React.createElement(
         'span',
@@ -878,11 +1045,11 @@ window.__ModuleLoader__.load({
             className: 'kmup-chip', type: 'button',
             onClick: () => setOpen((v) => !v),
             title: `${title} usage`,
+            'aria-label': face.label,
           },
-          React.createElement('span', { className: 'kmup-dot' + (dot ? ' kmup-' + dot : '') }),
+          React.createElement('span', { className: 'kmup-dot' + (face.dot ? ' kmup-' + face.dot : '') }),
           React.createElement('span', null, title),
-          ...parts,
-          React.createElement('span', { className: 'kmup-code' }, wireError ? '!' : s && s.status === 'error' ? '!' : ''),
+          ...face.parts,
         ),
         open ? React.createElement('div', { className: 'kmup-pop' }, React.createElement(KimiPanel, { store, getNs, title })) : null,
       )
@@ -936,13 +1103,12 @@ window.__ModuleLoader__.load({
      * pill, provider-supplied credit metrics, and secondary detail text.
      */
     function QuotaPanel({ store, getNs, title }) {
-      const state = useStore(store)
+      const health = useHealth(store)
       const { busy, onRefresh } = useRefresher(store, getNs)
 
-      const wireError = state && state.ok === false ? state.error : null
-      const s = wireError ? null : state
-      const d = s && s.data ? s.data : null
-      const status = s ? s.status : 'idle'
+      const s = health.state
+      const d = health.data
+      const status = health.status
       const worst = d ? worstWindow(d.windows) : null
       const wlv = worst !== null ? quotaLevel(worst) : null
       const plan = d ? quotaPlan(d) : null
@@ -1024,7 +1190,8 @@ window.__ModuleLoader__.load({
 
       const note = []
       if (s && s.endpoint) note.push(s.endpoint.replace(/^https:\/\//, ''))
-      if (s && s.fetchedAt) note.push('read ' + new Date(s.fetchedAt).toLocaleTimeString())
+      const read = readNote(health)
+      if (read) note.push(read)
 
       // GLM's per-tool call counts, when the plan reports them.
       const detailBlocks = []
@@ -1064,12 +1231,12 @@ window.__ModuleLoader__.load({
           React.createElement('span', { className: 'pup-spacer' }),
           React.createElement(
             'button',
-            { className: 'pup-btn', type: 'button', onClick: onRefresh, disabled: busy || status === 'loading' },
-            busy || status === 'loading' ? 'Refreshing…' : 'Refresh',
+            { className: 'pup-btn', type: 'button', onClick: onRefresh, disabled: busy || health.loading },
+            busy || health.loading ? 'Refreshing…' : 'Refresh',
           ),
         ),
       ]
-      if (status === 'idle' && !wireError) {
+      if (status === 'idle' && !health.offline) {
         children.push(
           React.createElement(
             'div', { className: 'pup-msg', key: 'idle' },
@@ -1079,24 +1246,7 @@ window.__ModuleLoader__.load({
           ),
         )
       }
-      if (s && s.status === 'error') {
-        children.push(
-          React.createElement(
-            'div', { key: 'err' },
-            React.createElement('div', { className: 'pup-err' }, s.detail || 'Read failed.'),
-            React.createElement('div', { className: 'pup-code' }, s.error || ''),
-          ),
-        )
-      }
-      if (wireError) {
-        children.push(
-          React.createElement(
-            'div', { key: 'wire' },
-            React.createElement('div', { className: 'pup-err' }, wireError.message || 'The Remote call failed.'),
-            React.createElement('div', { className: 'pup-code' }, wireError.code || ''),
-          ),
-        )
-      }
+      children.push(healthLines('pup', health))
       if (d && rows.length) {
         children.push(React.createElement('div', { className: 'pup-grid', key: 'grid' }, rows))
         if (wlv) {
@@ -1122,13 +1272,12 @@ window.__ModuleLoader__.load({
      * balance entry, or the granted/used/remaining triple.
      */
     function BalancePanel({ store, getNs, title }) {
-      const state = useStore(store)
+      const health = useHealth(store)
       const { busy, onRefresh } = useRefresher(store, getNs)
 
-      const wireError = state && state.ok === false ? state.error : null
-      const s = wireError ? null : state
-      const d = s && s.data ? s.data : null
-      const status = s ? s.status : 'idle'
+      const s = health.state
+      const d = health.data
+      const status = health.status
 
       const rows = []
       if (d && Array.isArray(d.balances)) {
@@ -1158,7 +1307,8 @@ window.__ModuleLoader__.load({
       const note = []
       if (d && d.isAvailable === false) note.push('balance exhausted — the API refuses calls')
       if (s && s.endpoint) note.push(s.endpoint.replace(/^https:\/\//, ''))
-      if (s && s.fetchedAt) note.push('read ' + new Date(s.fetchedAt).toLocaleTimeString())
+      const read = readNote(health)
+      if (read) note.push(read)
 
       const children = [
         React.createElement(
@@ -1169,12 +1319,12 @@ window.__ModuleLoader__.load({
           React.createElement('span', { className: 'pup-spacer' }),
           React.createElement(
             'button',
-            { className: 'pup-btn', type: 'button', onClick: onRefresh, disabled: busy || status === 'loading' },
-            busy || status === 'loading' ? 'Refreshing…' : 'Refresh',
+            { className: 'pup-btn', type: 'button', onClick: onRefresh, disabled: busy || health.loading },
+            busy || health.loading ? 'Refreshing…' : 'Refresh',
           ),
         ),
       ]
-      if (status === 'idle' && !wireError) {
+      if (status === 'idle' && !health.offline) {
         children.push(
           React.createElement(
             'div', { className: 'pup-msg', key: 'idle' },
@@ -1184,24 +1334,7 @@ window.__ModuleLoader__.load({
           ),
         )
       }
-      if (s && s.status === 'error') {
-        children.push(
-          React.createElement(
-            'div', { key: 'err' },
-            React.createElement('div', { className: 'pup-err' }, s.detail || 'Read failed.'),
-            React.createElement('div', { className: 'pup-code' }, s.error || ''),
-          ),
-        )
-      }
-      if (wireError) {
-        children.push(
-          React.createElement(
-            'div', { key: 'wire' },
-            React.createElement('div', { className: 'pup-err' }, wireError.message || 'The Remote call failed.'),
-            React.createElement('div', { className: 'pup-code' }, wireError.code || ''),
-          ),
-        )
-      }
+      children.push(healthLines('pup', health))
       if (d && rows.length) {
         children.push(React.createElement('div', { className: 'pup-grid', key: 'grid' }, rows))
         if (note.length) children.push(React.createElement('div', { className: 'pup-code', key: 'note' }, note.join(' · ')))
@@ -1212,26 +1345,22 @@ window.__ModuleLoader__.load({
 
     /** Generic quota chip: worst window percent + dot; click opens the panel. */
     function QuotaChip({ store, getNs, title }) {
-      const state = useStore(store)
+      const health = useHealth(store)
       const [open, setOpen] = React.useState(false)
-      const wireError = state && state.ok === false ? state.error : null
-      const s = wireError ? null : state
-      const d = s && s.data ? s.data : null
+      const d = health.data
       const worst = d ? worstWindow(d.windows) : null
       const wlv = worst !== null ? quotaLevel(worst) : null
-      const parts = []
-      if (worst !== null) parts.push(React.createElement('b', { key: 'q' }, pct(worst)))
-      if (!parts.length) parts.push(React.createElement('span', { key: 'empty' }, s && s.status === 'error' ? 'unavailable' : 'usage'))
+      const values = worst !== null ? [{ key: 'q', text: pct(worst) }] : []
+      const face = chipFace({ px: 'pup', title, health, values, empty: 'usage', level: wlv })
       return React.createElement(
         'span',
         { className: 'pup-chipwrap' },
         React.createElement(
           'button',
-          { className: 'pup-chip', type: 'button', onClick: () => setOpen((v) => !v), title: title + ' usage' },
-          React.createElement('span', { className: 'pup-dot' + (wlv ? ' pup-' + wlv : '') }),
+          { className: 'pup-chip', type: 'button', onClick: () => setOpen((v) => !v), title: title + ' usage', 'aria-label': face.label },
+          React.createElement('span', { className: 'pup-dot' + (face.dot ? ' pup-' + face.dot : '') }),
           React.createElement('span', null, title),
-          ...parts,
-          React.createElement('span', { className: 'pup-code' }, wireError || (s && s.status === 'error') ? '!' : ''),
+          ...face.parts,
         ),
         open ? React.createElement('div', { className: 'pup-pop' }, React.createElement(QuotaPanel, { store, getNs, title })) : null,
       )
@@ -1239,11 +1368,9 @@ window.__ModuleLoader__.load({
 
     /** Generic balance chip: remaining + dot; click opens the panel. */
     function BalanceChip({ store, getNs, title }) {
-      const state = useStore(store)
+      const health = useHealth(store)
       const [open, setOpen] = React.useState(false)
-      const wireError = state && state.ok === false ? state.error : null
-      const s = wireError ? null : state
-      const d = s && s.data ? s.data : null
+      const d = health.data
 
       let text = null
       let lv = null
@@ -1255,19 +1382,17 @@ window.__ModuleLoader__.load({
         text = fiat(d.remaining, d.currency) + ' left'
         lv = budgetLevel(d.remaining, d.total)
       }
-      const parts = []
-      if (text) parts.push(React.createElement('b', { key: 'b' }, text))
-      if (!parts.length) parts.push(React.createElement('span', { key: 'empty' }, s && s.status === 'error' ? 'unavailable' : 'balance'))
+      const values = text ? [{ key: 'b', text }] : []
+      const face = chipFace({ px: 'pup', title, health, values, empty: 'balance', level: lv })
       return React.createElement(
         'span',
         { className: 'pup-chipwrap' },
         React.createElement(
           'button',
-          { className: 'pup-chip', type: 'button', onClick: () => setOpen((v) => !v), title: title + ' balance' },
-          React.createElement('span', { className: 'pup-dot' + (lv ? ' pup-' + lv : '') }),
+          { className: 'pup-chip', type: 'button', onClick: () => setOpen((v) => !v), title: title + ' balance', 'aria-label': face.label },
+          React.createElement('span', { className: 'pup-dot' + (face.dot ? ' pup-' + face.dot : '') }),
           React.createElement('span', null, title),
-          ...parts,
-          React.createElement('span', { className: 'pup-code' }, wireError || (s && s.status === 'error') ? '!' : ''),
+          ...face.parts,
         ),
         open ? React.createElement('div', { className: 'pup-pop' }, React.createElement(BalancePanel, { store, getNs, title })) : null,
       )
@@ -1339,11 +1464,13 @@ window.__ModuleLoader__.load({
       return null
     }
 
-    /** The worst indicator level for the summary dot. */
+    /**
+     * The worst indicator level of the figures in the summary. The card raises
+     * it for stale data and failures through healthLevel.
+     */
     function summaryLevel(p, s) {
       const d = s && s.data ? s.data : null
       if (!d) return ''
-      if (s.status === 'error') return 'bad'
       if (p.id === 'openrouter') {
         const a = s.account && s.account.status === 'ready' ? s.account.data : null
         const lv = a ? budgetLevel(a.remaining, a.totalCredits) : d.remaining !== null ? budgetLevel(d.remaining, d.limit) : null
@@ -1389,7 +1516,7 @@ window.__ModuleLoader__.load({
      * usage belongs to set-up providers only. Click expands the full panel.
      */
     function CardExtras({ p, store, getNs, keyConfigured, provider, getLoginNs }) {
-      const state = useStore(store)
+      const health = useHealth(store)
       const [open, setOpen] = React.useState(false)
       const [oauthConfigured, setOauthConfigured] = React.useState(null)
       // `busy` is true from the card's own sign-in until the refresh it triggers settles.
@@ -1443,16 +1570,13 @@ window.__ModuleLoader__.load({
         })
       }, [route])
       if (keyConfigured === false && oauthConfigured !== true) return null
-      const wireError = state && state.ok === false ? state.error : null
-      const s = wireError ? null : state
+      const s = health.state
       const summary = summarize(p, s)
-      const plan = s && s.data ? quotaPlan(s.data) : null
-      const lv = summaryLevel(p, s)
-      const errText = wireError
-        ? wireError.message || 'The Remote call failed.'
-        : s && s.status === 'error'
-          ? s.detail || 'Read failed.'
-          : null
+      const plan = health.data ? quotaPlan(health.data) : null
+      const lv = healthLevel(summaryLevel(p, s), health)
+      // The offline note, else the Host's failure: under the line while collapsed
+      // (the open panel shows it in full, with its time).
+      const failure = healthNote(health)
       // While the refresh after a sign-in runs, what the store holds is from before it.
       if (busy && !summary) {
         return React.createElement(
@@ -1461,7 +1585,7 @@ window.__ModuleLoader__.load({
           'Loading usage…',
         )
       }
-      if (!summary && !errText) return null
+      if (!summary && !failure) return null
 
       return React.createElement(
         'div',
@@ -1476,11 +1600,12 @@ window.__ModuleLoader__.load({
           },
           React.createElement('span', { className: `${p.px}-dot` + (lv ? ` ${p.px}-${lv}` : '') }),
           plan ? React.createElement('span', { className: `${p.px}-scope` }, plan) : null,
-          React.createElement('span', null, summary ?? 'Usage unavailable'),
+          React.createElement('span', null, summary ?? HEALTH_TEXT.usageUnavailable),
+          health.stale ? React.createElement('span', { className: `${p.px}-stale` }, readNote(health)) : null,
           React.createElement('span', { className: `${p.px}-code`, style: { marginTop: 0 } }, open ? '▴ less' : '▾ details'),
         ),
-        errText && !summary
-          ? React.createElement('div', { className: `${p.px}-err`, style: { marginTop: 6 } }, errText)
+        failure && !open
+          ? React.createElement('div', { className: `${p.px}-err`, role: 'status', style: { marginTop: 6, fontSize: 12, overflowWrap: 'anywhere' } }, failure)
           : null,
         open ? React.createElement(p.panel, { store, getNs, title: p.title }) : null,
       )
@@ -2040,17 +2165,16 @@ window.__ModuleLoader__.load({
               p.store.waiting = false
               try {
                 const result = await ns.snapshot()
-                if (alive && result && typeof result === 'object') {
-                  p.store.set(result.ok === true ? result.value : result)
-                }
-              } catch {
-                // A failed read keeps the last state; the next tick retries.
+                if (alive) p.store.accept(result)
+              } catch (error) {
+                // The Host is not reachable: keep the last state, show why; the next tick retries.
+                if (alive) p.store.fail(error)
               }
               if (alive) timer = setTimeout(tick, POLL_MS)
             } else {
               if (alive && Date.now() - startedAt > MOUNT_GRACE_MS && !p.store.waiting) {
                 p.store.waiting = true
-                p.store.set(p.store.state) // notify so the idle hint appears
+                p.store.notify() // so the idle hint appears
               }
               if (alive) timer = setTimeout(tick, MOUNT_RETRY_MS)
             }

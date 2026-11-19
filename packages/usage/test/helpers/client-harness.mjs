@@ -488,17 +488,32 @@ function createReactRuntime() {
  * Options: `refreshState` replaces the state on a refresh; `refreshFailure`
  * makes every refresh answer `{ ok: false, error: { code, message } }`;
  * `refreshGate` is a promise the refresh awaits before it answers.
+ * `snapshotFailure` does the same for `snapshot`; `snapshotRejection` and
+ * `refreshRejection` make the call reject with an Error of that message (the
+ * transport itself failed). The four failure options are properties of the
+ * stub: set one to `undefined` and the next call answers normally again.
  */
-export function createUsageNamespaceStub(state, { refreshState, refreshFailure, refreshGate } = {}) {
+export function createUsageNamespaceStub(state, { refreshState, refreshFailure, refreshGate, snapshotFailure, snapshotRejection, refreshRejection } = {}) {
   const calls = { snapshot: 0, refresh: 0 }
+  const failure = (message) => ({ ok: false, error: { code: 'remote.failed', message } })
   return {
     calls,
     state,
-    async snapshot() { calls.snapshot += 1; return { ok: true, value: this.state } },
+    snapshotFailure,
+    snapshotRejection,
+    refreshFailure,
+    refreshRejection,
+    async snapshot() {
+      calls.snapshot += 1
+      if (this.snapshotRejection !== undefined) throw new Error(this.snapshotRejection)
+      if (this.snapshotFailure !== undefined) return failure(this.snapshotFailure)
+      return { ok: true, value: this.state }
+    },
     async refresh() {
       calls.refresh += 1
       if (refreshGate !== undefined) await refreshGate
-      if (refreshFailure !== undefined) return { ok: false, error: { code: 'remote.failed', message: refreshFailure } }
+      if (this.refreshRejection !== undefined) throw new Error(this.refreshRejection)
+      if (this.refreshFailure !== undefined) return failure(this.refreshFailure)
       if (refreshState !== undefined) this.state = refreshState
       return { ok: true, value: this.state }
     },
