@@ -7,7 +7,7 @@
  * seven_day_breakdown.
  */
 
-import { fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
+import { checkedBaseUrl, fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
 
 const DEFAULT_CREDENTIAL_REF = 'llm-pi-ai/anthropic'
 const DEFAULT_BASE = 'https://api.anthropic.com'
@@ -98,7 +98,15 @@ function formatReport(state) {
 
 export function mountAnthropic(ctx, config = {}) {
   const credentialRef = config.credentialRef ?? DEFAULT_CREDENTIAL_REF
-  const baseUrl = (typeof config.baseUrl === 'string' && config.baseUrl.length > 0 ? config.baseUrl : DEFAULT_BASE).replace(/\/+$/, '')
+  // The outbound policy (net.js checkedBaseUrl): a refused base mounts
+  // nothing and logs one warning. A base on another origin than
+  // api.anthropic.com still works, but the Claude sign-in token then goes
+  // there: one warning says so.
+  const baseUrl = checkedBaseUrl('anthropic', typeof config.baseUrl === 'string' && config.baseUrl.length > 0 ? config.baseUrl : DEFAULT_BASE, config, {
+    oauthDefault: DEFAULT_BASE,
+    tokenName: 'Claude sign-in token',
+  })
+  if (baseUrl === null) return
   const url = baseUrl + '/api/oauth/usage'
 
   mountProvider(ctx, {

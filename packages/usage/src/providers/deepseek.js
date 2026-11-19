@@ -7,7 +7,7 @@
  * STRINGS on the wire.
  */
 
-import { fetchUsageJson, mountProvider, num, usageFooter } from './net.js'
+import { checkedBaseUrl, fetchUsageJson, mountProvider, num, usageFooter } from './net.js'
 
 const DEFAULT_CREDENTIAL_REF = 'DEEPSEEK_API_KEY'
 const DEFAULT_BASE = 'https://api.deepseek.com'
@@ -38,7 +38,10 @@ function formatReport(state) {
 
 export function mountDeepSeek(ctx, config = {}) {
   const credentialRef = config.credentialRef ?? DEFAULT_CREDENTIAL_REF
-  const baseUrl = (typeof config.baseUrl === 'string' && config.baseUrl.length > 0 ? config.baseUrl : DEFAULT_BASE).replace(/\/+$/, '')
+  // The outbound policy (net.js checkedBaseUrl): a refused base mounts
+  // nothing and logs one warning.
+  const baseUrl = checkedBaseUrl('deepseek', typeof config.baseUrl === 'string' && config.baseUrl.length > 0 ? config.baseUrl : DEFAULT_BASE, config)
+  if (baseUrl === null) return
   const url = baseUrl + '/user/balance'
 
   mountProvider(ctx, {

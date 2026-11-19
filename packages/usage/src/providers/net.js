@@ -6,8 +6,38 @@
  *   { failure, status?, detail }        failure code + operator-readable text
  *
  * Failure codes: missing-credential, credential-read-failed, timeout,
- * network, bad-response, http-<status>. The panel prints `detail` verbatim.
+ * network, redirect-refused, too-large, bad-response, http-<status>. The
+ * panel prints `detail` verbatim.
+ *
+ * The outbound policy lives here, once, for all three runtimes (this file's
+ * mountProvider, openrouter.js and kimi.js):
+ *   - `checkedBaseUrl` polices a configured base URL at mount: https, or http
+ *     to loopback, or http anywhere with `allowHttp: true`; no user info, no
+ *     query, no fragment.
+ *   - `requestJson` is the one place that calls fetch: redirects are followed
+ *     only within the request's origin (at most MAX_REDIRECTS), the reply body
+ *     is capped at MAX_BODY_BYTES, and the timeout covers every hop and the
+ *     body read.
+ *   - The credential is redacted from the parsed reply and from every failure
+ *     text before anything is stored, and `cleanDetail` makes every stored
+ *     detail one line of at most MAX_DETAIL_CHARS characters.
  */
+
+/** The largest reply body read, in bytes (1 MiB). */
+export const MAX_BODY_BYTES = 1024 * 1024
+/** Same-origin redirects followed before the request is refused. */
+export const MAX_REDIRECTS = 3
+/** The longest `detail` stored in a state. */
+export const MAX_DETAIL_CHARS = 300
+/**
+ * Values shorter than this are not redacted: no real API key or OAuth token
+ * is this short, and replacing a 1-7 character string would garble ordinary
+ * words in every message.
+ */
+export const MIN_SECRET_LENGTH = 8
+export const REDACTED = '[redacted]'
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 
 export function num(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -68,13 +98,318 @@ export function errorMessage(body, status) {
   return `HTTP ${status}`
 }
 
+// --- redaction ---
+
+/** "Bearer <token>" for any token-shaped value of 16 characters or more. */
+const BEARER_TOKEN = /\b(Bearer)\s+[A-Za-z0-9\-._~+/]{16,}=*/gi
+
+/**
+ * The forms a credential can take in a reply: the value itself, its
+ * URL-encoded form and its JSON-escaped form. Values shorter than
+ * MIN_SECRET_LENGTH are skipped. Longest first, so a longer form is replaced
+ * whole.
+ */
+function secretForms(secrets) {
+  const forms = new Set()
+  for (const secret of secrets) {
+    if (typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) continue
+    forms.add(secret)
+    for (const encode of [encodeURIComponent, (s) => JSON.stringify(s).slice(1, -1)]) {
+      try {
+        const form = encode(secret)
+        if (form.length >= MIN_SECRET_LENGTH) forms.add(form)
+      } catch {
+        // A lone surrogate cannot be URL-encoded: the raw form still counts.
+      }
+    }
+  }
+  return [...forms].sort((a, b) => b.length - a.length)
+}
+
+function redactForms(text, forms) {
+  let out = text
+  for (const form of forms) if (out.includes(form)) out = out.split(form).join(REDACTED)
+  return out.replace(BEARER_TOKEN, `$1 ${REDACTED}`)
+}
+
+/**
+ * `text` with every form of each secret replaced by `[redacted]`, and any
+ * "Bearer <token>" the server quotes replaced too.
+ */
+export function redact(text, secrets = []) {
+  return redactForms(typeof text === 'string' ? text : safeMessage(text), secretForms(secrets))
+}
+
+/**
+ * The text a state may store as `detail`: redacted, ONE line (line breaks,
+ * tabs and control characters become one space) and at most `max`
+ * characters (MAX_DETAIL_CHARS by default; a cut text ends in "…").
+ * null and undefined stay null.
+ */
+export function cleanDetail(text, secrets = [], max = MAX_DETAIL_CHARS) {
+  if (text === null || text === undefined) return null
+  const line = redact(text, secrets).replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, ' ').trim()
+  if (line.length <= max) return line
+  let cut = Math.max(0, max - 1)
+  // Never split a surrogate pair.
+  if (/[\uD800-\uDBFF]/.test(line.charAt(cut - 1))) cut -= 1
+  return `${line.slice(0, cut)}…`
+}
+
+/**
+ * The credential an Authorization header carries: x for "Bearer x" (so an
+ * echoed header reads "Bearer [redacted]"), else the whole value (GLM's raw
+ * key).
+ */
+function authorizationSecrets(headers) {
+  const out = []
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    if (name.toLowerCase() !== 'authorization' || typeof value !== 'string') continue
+    const scheme = /^\s*(?:Bearer|Basic|Token)\s+(.+)$/i.exec(value)
+    out.push(scheme ? scheme[1].trim() : value)
+  }
+  return out
+}
+
+/** A state endpoint: origin plus path, never user info, a query or a fragment; null when unusable. */
+export function endpointOf(value) {
+  if (typeof value !== 'string' || value.length === 0) return null
+  try {
+    const url = new URL(value)
+    if (url.origin === 'null') return null
+    return url.origin + url.pathname.replace(/\/+$/, '')
+  } catch {
+    return null
+  }
+}
+
+// --- the base-URL policy, checked at mount ---
+
+const LOOPBACK_V4 = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/
+
+/** localhost, 127.0.0.0/8 or [::1]; the URL parser has already normalized the host. */
+function isLoopback(hostname) {
+  return hostname === 'localhost' || hostname === '[::1]' || LOOPBACK_V4.test(hostname)
+}
+
+/**
+ * Check one base URL against the outbound policy: https; http only to
+ * localhost, 127.0.0.0/8 or [::1], or anywhere with `allowHttp: true`; no user
+ * info, no query, no fragment.
+ * @returns { ok: true, baseUrl, origin, plainHttp } — baseUrl is origin plus
+ *   path without trailing slashes, plainHttp is true for http to a
+ *   non-loopback host — or { ok: false, reason }. The reason never contains
+ *   user info, a query or a fragment.
+ */
+export function checkBaseUrl(raw, { allowHttp = false } = {}) {
+  let url
+  try {
+    url = new URL(String(raw))
+  } catch {
+    return { ok: false, reason: 'it is not an absolute URL' }
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    return { ok: false, reason: `its scheme (${url.protocol}) is not https` }
+  }
+  if (url.username !== '' || url.password !== '') {
+    return { ok: false, reason: 'it carries user info (user:password@); store the credential in Settings → Models instead' }
+  }
+  // href keeps an empty "?" or "#"; search and hash do not.
+  if (url.href.includes('?') || url.href.includes('#')) {
+    return { ok: false, reason: 'it carries a query or a fragment' }
+  }
+  const origin = url.origin
+  const baseUrl = origin + url.pathname.replace(/\/+$/, '')
+  const plainHttp = url.protocol === 'http:' && !isLoopback(url.hostname)
+  if (plainHttp && allowHttp !== true) {
+    return { ok: false, reason: `plain http to ${origin} is allowed only for localhost, 127.0.0.0/8 and [::1], or with allowHttp: true` }
+  }
+  return { ok: true, baseUrl, origin, plainHttp }
+}
+
+/**
+ * The base URL one provider mounts with, or null when the provider must stay
+ * unmounted. Logs at most ONE console.warn: why the URL was refused, or what
+ * the accepted URL implies (plain http with `allowHttp: true`; an OAuth token
+ * sent to a host other than the default).
+ * @param id - provider id for the log line.
+ * @param raw - the configured base URL, or the provider default.
+ * @param config - the provider config; `allowHttp` counts only when it is the boolean true.
+ * @param oauth - for OAuth bearer providers: `oauthDefault` (the default base) and `tokenName`.
+ */
+export function checkedBaseUrl(id, raw, config, { oauthDefault, tokenName = 'sign-in token' } = {}) {
+  const checked = checkBaseUrl(raw, { allowHttp: config?.allowHttp === true })
+  if (!checked.ok) {
+    console.warn(`usage: provider "${id}" refused its baseUrl: ${checked.reason}. The provider is not mounted.`)
+    return null
+  }
+  const notes = []
+  if (checked.plainHttp) {
+    notes.push(`baseUrl ${checked.origin} uses plain http (allowHttp: true), so the credential travels unencrypted`)
+  }
+  const defaultOrigin = oauthDefault ? new URL(oauthDefault).origin : null
+  if (defaultOrigin && checked.origin !== defaultOrigin) {
+    notes.push(`the ${tokenName} is sent to ${checked.origin}, a non-default host (the default is ${defaultOrigin}); use only a host you trust`)
+  }
+  if (notes.length > 0) console.warn(`usage: provider "${id}": ${notes.join('; ')}.`)
+  return checked.baseUrl
+}
+
+// --- the one request function ---
+
+/** A redirect target for a message: its origin only, never its path or query. */
+function originOf(url) {
+  return url.origin !== 'null' ? url.origin : url.protocol
+}
+
+/** Drop a reply body we will not read, so the connection is released. */
+function discard(response) {
+  try {
+    response.body?.cancel?.().catch?.(() => {})
+  } catch {
+    // Nothing to release.
+  }
+}
+
+/**
+ * Read a reply body as text, at most MAX_BODY_BYTES. Resolves null when the
+ * body grows past the cap (reading stops there); rejects with an AbortError
+ * when `signal` aborts first, even if the stream itself ignores the signal.
+ */
+async function readCapped(response, signal) {
+  const stream = response.body
+  if (stream === null) return ''
+  if (typeof stream?.getReader !== 'function') throw new TypeError('The reply has no readable body.')
+  const reader = stream.getReader()
+  let onAbort
+  const aborted = new Promise((resolve, reject) => {
+    onAbort = () => reject(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }))
+    if (signal.aborted) onAbort()
+    else signal.addEventListener('abort', onAbort, { once: true })
+  })
+  aborted.catch(() => {})
+  const decoder = new TextDecoder()
+  let total = 0
+  let text = ''
+  try {
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), aborted])
+      if (done) break
+      const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value
+      total += bytes.byteLength
+      if (total > MAX_BODY_BYTES) return null
+      text += decoder.decode(bytes, { stream: true })
+    }
+    return text + decoder.decode()
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+    reader.cancel().catch(() => {})
+  }
+}
+
+/**
+ * GET one JSON URL under the outbound policy. The ONE fetch call of the
+ * package: fetchUsageJson, openrouter.js and kimi.js all come through here and
+ * keep their own failure mapping.
+ *
+ *  - `redirect: 'manual'`: a redirect is followed only to the SAME origin, at
+ *    most MAX_REDIRECTS times, re-sending `headers` only there. Any other
+ *    redirect is 'redirect-refused', and its detail names only the target
+ *    origin. Authorization therefore never reaches another origin.
+ *  - The body is capped at MAX_BODY_BYTES: a larger Content-Length, or a body
+ *    that grows past the cap while it is read, is 'too-large'.
+ *  - `timeoutMs` covers every hop and the body read.
+ *  - Every string in the parsed body, and every failure detail, is redacted:
+ *    the credential in Authorization always (the token after "Bearer ", or
+ *    the whole raw value), plus any `secrets`.
+ *
+ * @param url - absolute URL (its base was checked at mount).
+ * @param opts.headers - plain header object, passed to fetch unchanged.
+ * @returns one of
+ *   { status, ok, body }            the body parsed as JSON (strings redacted)
+ *   { status, ok, notJson: true }   the body is not JSON or could not be read
+ *   { failure, status?, detail }    timeout | network | redirect-refused | too-large
+ */
+export async function requestJson(url, { headers = {}, timeoutMs = 15_000, secrets = [] } = {}) {
+  const forms = secretForms([...secrets, ...authorizationSecrets(headers)])
+  const timedOut = (status) => ({ failure: 'timeout', ...(status === undefined ? {} : { status }), detail: `No reply within ${timeoutMs} ms.` })
+  let origin
+  try {
+    origin = new URL(url).origin
+  } catch {
+    return { failure: 'network', detail: 'The request URL is not valid.' }
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    let target = String(url)
+    let response
+    for (let hop = 0; ; hop += 1) {
+      try {
+        response = await fetch(target, { method: 'GET', headers, redirect: 'manual', signal: controller.signal })
+      } catch (error) {
+        if (error?.name === 'AbortError' || controller.signal.aborted) return timedOut()
+        return { failure: 'network', detail: cleanDetail(redactForms(safeMessage(error), forms)) }
+      }
+      const status = response.status
+      if (response.type === 'opaqueredirect') {
+        discard(response)
+        return { failure: 'redirect-refused', status, detail: 'The server answered with a redirect whose target is hidden; the redirect was not followed.' }
+      }
+      const location = REDIRECT_STATUSES.has(status) ? response.headers?.get?.('location') : null
+      if (!location) break
+      discard(response)
+      let next
+      try {
+        next = new URL(location, target)
+      } catch {
+        return { failure: 'redirect-refused', status, detail: 'The server redirected to a target that is not a valid URL; the redirect was not followed.' }
+      }
+      if (next.origin !== origin) {
+        return { failure: 'redirect-refused', status, detail: `The server redirected to ${originOf(next)}, another origin; the redirect was not followed, so the credential was not sent there.` }
+      }
+      if (hop >= MAX_REDIRECTS) {
+        return { failure: 'redirect-refused', status, detail: `More than ${MAX_REDIRECTS} redirects within ${origin}; the last one was not followed.` }
+      }
+      target = next.href
+    }
+
+    const status = response.status
+    const declared = Number(response.headers?.get?.('content-length'))
+    if (declared > MAX_BODY_BYTES) {
+      discard(response)
+      return { failure: 'too-large', status, detail: `The reply declares ${declared} bytes, more than the 1 MiB limit; it was not read.` }
+    }
+    let text
+    try {
+      text = await readCapped(response, controller.signal)
+    } catch (error) {
+      if (controller.signal.aborted || error?.name === 'AbortError') return timedOut(status)
+      return { status, ok: response.ok, notJson: true }
+    }
+    if (text === null) {
+      return { failure: 'too-large', status, detail: 'The reply grew past the 1 MiB limit while it was read; reading stopped.' }
+    }
+    let body
+    try {
+      body = JSON.parse(text, (key, value) => (typeof value === 'string' ? redactForms(value, forms) : value))
+    } catch {
+      return { status, ok: response.ok, notJson: true }
+    }
+    return { status, ok: response.ok, body }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /**
  * Resolve a credential and GET one JSON endpoint, with the shared error
  * taxonomy. `auth` selects the header shape: 'bearer' (default) sends
  * `Authorization: Bearer <key>`; 'raw' sends the key bare (GLM coding plan).
  * Extra provider headers go in `headers`. `signIn` names the OAuth provider id
  * (`openai-codex`, `anthropic`): a missing credential then says how to sign in
- * instead of asking for an API key.
+ * instead of asking for an API key. The request goes through `requestJson`.
  */
 export async function fetchUsageJson(ctx, { credentialRef, recordKey, url, auth = 'bearer', headers = {}, timeoutMs, hint401, signIn }) {
   let key
@@ -88,7 +423,7 @@ export async function fetchUsageJson(ctx, { credentialRef, recordKey, url, auth 
       key = record && typeof record.value === 'string' ? record.value.trim() : ''
     }
   } catch (error) {
-    return { failure: 'credential-read-failed', detail: `Could not read ${recordKey ?? credentialRef}: ${safeMessage(error)}` }
+    return { failure: 'credential-read-failed', detail: cleanDetail(`Could not read ${recordKey ?? credentialRef}: ${safeMessage(error)}`) }
   }
   if (!key) {
     const ref = recordKey ?? credentialRef
@@ -100,48 +435,25 @@ export async function fetchUsageJson(ctx, { credentialRef, recordKey, url, auth 
     }
   }
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  let response
-  try {
-    response = await fetch(url, {
-      method: 'GET',
-      headers: { Authorization: auth === 'raw' ? key : `Bearer ${key}`, ...headers, Accept: 'application/json' },
-      signal: controller.signal,
-    })
-  } catch (error) {
-    clearTimeout(timer)
-    const aborted = error?.name === 'AbortError'
-    return {
-      failure: aborted ? 'timeout' : 'network',
-      detail: aborted ? `No reply within ${timeoutMs} ms.` : safeMessage(error),
-    }
+  const reply = await requestJson(url, {
+    headers: { Authorization: auth === 'raw' ? key : `Bearer ${key}`, ...headers, Accept: 'application/json' },
+    timeoutMs,
+    secrets: [key],
+  })
+  if (reply.failure) return reply
+  if (reply.notJson) {
+    return { failure: 'bad-response', status: reply.status, detail: `HTTP ${reply.status} with a body that is not JSON.` }
   }
-
-  let body
-  try {
-    body = await response.json()
-  } catch {
-    clearTimeout(timer)
-    return {
-      failure: controller.signal.aborted ? 'timeout' : 'bad-response',
-      status: response.status,
-      detail: controller.signal.aborted
-        ? `No reply within ${timeoutMs} ms.`
-        : `HTTP ${response.status} with a body that is not JSON.`,
-    }
+  if (!reply.ok) {
+    // The hint is kept whole: the server's text is cut first.
+    const hint = reply.status === 401 && hint401 ? ` ${hint401}` : ''
+    const detail = cleanDetail(errorMessage(reply.body, reply.status), [key], MAX_DETAIL_CHARS - hint.length) + hint
+    return { failure: `http-${reply.status}`, status: reply.status, detail }
   }
-  clearTimeout(timer)
-
-  if (!response.ok) {
-    let detail = errorMessage(body, response.status)
-    if (response.status === 401 && hint401) detail += ' ' + hint401
-    return { failure: `http-${response.status}`, status: response.status, detail }
+  if (!isRecord(reply.body)) {
+    return { failure: 'bad-response', status: reply.status, detail: 'Reply was not a JSON object.' }
   }
-  if (!isRecord(body)) {
-    return { failure: 'bad-response', status: response.status, detail: 'Reply was not a JSON object.' }
-  }
-  return { body }
+  return { body: reply.body }
 }
 
 /**
@@ -230,7 +542,8 @@ export function mountProvider(ctx, spec, cfg) {
       attemptedAt: null,
       error: null,
       detail: null,
-      endpoint: spec.endpoint ?? null,
+      // Origin plus path only: never user info, a query or a fragment.
+      endpoint: endpointOf(spec.endpoint),
       data: null,
       ui: {
         composerChip: cfg.showComposerChip ?? true,
@@ -279,7 +592,10 @@ export function mountProvider(ctx, spec, cfg) {
         publish({
           status: 'error',
           error: result.failure,
-          detail: result.detail ?? null,
+          // One line, at most MAX_DETAIL_CHARS, with any quoted Bearer token
+          // redacted. The credential itself was redacted by requestJson from
+          // the reply and from its own failure texts.
+          detail: cleanDetail(result.detail),
           attemptedAt: now,
         })
       } else {
@@ -287,14 +603,14 @@ export function mountProvider(ctx, spec, cfg) {
           status: 'ready',
           error: null,
           detail: null,
-          endpoint: result.endpoint ?? cache.state.endpoint,
+          endpoint: endpointOf(result.endpoint) ?? cache.state.endpoint,
           data: result.data,
           fetchedAt: now,
           attemptedAt: now,
         })
       }
     } catch (error) {
-      publish({ status: 'error', error: 'unexpected', detail: safeMessage(error), attemptedAt: Date.now() })
+      publish({ status: 'error', error: 'unexpected', detail: cleanDetail(safeMessage(error)), attemptedAt: Date.now() })
     }
     return cache.state
   }

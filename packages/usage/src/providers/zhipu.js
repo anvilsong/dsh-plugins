@@ -13,7 +13,7 @@
  * window. nextResetTime is epoch ms. `percentage` is the used percent.
  */
 
-import { epochMsToIso, fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
+import { checkedBaseUrl, epochMsToIso, fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
 
 const DEFAULT_CREDENTIAL_REF = 'ZHIPU_API_KEY'
 const BASE_URL_CN = 'https://open.bigmodel.cn'
@@ -60,12 +60,16 @@ function resetIso(item) {
 
 export function mountZhipu(ctx, config = {}) {
   const credentialRef = config.credentialRef ?? DEFAULT_CREDENTIAL_REF
-  const baseUrl =
+  const configuredBase =
     typeof config.baseUrl === 'string' && config.baseUrl.length > 0
-      ? config.baseUrl.replace(/\/+$/, '')
+      ? config.baseUrl
       : config.region === 'global'
         ? BASE_URL_GLOBAL
         : BASE_URL_CN
+  // The outbound policy (net.js checkedBaseUrl): a refused base mounts
+  // nothing and logs one warning.
+  const baseUrl = checkedBaseUrl('zhipu', configuredBase, config)
+  if (baseUrl === null) return
   const url = baseUrl + '/api/monitor/usage/quota/limit'
 
   mountProvider(ctx, {

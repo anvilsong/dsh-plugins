@@ -183,6 +183,36 @@ Security properties:
 4. Usage snapshots stay in memory. The plugin writes no usage history,
    account list, analytics, or telemetry to disk.
 
+Every provider request follows the same outbound policy:
+
+1. **Base URL.** A `baseUrl` must use `https`. Plain `http` is accepted only
+   for `localhost`, `127.0.0.0/8` and `[::1]`, or when that provider's section
+   sets `allowHttp: true`. With `allowHttp`, the Host log warns once at mount
+   that the key travels unencrypted. A base URL with user info
+   (`user:password@`), a query or a fragment is refused. A refused base URL
+   leaves that provider unmounted, and the Host log has one warning that names
+   the provider and the reason, never the user info or the query. OpenRouter
+   has no `baseUrl`: its endpoints are fixed.
+2. **Codex and Claude.** A `baseUrl` on another host than the default sends
+   the OAuth sign-in token to that host. It works, and the Host log warns once
+   at mount.
+3. **Redirects.** A redirect to the same origin is followed at most 3 times,
+   with the same headers. A redirect to another origin, a fourth redirect, or a
+   redirect to an invalid target fails with `redirect-refused`; the failure
+   text names only the target origin. The credential is never sent to another
+   origin.
+4. **Reply size.** A reply body larger than 1 MiB fails with `too-large`,
+   whether its `Content-Length` says so or the body grows past 1 MiB while it
+   is read. The request timeout covers the body read.
+5. **Redaction.** The credential sent with a request is removed from every
+   text value of the reply and from the request's failure texts before
+   anything is stored. The key, its URL-encoded form, and any `Bearer <token>`
+   of 16 or more characters that the server quotes appear as `[redacted]` in
+   the state, the panel, the `/usage-*` reports and the Host log. Values
+   shorter than 8 characters are not redacted. A failure detail is one line of
+   at most 300 characters. The endpoint in a state or a report is the origin
+   and path only.
+
 ## Surfaces
 
 | Surface | Behavior |
@@ -305,6 +335,7 @@ the model-provider route that should show its chip and card.
 | `gate` | provider-specific | Provider route ids that show the chip and card |
 | `region` | `cn` | `cn` or `global` for Kimi, GLM, and MiniMax |
 | `baseUrl` | provider default | API base override; required for NewAPI |
+| `allowHttp` | `false` | Accept a plain `http` `baseUrl` on a non-loopback host, such as a LAN relay; only the boolean `true` counts |
 | `endpoint` | `key` | OpenRouter primary endpoint: `key` or `credits` |
 | `showAccount` | `true` | Also request OpenRouter account-wide credits |
 

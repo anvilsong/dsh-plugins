@@ -216,13 +216,14 @@ test('net.js failure: a reply that never comes is aborted by the timer and repor
 
 test('net.js failure: a body read cut off by the timer is timeout, not bad-response', async () => {
   const ctx = { credentials: credentials('k') }
-  const slowBody = (url, init) => ({
-    ok: true,
-    status: 200,
-    json: () => new Promise((resolve, reject) => {
-      init.signal.addEventListener('abort', () => reject(abortError()))
-    }),
-  })
+  // Headers arrive, the body never finishes: a real Response over a stream
+  // that errors only when the request signal aborts (requestJson reads the
+  // body stream with a byte cap, so the stub must have one).
+  const slowBody = (url, init) => new Response(new ReadableStream({
+    start(controller) {
+      init.signal.addEventListener('abort', () => controller.error(abortError()))
+    },
+  }), { status: 200 })
   await withFetch(slowBody, async () => {
     assert.deepEqual(
       await fetchUsageJson(ctx, { credentialRef: 'REF', url: 'https://x.test', timeoutMs: 25 }),

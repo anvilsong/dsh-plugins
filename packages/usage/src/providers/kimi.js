@@ -30,7 +30,7 @@ import {
   FIXED_POINT_CENTS,
   USAGE_PATH,
 } from './kimi-defaults.js'
-import { mountSurfaces, safeMessage, usageFooter } from './net.js'
+import { checkedBaseUrl, cleanDetail, MAX_DETAIL_CHARS, mountSurfaces, requestJson, safeMessage, usageFooter } from './net.js'
 
 
 /** Read a finite number, tolerating strings, null and undefined. */
@@ -188,60 +188,44 @@ function errorMessage(body, status) {
 }
 
 /**
- * One GET against the Kimi Code API under a timeout that also covers the
- * body read.
+ * One GET against the Kimi Code API through the shared request function
+ * (net.js requestJson: same-origin redirects only, 1 MiB cap, a timeout that
+ * also covers the body read, the key redacted from the reply). The failure
+ * mapping stays Kimi's own: the 401 and Cloudflare hints.
  * @returns the parsed body, or an object describing the failure.
  */
 async function getKimi(url, key, timeoutMs) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-
-  let response
-  try {
-    response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${key}`,
-        Accept: 'application/json',
-        // An honest client identifier; Kimi's terms forbid mimicking the CLI.
-        'User-Agent': 'dsh-plugin-kimi-usage/0.1',
-      },
-      signal: controller.signal,
-    })
-  } catch (error) {
-    clearTimeout(timer)
-    const aborted = error?.name === 'AbortError'
-    return { failure: aborted ? 'timeout' : 'network', detail: aborted ? `No reply within ${timeoutMs} ms.` : safeMessage(error) }
-  }
-
-  let body
-  try {
-    body = await response.json()
-  } catch {
-    clearTimeout(timer)
-    const aborted = controller.signal.aborted
+  const reply = await requestJson(url, {
+    headers: {
+      Authorization: `Bearer ${key}`,
+      Accept: 'application/json',
+      // An honest client identifier; Kimi's terms forbid mimicking the CLI.
+      'User-Agent': 'dsh-plugin-kimi-usage/0.1',
+    },
+    timeoutMs,
+  })
+  if (reply.failure !== undefined) return reply
+  if (reply.notJson) {
     return {
-      failure: aborted ? 'timeout' : 'bad-response',
-      status: response.status,
-      detail: aborted
-        ? `No reply within ${timeoutMs} ms.`
-        : `HTTP ${response.status} with a body that is not JSON. The global endpoint (api.kimi.ai) answers some networks with a Cloudflare challenge — switch region to cn or check egress.`,
+      failure: 'bad-response',
+      status: reply.status,
+      detail: `HTTP ${reply.status} with a body that is not JSON. The global endpoint (api.kimi.ai) answers some networks with a Cloudflare challenge — switch region to cn or check egress.`,
     }
   }
-  clearTimeout(timer)
 
-  if (!response.ok) {
-    const detail =
-      response.status === 401
-        ? `${errorMessage(body, response.status)} A Kimi Platform key (platform.kimi.ai) is not valid here — create the key in the Kimi Code Console (kimi.com/code/console).`
-        : errorMessage(body, response.status)
-    return { failure: `http-${response.status}`, status: response.status, detail }
+  if (!reply.ok) {
+    // The hint is kept whole: the server's text is cut first.
+    const hint = reply.status === 401
+      ? ' A Kimi Platform key (platform.kimi.ai) is not valid here — create the key in the Kimi Code Console (kimi.com/code/console).'
+      : ''
+    const detail = cleanDetail(errorMessage(reply.body, reply.status), [], MAX_DETAIL_CHARS - hint.length) + hint
+    return { failure: `http-${reply.status}`, status: reply.status, detail }
   }
 
-  if (!isRecord(body)) {
-    return { failure: 'bad-response', status: response.status, detail: 'Reply was not a JSON object.' }
+  if (!isRecord(reply.body)) {
+    return { failure: 'bad-response', status: reply.status, detail: 'Reply was not a JSON object.' }
   }
-  return { body }
+  return { body: reply.body }
 }
 
 /** Clamp a configured millisecond value into a safe range. */
@@ -261,12 +245,17 @@ const REMOTE_METHOD_MARKER = '@deepseek-ai/dsh-typert-protocol/remote-methods'
 export function mountKimi(ctx, config = {}) {
   const credentialRef = config.credentialRef ?? DEFAULT_CREDENTIAL_REF
   // Region decides the default base; an explicit baseUrl wins over both.
-  const baseUrl =
+  const configuredBase =
     typeof config.baseUrl === 'string' && config.baseUrl.length > 0
-      ? config.baseUrl.replace(/\/+$/, '')
+      ? config.baseUrl
       : config.region === 'global'
         ? BASE_URL_GLOBAL
         : BASE_URL_CN
+  // The outbound policy: https (http only to loopback or with allowHttp),
+  // no user info, query or fragment. A refused base mounts nothing and logs
+  // one warning; the result is origin plus path, no trailing slash.
+  const baseUrl = checkedBaseUrl('kimi', configuredBase, config)
+  if (baseUrl === null) return
   const usageUrl = baseUrl + USAGE_PATH
   // Clamps: a quota endpoint polled at 0 ms hammers Kimi; a timeout of 0 ms
   // aborts every call.
@@ -336,11 +325,14 @@ export function mountKimi(ctx, config = {}) {
     try {
       return await attempt()
     } catch (error) {
-      publish({ status: 'error', error: 'unexpected', detail: safeMessage(error), attemptedAt: Date.now() })
+      publish({ status: 'error', error: 'unexpected', detail: cleanDetail(safeMessage(error)), attemptedAt: Date.now() })
       return cache.state
     }
   }
 
+  // Every detail below goes through cleanDetail: one line, at most 300
+  // characters. requestJson has already redacted the key from the reply and
+  // from its own failure texts.
   async function attempt() {
 
     // Step 1 — resolve the credential. Per-call read, never cached.
@@ -351,7 +343,7 @@ export function mountKimi(ctx, config = {}) {
       publish({
         status: 'error',
         error: 'credential-read-failed',
-        detail: safeMessage(error),
+        detail: cleanDetail(safeMessage(error)),
         attemptedAt: Date.now(),
       })
       return cache.state
@@ -370,7 +362,7 @@ export function mountKimi(ctx, config = {}) {
     // Step 2 — the quota call.
     const reply = await getKimi(usageUrl, resolved.value, timeoutMs)
     if (reply.failure !== undefined) {
-      publish({ status: 'error', error: reply.failure, detail: reply.detail, attemptedAt: Date.now() })
+      publish({ status: 'error', error: reply.failure, detail: cleanDetail(reply.detail), attemptedAt: Date.now() })
       return cache.state
     }
 

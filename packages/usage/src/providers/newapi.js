@@ -10,7 +10,7 @@
  * total_available, unlimited_quota } } — quota units; 500000 units = 1 USD.
  */
 
-import { fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
+import { checkedBaseUrl, fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
 
 const QUOTA_PER_USD = 500000
 
@@ -35,14 +35,17 @@ function formatReport(state) {
 
 export function mountNewApi(ctx, config = {}) {
   const credentialRef = config.credentialRef ?? 'NEWAPI_API_KEY'
-  const baseUrl = typeof config.baseUrl === 'string' && config.baseUrl.length > 0 ? config.baseUrl.replace(/\/+$/, '') : null
-
-  if (!baseUrl) {
+  if (typeof config.baseUrl !== 'string' || config.baseUrl.length === 0) {
     // Config-only provider: without a site URL there is nothing to poll.
     // Mount nothing, but say why once.
     console.warn('usage: provider "newapi" has no baseUrl; set one in the bundle config to enable it.')
     return
   }
+  // The outbound policy (net.js checkedBaseUrl): a self-hosted site on https,
+  // on loopback http, or on LAN http with allowHttp: true. A refused base
+  // mounts nothing and logs one warning.
+  const baseUrl = checkedBaseUrl('newapi', config.baseUrl, config)
+  if (baseUrl === null) return
 
   mountProvider(ctx, {
     id: 'newapi',

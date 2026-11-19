@@ -13,7 +13,7 @@
  * end_time / weekly_end_time are epoch ms.
  */
 
-import { epochMsToIso, fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
+import { checkedBaseUrl, epochMsToIso, fetchUsageJson, isRecord, mountProvider, num, usageFooter } from './net.js'
 
 const DEFAULT_CREDENTIAL_REF = 'MINIMAX_API_KEY'
 const BASE_URL_CN = 'https://api.minimaxi.com'
@@ -41,12 +41,16 @@ function resetIso(ms) {
 
 export function mountMiniMax(ctx, config = {}) {
   const credentialRef = config.credentialRef ?? DEFAULT_CREDENTIAL_REF
-  const baseUrl =
+  const configuredBase =
     typeof config.baseUrl === 'string' && config.baseUrl.length > 0
-      ? config.baseUrl.replace(/\/+$/, '')
+      ? config.baseUrl
       : config.region === 'global'
         ? BASE_URL_GLOBAL
         : BASE_URL_CN
+  // The outbound policy (net.js checkedBaseUrl): a refused base mounts
+  // nothing and logs one warning.
+  const baseUrl = checkedBaseUrl('minimax', configuredBase, config)
+  if (baseUrl === null) return
   const url = baseUrl + '/v1/api/openplatform/coding_plan/remains'
 
   mountProvider(ctx, {

@@ -34,7 +34,7 @@ import {
   ENDPOINT_CREDITS,
   ENDPOINT_KEY,
 } from './openrouter-defaults.js'
-import { mountSurfaces, safeMessage, usageFooter } from './net.js'
+import { cleanDetail, mountSurfaces, requestJson, safeMessage, usageFooter } from './net.js'
 
 
 /**
@@ -120,55 +120,36 @@ function errorMessage(body, status) {
 }
 
 /**
- * One GET against OpenRouter under the shared timeout budget.
+ * One GET against OpenRouter through the shared request function (net.js
+ * requestJson: same-origin redirects only, 1 MiB cap, the timeout covering the
+ * body read, the key redacted from the reply). The failure mapping stays
+ * OpenRouter's own: 403 is management-key-required.
  * @returns the parsed body, or an object describing the failure.
  */
 async function getOpenRouter(url, key, timeoutMs) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-
-  let response
-  try {
-    response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${key}`,
-        Accept: 'application/json',
-      },
-      signal: controller.signal,
-    })
-  } catch (error) {
-    clearTimeout(timer)
-    const aborted = error?.name === 'AbortError'
-    return { failure: aborted ? 'timeout' : 'network', detail: aborted ? `No reply within ${timeoutMs} ms.` : safeMessage(error) }
+  const reply = await requestJson(url, {
+    headers: {
+      Authorization: `Bearer ${key}`,
+      Accept: 'application/json',
+    },
+    timeoutMs,
+  })
+  if (reply.failure !== undefined) return reply
+  if (reply.notJson) {
+    return { failure: 'bad-response', status: reply.status, detail: `HTTP ${reply.status} with a body that is not JSON.` }
   }
 
-  // Read the body under the same timeout — a hung body must not outlive it.
-  let body
-  try {
-    body = await response.json()
-  } catch (error) {
-    clearTimeout(timer)
-    const aborted = error?.name === 'AbortError'
+  if (!reply.ok) {
     return {
-      failure: aborted ? 'timeout' : 'bad-response',
-      status: response.status,
-      detail: aborted ? `No reply within ${timeoutMs} ms.` : `HTTP ${response.status} with a body that is not JSON.`,
-    }
-  }
-  clearTimeout(timer)
-
-  if (!response.ok) {
-    return {
-      failure: response.status === 403 ? 'management-key-required' : `http-${response.status}`,
-      status: response.status,
-      detail: errorMessage(body, response.status),
+      failure: reply.status === 403 ? 'management-key-required' : `http-${reply.status}`,
+      status: reply.status,
+      detail: errorMessage(reply.body, reply.status),
     }
   }
 
-  const data = body?.data
+  const data = reply.body?.data
   if (!data || typeof data !== 'object') {
-    return { failure: 'bad-response', status: response.status, detail: 'Reply carried no data object.' }
+    return { failure: 'bad-response', status: reply.status, detail: 'Reply carried no data object.' }
   }
   return { data }
 }
@@ -313,11 +294,14 @@ export function mountOpenRouter(ctx, config = {}) {
     try {
       return await attempt()
     } catch (error) {
-      publish({ status: 'error', error: 'unexpected', detail: safeMessage(error), attemptedAt: Date.now() })
+      publish({ status: 'error', error: 'unexpected', detail: cleanDetail(safeMessage(error)), attemptedAt: Date.now() })
       return cache.state
     }
   }
 
+  // Every detail below goes through cleanDetail: one line, at most 300
+  // characters. requestJson has already redacted the key from the reply and
+  // from its own failure texts.
   async function attempt() {
 
     // Step 1 — resolve the key. Per-call read, never cached.
@@ -328,7 +312,7 @@ export function mountOpenRouter(ctx, config = {}) {
       publish({
         status: 'error',
         error: 'credential-read-failed',
-        detail: safeMessage(error),
+        detail: cleanDetail(safeMessage(error)),
         attemptedAt: Date.now(),
       })
       return cache.state
@@ -352,7 +336,7 @@ export function mountOpenRouter(ctx, config = {}) {
       publish({
         status: 'error',
         error: primary.failure,
-        detail: primary.detail,
+        detail: cleanDetail(primary.detail),
         attemptedAt: Date.now(),
       })
       return cache.state
@@ -371,7 +355,7 @@ export function mountOpenRouter(ctx, config = {}) {
           // An ordinary key is expected here: the refusal is information,
           // not a fault. The panel renders it as a note.
           error: credits.failure,
-          detail: credits.detail,
+          detail: cleanDetail(credits.detail),
         }
       }
     }

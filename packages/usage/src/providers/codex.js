@@ -7,7 +7,7 @@
  * spend_control, and rate_limit_reset_credits.
  */
 
-import { epochMsToIso, fetchUsageJson, mountProvider, num, usageFooter } from './net.js'
+import { checkedBaseUrl, epochMsToIso, fetchUsageJson, mountProvider, num, usageFooter } from './net.js'
 
 const DEFAULT_CREDENTIAL_REF = 'llm-pi-ai/openai-codex'
 const DEFAULT_BASE = 'https://chatgpt.com/backend-api'
@@ -59,7 +59,15 @@ function formatReport(state) {
 
 export function mountCodex(ctx, config = {}) {
   const credentialRef = config.credentialRef ?? DEFAULT_CREDENTIAL_REF
-  const baseUrl = (typeof config.baseUrl === 'string' && config.baseUrl.length > 0 ? config.baseUrl : DEFAULT_BASE).replace(/\/+$/, '')
+  // The outbound policy (net.js checkedBaseUrl): a refused base mounts
+  // nothing and logs one warning. A base on another origin than chatgpt.com
+  // still works, but the ChatGPT sign-in token then goes there: one warning
+  // says so.
+  const baseUrl = checkedBaseUrl('codex', typeof config.baseUrl === 'string' && config.baseUrl.length > 0 ? config.baseUrl : DEFAULT_BASE, config, {
+    oauthDefault: DEFAULT_BASE,
+    tokenName: 'ChatGPT sign-in token',
+  })
+  if (baseUrl === null) return
   const url = baseUrl + '/wham/usage'
 
   mountProvider(ctx, {
