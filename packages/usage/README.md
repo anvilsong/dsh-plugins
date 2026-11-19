@@ -107,6 +107,17 @@ button instead.
 /provider-login anthropic
 ```
 
+The command runs OAuth only. It writes nothing into the conversation: the
+sign-in link, any code, and progress appear in a question in the composer area.
+When the provider asks for something, the link is shown above that request in
+the same question. While the flow waits on the browser, the question offers only
+**Cancel sign-in**. Expand the question text if it is cut off, then copy the link.
+Cancelling or dismissing a question ends the sign-in.
+
+API keys are entered in **Settings → Models**. `/provider-login <provider> api-key`
+is refused, because a question cannot mask a typed key. For the same reason, an
+OAuth flow that asks for a secret is cancelled.
+
 ## Providers
 
 | Provider | Source | Shows | Command | Chip shows under |
