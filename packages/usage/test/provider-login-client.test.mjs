@@ -189,6 +189,7 @@ async function boot(route, options = {}) {
   render()
   await settle()
   return {
+    React,
     get rendered() { return rendered },
     get loginRendered() { return loginRendered },
     render,
@@ -367,6 +368,42 @@ test('text prompt uses theme tokens and native secondary button styling', async 
   assert.ok(findByText(h.loginRendered, 'Signed in with Claude'))
 })
 
+/** The Metric cell whose label reads `label`: its value node and optional sub-line node. */
+function metric(node, label) {
+  const cell = find(node, (candidate) => (candidate.children ?? []).some((child) => child?.children?.includes?.(label)))
+  assert.ok(cell, `metric "${label}" is rendered`)
+  const [labelNode, value, sub] = cell.children
+  assert.equal(labelNode.children[0], label)
+  return { value, sub: sub ?? null }
+}
+
+/** Render the composer chip of the provider routed by `route`, from the state `boot` seeded. */
+function renderChip(h, route) {
+  const provider = globalThis.__testProviders.find((candidate) => candidate.gate.includes(route))
+  return h.React.createElement(provider.chip, { store: provider.store, getNs: () => undefined, title: provider.title })
+}
+
+function chipText(chip) {
+  const button = findByType(chip, 'button')
+  return button.children.filter((child) => child?.type === 'b').map((child) => child.children[0])
+}
+
+function chipDot(chip) {
+  return findByClass(chip, 'kmup-dot').props.className
+}
+
+function claudeState(extra) {
+  return {
+    status: 'ready',
+    data: {
+      kind: 'quota',
+      quotas: {},
+      windows: [],
+      extra: { enabled: true, balanceCents: 1250, monthlyLimitCents: 5000, usedRatio: 0.25, currency: 'USD', disabledReason: null, ...extra },
+    },
+  }
+}
+
 function expandUsage(h, title) {
   const toggle = find(h.rendered, (node) => node.type === 'button' && node.props?.title === `${title} usage`)
   assert.ok(toggle, `${title} usage summary is visible`)
@@ -445,9 +482,13 @@ test('Claude summary and quota panel present only returned windows and account d
   assert.ok(findByText(h.rendered, 'Claude'))
   assert.ok(findByText(h.rendered, 'subscription quota'))
   assert.ok(findByText(h.rendered, '7-day window'))
-  assert.ok(findByText(h.rendered, 'Extra Usage balance'))
-  assert.ok(findByText(h.rendered, 'Monthly cap'))
-  assert.ok(find(h.rendered, (node) => (node.children ?? []).some((child) => typeof child === 'string' && child.includes('$50.00'))))
+  // `used_credits` is money USED, so the panel must not call it a balance.
+  assert.equal(findByText(h.rendered, 'Extra Usage balance'), null)
+  assert.equal(findByText(h.rendered, 'Topped up'), null)
+  assert.equal(findByText(h.rendered, 'Monthly cap'), null)
+  const extra = metric(h.rendered, 'Extra usage used')
+  assert.equal(extra.value.children[0], '$12.50')
+  assert.equal(extra.sub.children[0], 'monthly limit $50.00')
   assert.ok(findByText(h.rendered, 'Usage credits spent'))
   assert.ok(findByText(h.rendered, 'limit $50.00'))
   assert.ok(findByText(h.rendered, 'Claude Code: 100%'))
@@ -456,4 +497,91 @@ test('Claude summary and quota panel present only returned windows and account d
   assert.ok(findByClass(h.rendered, 'kmup-grid'))
   const bar = findByClass(h.rendered, 'kmup-bar')
   assert.equal(bar.children[0].props.style.width, '100%')
+})
+
+for (const [usedRatio, level] of [[0.96, 'bad'], [0.85, 'warn'], [0.25, 'ok'], [null, null]]) {
+  test(`Claude extra usage colour follows usedRatio ${usedRatio} through quotaLevel`, async () => {
+    const h = await boot('anthropic', { configured: true, usageState: claudeState({ usedRatio }) })
+    expandUsage(h, 'Claude')
+    const expected = level ? `kmup-value kmup-${level}` : 'kmup-value'
+    assert.equal(metric(h.rendered, 'Extra usage used').value.props.className, expected)
+
+    const chip = renderChip(h, 'anthropic')
+    assert.equal(chipDot(chip), level ? `kmup-dot kmup-${level}` : 'kmup-dot')
+  })
+}
+
+test('Claude $49 of a $50 cap reads as money used in the panel, chip and summary', async () => {
+  const h = await boot('anthropic', {
+    configured: true,
+    usageState: claudeState({ balanceCents: 4900, monthlyLimitCents: 5000, usedRatio: 0.98 }),
+  })
+  assert.ok(findByText(h.rendered, 'extra used $49.00'))
+  expandUsage(h, 'Claude')
+  const extra = metric(h.rendered, 'Extra usage used')
+  assert.equal(extra.value.children[0], '$49.00')
+  assert.equal(extra.value.props.className, 'kmup-value kmup-bad')
+  assert.equal(extra.sub.children[0], 'monthly limit $50.00')
+  assert.equal(findByText(h.rendered, 'Extra Usage balance'), null)
+
+  const chip = renderChip(h, 'anthropic')
+  assert.deepEqual(chipText(chip), ['$49.00 extra used'])
+  assert.equal(chipDot(chip), 'kmup-dot kmup-bad')
+})
+
+test('Claude extra usage whose enabled flag is null is still read by key presence as money used', async () => {
+  const h = await boot('anthropic', {
+    configured: true,
+    usageState: claudeState({ enabled: null, usedRatio: null }),
+  })
+  assert.ok(findByText(h.rendered, 'extra used $12.50'))
+  assert.deepEqual(chipText(renderChip(h, 'anthropic')), ['$12.50 extra used'])
+})
+
+test('Kimi Extra Usage wallet keeps its balance wording and balance/total colour rule', async () => {
+  for (const [balanceCents, level] of [[300, 'bad'], [1500, 'warn'], [9000, 'ok']]) {
+    const h = await boot('kimi-coding', {
+      keyConfigured: true,
+      usageState: {
+        status: 'ready',
+        data: {
+          quotas: {},
+          windows: [],
+          extra: { balanceCents, totalCents: 10000, monthlyChargeLimitEnabled: false, monthlyChargeLimitCents: 0, monthlyUsedCents: 0, currency: 'USD' },
+        },
+      },
+    })
+    const money = `$${(balanceCents / 100).toFixed(2)}`
+    assert.ok(findByText(h.rendered, `extra ${money}`))
+    expandUsage(h, 'Kimi Code')
+    const balance = metric(h.rendered, 'Extra Usage balance')
+    assert.equal(balance.value.children[0], money)
+    assert.equal(balance.value.props.className, `kmup-value kmup-${level}`)
+    assert.equal(metric(h.rendered, 'Topped up').value.children[0], '$100.00')
+    assert.equal(findByText(h.rendered, 'Extra usage used'), null)
+
+    const chip = renderChip(h, 'kimi-coding')
+    assert.deepEqual(chipText(chip), [`${money} extra`])
+    assert.equal(chipDot(chip), `kmup-dot kmup-${level}`)
+  }
+})
+
+test('Codex credit balance without a total shows no level class', async () => {
+  const h = await boot('openai-codex', {
+    configured: true,
+    usageState: {
+      status: 'ready',
+      data: { kind: 'quota', quotas: {}, windows: [], extra: { balanceCents: 1250, currency: 'USD' }, credits: { hasCredits: true, unlimited: false, balance: '12.50' } },
+    },
+  })
+  assert.ok(findByText(h.rendered, 'credits 12.50 · extra $12.50'))
+  expandUsage(h, 'OpenAI Codex')
+  const balance = metric(h.rendered, 'Extra Usage balance')
+  assert.equal(balance.value.children[0], '$12.50')
+  assert.equal(balance.value.props.className, 'kmup-value')
+  assert.equal(findByText(h.rendered, 'Extra usage used'), null)
+
+  const chip = renderChip(h, 'openai-codex')
+  assert.deepEqual(chipText(chip), ['$12.50 extra'])
+  assert.equal(chipDot(chip), 'kmup-dot')
 })

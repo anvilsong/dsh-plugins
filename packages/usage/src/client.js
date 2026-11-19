@@ -257,6 +257,26 @@ window.__ModuleLoader__.load({
       return 'ok'
     }
 
+    /**
+     * Claude's extra-usage record reports money USED (`balanceCents` holds
+     * `used_credits`) and always carries an `enabled` key; a Kimi wallet or a
+     * Codex credit balance never does, so key presence tells them apart.
+     */
+    function isExtraUsed(extra) {
+      return Boolean(extra) && Object.prototype.hasOwnProperty.call(extra, 'enabled')
+    }
+
+    /**
+     * Indicator level of an extra-usage amount. Claude: the used ratio the
+     * provider computed. Wallet: balance left against the topped-up total.
+     * A balance with no total (Codex credits) has no level.
+     */
+    function extraLevel(extra) {
+      if (!extra) return null
+      if (isExtraUsed(extra)) return quotaLevel(extra.usedRatio)
+      return budgetLevel(extra.balanceCents, extra.totalCents)
+    }
+
     /** The worst ratio across the Kimi quotas that are present. */
     function worstRatio(quotas) {
       if (!quotas) return null
@@ -671,10 +691,30 @@ window.__ModuleLoader__.load({
       if (s && s.endpoint) note.push(s.endpoint.replace(/^https:\/\//, ''))
       if (s && s.fetchedAt) note.push('read ' + new Date(s.fetchedAt).toLocaleTimeString())
 
-      // Extra Usage (booster wallet): only when the account has one.
+      // Extra Usage: Claude reports money USED against a monthly limit; a Kimi
+      // booster wallet reports a BALANCE. Only when the account has one.
       const extraBlocks = []
       const extra = d && d.extra ? d.extra : null
-      if (extra) {
+      if (extra && isExtraUsed(extra)) {
+        extraBlocks.push(
+          React.createElement(
+            'div',
+            { className: 'kmup-grid', key: 'extra-grid' },
+            React.createElement(Metric, {
+              px: 'kmup', key: 'extra', label: 'Extra usage used',
+              value: centsMoney(extra.balanceCents, extra.currency),
+              cls: extraLevel(extra),
+              sub: [
+                extra.monthlyLimitCents !== null && extra.monthlyLimitCents !== undefined
+                  ? 'monthly limit ' + centsMoney(extra.monthlyLimitCents, extra.currency)
+                  : null,
+                extra.enabled === false ? 'disabled' : null,
+                extra.disabledReason || null,
+              ].filter(Boolean).join(' · ') || null,
+            }),
+          ),
+        )
+      } else if (extra) {
         extraBlocks.push(
           React.createElement(
             'div',
@@ -682,12 +722,7 @@ window.__ModuleLoader__.load({
             React.createElement(Metric, {
               px: 'kmup', key: 'balance', label: 'Extra Usage balance',
               value: centsMoney(extra.balanceCents, extra.currency),
-              cls:
-                extra.totalCents > 0 && extra.balanceCents / extra.totalCents <= 0.05
-                  ? 'bad'
-                  : extra.totalCents > 0 && extra.balanceCents / extra.totalCents <= 0.2
-                    ? 'warn'
-                    : 'ok',
+              cls: extraLevel(extra),
             }),
             extra.totalCents !== null && extra.totalCents !== undefined
               ? React.createElement(Metric, {
@@ -795,7 +830,8 @@ window.__ModuleLoader__.load({
 
     /**
      * The Kimi Code composer chip: the worst quota percentage and, when
-     * present, the Extra Usage balance, with a colour dot. Click opens the
+     * present, the Extra Usage balance (Claude: the amount used), with a
+     * colour dot. Click opens the
      * panel in a popover.
      */
     function KimiChip({ store, getNs, title = 'Kimi Code' }) {
@@ -809,19 +845,14 @@ window.__ModuleLoader__.load({
       const worst = d ? (d.quotas ? worstRatio(d.quotas) : worstWindow(d.windows)) : null
       const wlv = worst !== null ? quotaLevel(worst) : null
       const extra = d && d.extra ? d.extra : null
-      const elv =
-        extra && extra.totalCents > 0
-          ? extra.balanceCents / extra.totalCents <= 0.05
-            ? 'bad'
-            : extra.balanceCents / extra.totalCents <= 0.2
-              ? 'warn'
-              : 'ok'
-          : null
+      const elv = extraLevel(extra)
       const dot = wlv === 'bad' || elv === 'bad' ? 'bad' : wlv === 'warn' || elv === 'warn' ? 'warn' : wlv || elv ? 'ok' : ''
 
       const parts = []
       if (worst !== null) parts.push(React.createElement('b', { key: 'q' }, pct(worst)))
-      if (extra) parts.push(React.createElement('b', { key: 'x' }, centsMoney(extra.balanceCents, extra.currency) + ' extra'))
+      if (extra) {
+        parts.push(React.createElement('b', { key: 'x' }, centsMoney(extra.balanceCents, extra.currency) + (isExtraUsed(extra) ? ' extra used' : ' extra')))
+      }
       if (!parts.length) {
         parts.push(React.createElement('span', { key: 'empty' }, s && s.status === 'error' ? 'unavailable' : 'usage'))
       }
@@ -1277,7 +1308,7 @@ window.__ModuleLoader__.load({
         const credits = creditText(d.credits)
         if (credits !== null) parts.push(`credits ${credits}`)
         if (d.extra) {
-          parts.push(typeof d.extra.enabled === 'boolean'
+          parts.push(isExtraUsed(d.extra)
             ? `extra used ${centsMoney(d.extra.balanceCents, d.extra.currency)}`
             : `extra ${centsMoney(d.extra.balanceCents, d.extra.currency)}`)
         }
