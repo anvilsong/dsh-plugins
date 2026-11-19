@@ -1,5 +1,12 @@
 # Bundle patch for dsh-plugin-explainer.
 # One insert row; the client half loads through the package's dsh.client entry.
+# dataDir is the folder where explanation pages go (<dataDir>/YYYY-MM-DD-<slug>/
+# index.html). The default lives under the DSH home and is shared by all
+# profiles; set an absolute path in a profile's own patch to isolate it. A
+# profile override replaces this whole config block, and a home-level
+# <DSH home>/cordis.patch.yml applies after the profile patch.
 - insert:
     - id: explainer
       name: dsh-plugin-explainer
+      config:
+        dataDir: !!js dshHomePath('explainer')
