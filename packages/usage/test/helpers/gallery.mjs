@@ -469,7 +469,7 @@ export const SCENARIOS = [
   }),
   // ---- chips ----
   chipScenario({ id: 'chip-openrouter', provider: 'openrouter', title: 'OpenRouter chip', note: 'Used amount plus the account balance left; green dot.', state: ready('openrouter') }),
-  chipScenario({ id: 'chip-openrouter-low', provider: 'openrouter', title: 'OpenRouter chip, low budget', note: 'Remaining budget under 20%: amber dot.', state: fixtures.openrouter({ remaining: 6, limit: 50, account: { totalCredits: 100, totalUsage: 99, remaining: 1 } }) }),
+  chipScenario({ id: 'chip-openrouter-low', provider: 'openrouter', title: 'OpenRouter chip, low budget', note: 'Remaining budget under 20% turns the dot amber, under 5% red; here the account has 1% left: red dot.', state: fixtures.openrouter({ remaining: 6, limit: 50, account: { totalCredits: 100, totalUsage: 99, remaining: 1 } }) }),
   chipScenario({ id: 'chip-kimi', provider: 'kimi', title: 'Kimi chip (quota chip with extra balance)', note: 'Worst quota percentage plus the Extra Usage balance; amber dot at 81%.', state: ready('kimi') }),
   chipScenario({ id: 'chip-codex', provider: 'codex', title: 'Codex chip (same chip type as Kimi)', note: 'Worst window percentage plus the credit balance.', state: ready('codex') }),
   chipScenario({

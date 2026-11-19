@@ -67,9 +67,9 @@ function rects({ left = 20, top = 760, width = 140, height = 22, panel = { width
 }
 
 /** Boot the client for one chip and mount it. */
-async function mountChip(entry, { state = entry.state(), stub, viewport, rect = rects() } = {}) {
+async function mountChip(entry, { state = entry.state(), stub, viewport, rect = rects(), boot = {} } = {}) {
   const usage = createUsageNamespaceStub(state, stub)
-  const h = await bootClient({ namespaces: { [entry.namespace]: usage }, activeProvider: entry.route, viewport })
+  const h = await bootClient({ namespaces: { [entry.namespace]: usage }, activeProvider: entry.route, viewport, ...boot })
   const mount = await h.mountChip(`${entry.id}-usage-chip`, {}, { rect })
   return { h, mount, usage }
 }
@@ -584,4 +584,256 @@ test('the gallery shows each chip family closed and open, the placement clamps a
   const bar = await renderScenario(byId.get('labelled-bar-claude'))
   assert.ok(bar.html.includes('7-day window 74.0% used'))
   assert.match(bar.html, /role="progressbar"[^>]*aria-valuenow="74"/)
+})
+
+// ---------------------------------------------------------------------------
+// 10. Follow-up H: focus, Escape, frame top, scroll, observers, fallbacks, clamp
+// ---------------------------------------------------------------------------
+
+/** The style props the dialog has right now. */
+const dialogStyle = (mount) => dialogOf(mount.tree).props.style
+
+test('the harness focus() refuses an element that is not rendered (visibility hidden, display none, or such an ancestor), like Chrome', () => {
+  const document = { activeElement: null, body: {} }
+  const tree = {
+    type: 'div',
+    props: { ref: { current: null }, style: { display: 'none' } },
+    children: [{ type: 'button', props: { ref: { current: null } }, children: [] }],
+  }
+  const hiddenOne = { type: 'span', props: { ref: { current: null }, style: { visibility: 'hidden' } }, children: [] }
+  const shown = { type: 'span', props: { ref: { current: null }, style: { left: 1 } }, children: [] }
+  const [outer, inner] = attachRefs(tree, { document })
+  const [hidden] = attachRefs(hiddenOne, { document })
+  const [visible] = attachRefs(shown, { document })
+  outer.focus()
+  inner.focus()
+  hidden.focus()
+  assert.equal(document.activeElement, null, 'nothing hidden took the focus')
+  assert.equal(inner.focused, false)
+  visible.focus()
+  assert.equal(document.activeElement, visible)
+})
+
+test('opening ends with the focus inside a visible, placed dialog (the hidden first render cannot take it)', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const { h, mount } = await mountChip(chip('zhipu'))
+  try {
+    await open(mount)
+    const dialog = dialogOf(mount.tree)
+    assert.equal(dialog.props.style.visibility, undefined, 'visible')
+    assert.equal(typeof dialog.props.style.maxHeight, 'number', 'placed')
+    assert.equal(h.document.activeElement, elementOf(dialog), 'the dialog holds the focus')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('Tab away from the trigger closes the popover; moving to the dialog, or out of the window, does not', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const { h, mount } = await mountChip(chip('kimi'))
+  try {
+    const dialog = await open(mount)
+    const onBlur = triggerOf(mount.tree).props.onBlur
+    assert.equal(typeof onBlur, 'function', 'the trigger watches its own blur')
+    onBlur({ relatedTarget: elementOf(dialog) })
+    await mount.settle()
+    assert.ok(dialogOf(mount.tree), 'focus moving into the dialog keeps it open')
+    triggerOf(mount.tree).props.onBlur({ relatedTarget: null })
+    await mount.settle()
+    assert.ok(dialogOf(mount.tree), 'switching windows keeps it open')
+    triggerOf(mount.tree).props.onBlur({ relatedTarget: elementOf(triggerOf(mount.tree)) })
+    await mount.settle()
+    assert.ok(dialogOf(mount.tree), 'focus staying in the chip keeps it open')
+    triggerOf(mount.tree).props.onBlur({ relatedTarget: outsideElement(h) })
+    await mount.settle()
+    assert.equal(dialogOf(mount.tree), null, 'Tab to another element closed it')
+    assert.deepEqual(listenerCounts(h), NO_LISTENERS)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('Escape that closes the popover is cancelled (the host stop shortcut then ignores it); one already cancelled, a composing one and other keys are left alone', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const { h, mount } = await mountChip(chip('zhipu'))
+  try {
+    await open(mount)
+    const other = h.document.dispatch('keydown', { key: 'a' })
+    assert.equal(other.defaultPrevented, false, 'other keys are not cancelled')
+    const composing = h.document.dispatch('keydown', { key: 'Escape', isComposing: true })
+    await mount.settle()
+    assert.equal(composing.defaultPrevented, false, 'an IME Escape is not ours')
+    assert.ok(dialogOf(mount.tree), 'an IME Escape keeps it open')
+    const claimed = h.document.dispatch('keydown', { key: 'Escape', defaultPrevented: true })
+    await mount.settle()
+    assert.ok(dialogOf(mount.tree), 'an Escape somebody else already cancelled keeps it open')
+    assert.equal(h.document.listenerCount('keydown'), 1)
+    const event = h.document.dispatch('keydown', { key: 'Escape' })
+    await mount.settle()
+    assert.equal(dialogOf(mount.tree), null, 'Escape closed it')
+    assert.equal(event.defaultPrevented, true, 'the Escape that closed the popover is cancelled')
+    assert.equal(claimed.defaultPrevented, true)
+    const after = h.document.dispatch('keydown', { key: 'Escape' })
+    assert.equal(after.defaultPrevented, false, 'a closed chip does not touch Escape')
+  } finally {
+    h.dispose()
+  }
+})
+
+/** The measured maxHeight of a popover opened above a trigger 420px from the top of an 800px window (300px panel: it fits above unless the frame inset is big). */
+async function maxHeightWith(computed, { top = 420, boot } = {}) {
+  const { h, mount } = await mountChip(chip('anthropic'), { rect: rects({ left: 20, top }), viewport: { width: 1280, height: 800 }, boot })
+  try {
+    if (computed !== undefined) h.window.getComputedStyle = computed
+    await open(mount)
+    return dialogStyle(mount).maxHeight
+  } finally {
+    h.dispose()
+  }
+}
+const styleOf = (value) => () => ({ getPropertyValue: (name) => (name === '--dsh-frame-overlay-top' ? value : '') })
+
+test('the frame top inset is honoured as px, as a calc() sum of px (the macOS value), or measured with a probe for anything else; unusable values fall back to 12px', { timeout: TEST_TIMEOUT_MS }, async () => {
+  assert.equal(await maxHeightWith(undefined), 420 - 8 - 12, 'no getComputedStyle: the 12px window inset')
+  assert.equal(await maxHeightWith(styleOf('68px')), 420 - 8 - 68)
+  assert.equal(await maxHeightWith(styleOf('calc(48px + 20px)')), 420 - 8 - 68, 'the desktop app value, a calc string')
+  assert.equal(await maxHeightWith(styleOf(' calc( 100px - 32px ) ')), 420 - 8 - 68)
+  assert.equal(await maxHeightWith(styleOf('')), 420 - 8 - 12, 'not defined')
+  assert.equal(await maxHeightWith(styleOf('banana')), 420 - 8 - 12, 'nonsense')
+  assert.equal(await maxHeightWith(() => { throw new Error('no style') }), 420 - 8 - 12, 'a throwing getComputedStyle')
+  assert.equal(await maxHeightWith(styleOf('8px')), 420 - 8 - 12, 'a smaller inset never goes under 12px')
+})
+
+test('a frame top that is not a px sum is measured with a probe element that is removed again', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const { h, mount } = await mountChip(chip('anthropic'), { rect: rects({ left: 20, top: 420 }) })
+  try {
+    h.window.getComputedStyle = styleOf('max(60px, 8vh)')
+    const probes = []
+    h.document.createElement = () => {
+      const probe = { style: {}, getBoundingClientRect: () => ({ height: 70, width: 0 }), parentNode: null }
+      probes.push(probe)
+      return probe
+    }
+    await open(mount)
+    assert.equal(dialogStyle(mount).maxHeight, 420 - 8 - 70, 'the probe height is the inset')
+    assert.ok(probes.length >= 1)
+    assert.match(probes[0].style.cssText ?? '', /position:fixed/)
+    assert.match(probes[0].style.cssText ?? '', /max\(60px, 8vh\)/, 'the probe takes the value as its height')
+    assert.deepEqual(h.document.body.children, [], 'the probe is removed')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('a scroll that does not move the trigger renders nothing again; one that moves it places the popover again', { timeout: TEST_TIMEOUT_MS }, async () => {
+  let top = 760
+  const { h, mount } = await mountChip(chip('anthropic'), { rect: (node) => rects({ left: 20, top })(node) })
+  try {
+    await open(mount)
+    const before = mount.renders
+    h.window.dispatch('scroll')
+    h.window.dispatch('scroll')
+    await mount.settle()
+    assert.equal(mount.renders, before, 'an unchanged place is not a state update')
+    top = 600
+    h.window.dispatch('scroll')
+    await mount.settle()
+    assert.equal(dialogStyle(mount).bottom, 800 - 600 + 8, 'the trigger moved: the popover follows')
+    assert.ok(mount.renders > before)
+  } finally {
+    h.dispose()
+  }
+})
+
+/** A ResizeObserver stub on the window that records what is observed. */
+function installResizeObserver(h) {
+  const observers = []
+  h.window.ResizeObserver = class {
+    constructor(callback) {
+      this.callback = callback
+      this.targets = []
+      this.disconnected = false
+      observers.push(this)
+    }
+    observe(target) { this.targets.push(target) }
+    disconnect() { this.disconnected = true; this.targets = [] }
+  }
+  return observers
+}
+
+test('the popover follows the trigger when the chip moves without a window resize: a ResizeObserver watches the chip, its row and the dialog while open, and is disconnected on close', { timeout: TEST_TIMEOUT_MS }, async () => {
+  let top = 760
+  const { h, mount } = await mountChip(chip('anthropic'), { rect: (node) => rects({ left: 20, top })(node) })
+  try {
+    const observers = installResizeObserver(h)
+    const dialog = await open(mount)
+    assert.equal(observers.length, 1)
+    const [observer] = observers
+    assert.ok(observer.targets.includes(elementOf(triggerOf(mount.tree))), 'the trigger is watched')
+    assert.ok(observer.targets.includes(elementOf(dialog)), 'the dialog is watched')
+    top = 500
+    observer.callback([])
+    await mount.settle()
+    assert.equal(dialogStyle(mount).bottom, 800 - 500 + 8)
+    await click(mount, triggerOf(mount.tree))
+    assert.equal(observer.disconnected, true, 'closing disconnects it')
+  } finally {
+    h.dispose()
+  }
+})
+
+test('without ResizeObserver (an old host) the popover still opens and follows resize and scroll', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const { h, mount } = await mountChip(chip('anthropic'))
+  try {
+    assert.equal(h.window.ResizeObserver, undefined)
+    await open(mount)
+    assert.ok(dialogOf(mount.tree))
+    assert.equal(h.window.listenerCount('resize'), 1)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('without react-dom the chip still opens, inline: the dialog sits inside the chip wrapper and no portal is made', { timeout: TEST_TIMEOUT_MS }, async () => {
+  for (const reactDom of [{}, { createPortal: 'not a function' }]) {
+    const { h, mount } = await mountChip(chip('anthropic'), { boot: { reactDom } })
+    try {
+      const dialog = await open(mount)
+      assert.equal(find(mount.tree, (node) => node.type === 'portal'), null, 'no portal')
+      const wrapper = find(mount.tree, (node) => node.props?.className === 'usage-chipwrap')
+      assert.equal(find(wrapper, (node) => node === dialog), dialog, 'inline, inside the chip wrapper')
+      assert.equal(dialog.props.role, 'dialog')
+    } finally {
+      h.dispose()
+    }
+  }
+})
+
+test('a host whose require("react-dom") throws still loads the client and opens the chip inline', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const { h, mount } = await mountChip(chip('kimi'), { boot: { reactDom: false } })
+  try {
+    const dialog = await open(mount)
+    assert.ok(dialog)
+    assert.equal(find(mount.tree, (node) => node.type === 'portal'), null)
+  } finally {
+    h.dispose()
+  }
+})
+
+test('the bar width is clamped to 0..100 percent for a ratio above 1 or below 0', { timeout: TEST_TIMEOUT_MS }, async () => {
+  const over = await mountChip(chip('anthropic'), { state: fixtures.anthropic({ sevenDay: 1.4 }) })
+  try {
+    const dialog = await open(over.mount)
+    const bar = progressbars(dialog)[0]
+    assert.equal(bar.children[0].props.style.width, '100%')
+    assert.equal(bar.props['aria-valuenow'], 100)
+  } finally {
+    over.h.dispose()
+  }
+  const under = await mountChip(chip('anthropic'), { state: fixtures.anthropic({ sevenDay: -0.2, fiveHour: -0.2 }) })
+  try {
+    const dialog = await open(under.mount)
+    const bar = progressbars(dialog)[0]
+    assert.equal(bar.children[0].props.style.width, '0%')
+    assert.equal(bar.props['aria-valuenow'], 0)
+  } finally {
+    under.h.dispose()
+  }
 })

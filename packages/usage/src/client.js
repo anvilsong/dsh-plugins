@@ -1461,16 +1461,61 @@ window.__ModuleLoader__.load({
       return ref.current
     }
 
+    /**
+     * The px of a plain length or a calc() sum of px lengths ('68px',
+     * 'calc(48px + 20px)', 'calc(100px - 32px)'), else null. The desktop app
+     * defines --dsh-frame-overlay-top as `calc(var(--dsh-frame-top-clearance)
+     * + 20px)` (AppFrame.module.css); reading it gives that calc() string
+     * (the var() is substituted, the calc() is not evaluated), which
+     * parseFloat would turn into NaN.
+     */
+    function pxLength(text) {
+      const calc = /^calc\(\s*(.*?)\s*\)$/i.exec(text)
+      const tokens = (calc ? calc[1] : text).split(/\s+/)
+      const px = (token) => (/^\d*\.?\d+px$/i.test(token) ? parseFloat(token) : /^0$/.test(token) ? 0 : null)
+      if (!calc && tokens.length !== 1) return null
+      if (tokens.length % 2 === 0) return null
+      let sum = px(tokens[0])
+      for (let index = 1; sum !== null && index < tokens.length; index += 2) {
+        const term = px(tokens[index + 1])
+        if (term === null || (tokens[index] !== '+' && tokens[index] !== '-')) return null
+        sum += tokens[index] === '+' ? term : -term
+      }
+      return sum
+    }
+
+    /** The px a CSS length resolves to, measured as the height of a hidden fixed probe the browser lays out; 0 when it cannot be measured. */
+    function probeLength(doc, value) {
+      if (!/^[\w\s().,%+*/-]+$/.test(value) || typeof doc.createElement !== 'function') return 0
+      const probe = doc.createElement('div')
+      probe.style.cssText = `position:fixed;top:0;left:0;width:0;visibility:hidden;pointer-events:none;height:${value}`
+      doc.body.appendChild(probe)
+      try {
+        const height = probe.getBoundingClientRect().height
+        return Number.isFinite(height) && height > 0 ? height : 0
+      } finally {
+        doc.body.removeChild(probe)
+      }
+    }
+
     /** The top inset the desktop frame reserves (`--dsh-frame-overlay-top`, which the host's dialogs honour), else 0. */
     function frameTop(win) {
       try {
-        const body = win.document && win.document.body
-        if (!body || typeof win.getComputedStyle !== 'function') return 0
-        const px = parseFloat(win.getComputedStyle(body).getPropertyValue('--dsh-frame-overlay-top'))
-        return Number.isFinite(px) ? px : 0
+        const doc = win.document
+        const root = doc && (doc.documentElement || doc.body)
+        if (!root || !doc.body || typeof win.getComputedStyle !== 'function') return 0
+        const value = String(win.getComputedStyle(root).getPropertyValue('--dsh-frame-overlay-top') ?? '').trim()
+        if (!value) return 0
+        const px = pxLength(value)
+        return px !== null ? Math.max(0, px) : probeLength(doc, value)
       } catch {
         return 0
       }
+    }
+
+    /** Whether two measured places are the same (so a scroll that moved nothing is no state update). */
+    function samePlace(a, b) {
+      return Boolean(a) && Boolean(b) && a.left === b.left && a.top === b.top && a.bottom === b.bottom && a.maxHeight === b.maxHeight
     }
 
     /**
@@ -1521,12 +1566,14 @@ window.__ModuleLoader__.load({
      *
      * The trigger is a button with aria-haspopup 'dialog', aria-expanded and,
      * while open, aria-controls. The popover is a non-modal dialog portaled to
-     * the body and placed by measurement (popoverPlace). Opening moves focus
-     * into it, so the keyboard reaches its Refresh button. Escape closes it and
-     * gives the focus back to the trigger, unless the focus already went
-     * elsewhere (the composer editor keeps it). A press or a click outside the
-     * chip and the dialog closes it and leaves the focus alone; so does focus
-     * moving to another element. Opening another chip closes it (openChip).
+     * the body and placed by measurement (popoverPlace). Once it is placed and
+     * visible, focus moves into it, so the keyboard reaches its Refresh button.
+     * Escape closes it (and is cancelled, so the host's stop shortcut does not
+     * count it) and gives the focus back to the trigger, unless the focus
+     * already went elsewhere (the composer editor keeps it). A press or a click
+     * outside the chip and the dialog closes it and leaves the focus alone; so
+     * does focus moving from the chip or the dialog to another element (Tab
+     * away). Opening another chip closes it (openChip).
      * Every listener goes away on close and on unmount.
      */
     function UsageChip({ store, getNs, title, chipTitle, dialogLabel, px, summary, panel }) {
@@ -1542,28 +1589,50 @@ window.__ModuleLoader__.load({
       const label = dialogLabel || name
       const face = chipFace({ px, title: name, health, ...summary(health) })
 
-      // Open: place it, re-place it on resize and scroll, and move focus into it.
+      // Open: place it, and place it again when the window resizes or scrolls
+      // or when the chip, its row or the dialog change size (the chip can move
+      // with no window resize: the composer grows, a sibling appears). A
+      // measurement that gives the same place is not a state update.
       useLayoutEffect(() => {
         if (!open) return undefined
         const win = typeof window !== 'undefined' ? window : null
         const measure = () => {
           const next = popoverPlace(triggerRef.current, panelRef.current, win)
-          if (next) setPlace(next)
+          if (next) setPlace((previous) => (samePlace(previous, next) ? previous : next))
         }
         measure()
-        if (panelRef.current && typeof panelRef.current.focus === 'function') panelRef.current.focus({ preventScroll: true })
         if (win && typeof win.addEventListener === 'function') {
           win.addEventListener('resize', measure)
           win.addEventListener('scroll', measure, true)
+        }
+        let observer = null
+        if (win && typeof win.ResizeObserver === 'function') {
+          try {
+            observer = new win.ResizeObserver(measure)
+            const row = rootRef.current && rootRef.current.parentElement
+            for (const element of [triggerRef.current, row, panelRef.current]) if (element) observer.observe(element)
+          } catch {
+            observer = null
+          }
         }
         return () => {
           if (win && typeof win.removeEventListener === 'function') {
             win.removeEventListener('resize', measure)
             win.removeEventListener('scroll', measure, true)
           }
+          if (observer) observer.disconnect()
           setPlace(null)
         }
       }, [open])
+
+      // Focus moves into the dialog once it is placed, so the keyboard reaches
+      // its Refresh button. The first render has visibility:hidden (it is not
+      // measured yet) and a browser does not focus a hidden element: asking
+      // for the focus then would leave it on the trigger.
+      const placed = place !== null
+      useLayoutEffect(() => {
+        if (open && placed && panelRef.current && typeof panelRef.current.focus === 'function') panelRef.current.focus({ preventScroll: true })
+      }, [open, placed])
 
       // Open: Escape and presses outside the chip and the dialog close it.
       React.useEffect(() => {
@@ -1577,8 +1646,12 @@ window.__ModuleLoader__.load({
         const onPress = (event) => {
           if (!inside(event.target)) setOpen(false)
         }
+        // Escape that closes the popover is cancelled: the host's stop
+        // shortcut acts on Escapes nobody cancelled, and this one is spent. An
+        // Escape somebody else already cancelled is theirs.
         const onKeyDown = (event) => {
-          if (event.key !== 'Escape' || event.isComposing) return
+          if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return
+          event.preventDefault()
           const active = doc.activeElement
           setOpen(false)
           if (!active || active === doc.body || inside(active)) {
@@ -1647,6 +1720,7 @@ window.__ModuleLoader__.load({
             'aria-label': face.label,
             title: label,
             onClick: toggle,
+            onBlur,
           },
           React.createElement('span', { className: `${px}-dot` + (face.dot ? ` ${px}-${face.dot}` : ''), 'aria-hidden': 'true' }),
           React.createElement('span', null, name),

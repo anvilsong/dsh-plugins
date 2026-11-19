@@ -212,6 +212,11 @@ export function createStubDocument() {
     children: [],
     parent: null,
     appendChild(element) { this.children.push(element); return element },
+    removeChild(element) {
+      const index = this.children.indexOf(element)
+      if (index >= 0) this.children.splice(index, 1)
+      return element
+    },
     contains(other) { return other === this },
   }
   const document = {
@@ -297,8 +302,21 @@ export function attachRefs(tree, { rect = DEFAULT_RECT, document = null, refs = 
             for (let current = other; current; current = current.parent) if (current === this) return true
             return false
           },
+          get hidden() {
+            for (let current = this; current; current = current.parent) {
+              const style = current.props?.style
+              if (style && (style.visibility === 'hidden' || style.display === 'none')) return true
+            }
+            return false
+          },
           getBoundingClientRect() { return { ...(typeof rect === 'function' ? rect(this.node) : rect) } },
+          /**
+           * Like Chrome, an element that is not rendered (its own inline style
+           * or an ancestor's: `visibility: hidden`, `display: none`) cannot
+           * take the focus: the call does nothing and the focus stays where it was.
+           */
           focus() {
+            if (this.hidden) return
             this.focused = true
             if (document) {
               if (document.activeElement && document.activeElement !== this) document.activeElement.focused = false
@@ -828,6 +846,9 @@ function effectFilter(option) {
  *   effects         'all' (default) | 'none' | [labels] | (label) => boolean
  *   viewport        { width, height } of the stub window (default 1280 x 800); `h.window`
  *                   can change it later
+ *   reactDom        what `require('react-dom')` answers: the fake ReactDOM (default), `false`
+ *                   (the require throws, like a host without react-dom) or any object
+ *                   (`{}`: a module without createPortal)
  *
  * `require('react-dom')` answers the fake ReactDOM (createPortal). Every
  * render pass of a mounted root, its effects and its unmount run with
@@ -861,6 +882,7 @@ export async function bootClient(options = {}) {
     mountGate,
     effects = 'all',
     viewport,
+    reactDom,
   } = options
   const modelDirectory = options.modelDirectory ?? (activeProvider !== undefined ? createFakeModelDirectory({ provider: activeProvider }) : undefined)
 
@@ -882,7 +904,10 @@ export async function bootClient(options = {}) {
   const { React, ReactDOM, createRoot } = createReactRuntime({ wrap: (fn) => withBrowserGlobals(fakeWindow, document, fn), document })
   const exportsValue = loaded[0].factory((specifier) => {
     if (specifier === 'react') return React
-    if (specifier === 'react-dom') return ReactDOM
+    if (specifier === 'react-dom') {
+      if (reactDom === false) throw new Error("Cannot find module 'react-dom'")
+      return reactDom === undefined ? ReactDOM : reactDom
+    }
     if (specifier === PRIMITIVES_SPECIFIER) return primitives
     throw new Error(`unexpected require(${JSON.stringify(specifier)}) from the client module`)
   })
