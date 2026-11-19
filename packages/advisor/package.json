@@ -38,7 +38,7 @@
     "zod": "4.4.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-tool-executor-native": ">=0.2.2-rc.3"
+    "@deepseek-ai/dsh-tool-executor-native": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-tool-executor-native": {

@@ -1112,7 +1112,7 @@ test('no plugin prompt, guard text, README or source names an external CLI, its 
 
 test('package.json: the native executor is an optional peer with a lower bound only; no engines pin and no new dependency', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-  assert.deepEqual(manifest.peerDependencies, { '@deepseek-ai/dsh-tool-executor-native': '>=0.2.2-rc.3' })
+  assert.deepEqual(manifest.peerDependencies, { '@deepseek-ai/dsh-tool-executor-native': '*' })
   assert.deepEqual(manifest.peerDependenciesMeta, { '@deepseek-ai/dsh-tool-executor-native': { optional: true } })
   assert.equal(Object.hasOwn(manifest, 'engines'), false, 'an engines.dsh mismatch would skip the whole bundle')
   assert.deepEqual(manifest.dependencies, { zod: '4.4.3' })
@@ -1127,7 +1127,7 @@ test('README: the ptc section names the behaviour, the assumptions, the failure 
     '`@deepseek-ai/dsh-tool-executor-native`', 'once, when the plugin starts', 'own Agent scope', 'once per Agent object',
     '`subagent/end`', '`agent/disposed`', 'plugin unload', 'presentation only', '`run_code` stays denied',
     'Host assumptions', 'run_code was requested: this session uses the PTC executor and the native executor could not be mounted for the advisor child (<reason>); run the Advisor from a session on the standard or cordis agent preset',
-    'run_code was requested again after the native executor was mounted', '`peerDependencies`', '`>=0.2.2-rc.3`', 'peerDependenciesMeta',
+    'run_code was requested again after the native executor was mounted', '`peerDependencies`', '`*`', 'a mismatch removes the Advisor, not just this feature', 'peerDependenciesMeta',
     'no `engines.dsh`', 'pnpm', '`tool_calls`', 'reason `not_called`', 'run_code in tools',
   ]) assert.ok(section.includes(phrase), phrase)
   assert.ok(readme.includes('mutations, messaging, further delegation, and `run_code` are denied'), 'the verifier line is kept')

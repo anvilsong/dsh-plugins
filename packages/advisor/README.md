@@ -575,15 +575,18 @@ What the plugin does:
   start of the same object keeps it). The mount is disposed at `subagent/end`,
   at `agent/disposed` and at plugin unload. An invalid or refused child is never
   mounted, and the lead's executor is not touched. Once the mount is disposed,
-  the Host keeps the child's scope without an executor, so a child that ran on
-  after that without a new start could call no tool at all; a new start mounts
-  again.
+  the Host keeps the child's scope without an executor and its next model step
+  fails outright (the executor is unavailable); this only happens when the
+  plugin is unloaded while a child is running, and a new start mounts again.
 - The nearest scope selects the executor, so the child is offered `read`,
   `grep`, `glob` and its scoped tools directly.
-- It mounts in every session, also on the standard and cordis presets, where it
-  changes nothing. The Host gives a plugin no way to ask which executor a scope
-  uses: the `run_code` transport is not a registered tool, so
-  `tools.get('run_code', agent)` cannot tell.
+- It mounts in every session, also on the standard and cordis presets, where
+  the child is already native and the mount adds nothing the child can see. The
+  Host gives a plugin no way to ask which executor a scope uses: the `run_code`
+  transport is not a registered tool, so `tools.get('run_code', agent)` cannot
+  tell. Fail fast below applies in every session: a model that asks for a
+  `run_code` it was never offered can have its run closed, and the reason text
+  then names the PTC executor although the session is not on that preset.
 - The mount is presentation only. The guards and the captured definitions are
   unchanged, `run_code` stays denied, and a mount that fails does not stop or
   invalidate a child by itself.
@@ -636,15 +639,16 @@ in `peerDependencies` with the range `>=0.2.2-rc.3`, marked optional in
 `peerDependenciesMeta`, and adds no runtime dependency. A bare import of a Host
 package resolves to the installation's copy only when the importing package
 lists it there; an undeclared one is not found, or resolves a private copy. The
-range is a lower bound only: a bundle without `engines.dsh` has its
-`@deepseek-ai/dsh-*` peer ranges checked against the DSH version, and is
-skipped when they do not match, so later DSH versions keep loading the plugin
-and versions before 0.2.2-rc.3 skip it. There is no `engines.dsh` pin, which
-would skip the whole bundle on any other version. `optional` keeps npm (this
+range is `*` on purpose: a bundle without `engines.dsh` has its
+`@deepseek-ai/dsh-*` peer ranges checked against the DSH version (prereleases
+included), and the whole bundle is skipped when they do not match:
+a mismatch removes the Advisor, not just this feature. The code already survives a failed import, so a lower
+bound would buy nothing and could remove the Advisor on a DSH version outside it.
+There is no `engines.dsh` pin, for the same reason. `optional` keeps npm (this
 repository's workspace) from installing the package and pnpm from reporting
-it missing; DSH reads only `peerDependencies`. For a linked install pnpm warns
-once that the linked package's peers are not resolved from the profile; that
-is expected, because the Host resolves them. Changes take effect after a Host
+it missing; DSH reads only `peerDependencies`. A `link:` install through
+pnpm (tested offline with pnpm 10.32.1) completes without a peer warning, with or
+without `optional`; for other install kinds the Host resolves the peer. Changes take effect after a Host
 restart.
 
 In the ledger: a run stopped this way has `status: failed`, a `failure_reason`
