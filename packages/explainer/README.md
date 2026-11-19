@@ -38,7 +38,7 @@ A call with no argument behaves like `status`. Any other argument, including the
 
 ## The switch
 
-The model-options menu of a conversation has an **Explainer style** switch. Hover the row to see its tooltip: Plain explanations: short prose, text diagrams, offered pages. The row shows no line of text under the label, so the menu keeps its size. The switch shows what the session has now, as the Ultracode and Router switches do. Pressing the switch runs `/explain-style on` or `/explain-style off`, the opposite of what the session shows, and it works from the keyboard like any button. While a change is pending the switch shows a spinner. A press during a pending change is ignored, not queued: the switch accepts a press again when the change finishes, after 30 seconds if the command itself never settles, or after five minutes if the session keeps showing the change as pending. If the command fails, the menu shows the error in its composer toast; without that channel the switch shows it inline. Until the session has a value, nothing is shown.
+The model-options menu of a conversation has an **Explainer style (ASD-STE100)** switch. Hover the row to see its tooltip: Plain explanations based on ASD-STE100 writing rules (a subset): short prose, text diagrams, offered pages. The label names the standard the style is based on; it is not a claim of conformance. The style follows only a subset of ASD-STE100: sentence length limits, active voice, one term per concept, no idioms, and numbered steps. It does not use the controlled vocabulary. The row shows no line of text under the label, so the menu keeps its size. The switch shows what the session has now, as the Ultracode and Router switches do. Pressing the switch runs `/explain-style on` or `/explain-style off`, the opposite of what the session shows, and it works from the keyboard like any button. While a change is pending the switch shows a spinner. A press during a pending change is ignored, not queued: the switch accepts a press again when the change finishes, after 30 seconds if the command itself never settles, or after five minutes if the session keeps showing the change as pending. If the command fails, the menu shows the error in its composer toast; without that channel the switch shows it inline. Until the session has a value, nothing is shown.
 
 ## Configuration
 
@@ -69,7 +69,7 @@ dsh plugin --profile web add "$PWD/packages/explainer"
 
 Run it from the repository root and replace `web` with your profile name when
 needed (a wrong name creates a new profile). Restart the host after installing
-and refresh the page. The **Explainer style** switch then appears in the model-options menu.
+and refresh the page. The **Explainer style (ASD-STE100)** switch then appears in the model-options menu.
 Then run `/explain-style status`: it should answer
 `Explainer style: off.`
 

@@ -177,15 +177,15 @@ test('it renders the label and a switch; the hint is the row tooltip, not a visi
   const { output, toggle } = mountSwitch(env)
   const row = find(output, (node) => node.props?.className === 'ex-row')
   assert.ok(row)
-  assert.equal(find(row, (node) => node.props?.className === 'ex-label').children[0], 'Explainer style')
-  assert.equal(row.props.title, 'Plain explanations: short prose, text diagrams, offered pages.')
+  assert.equal(find(row, (node) => node.props?.className === 'ex-label').children[0], 'Explainer style (ASD-STE100)')
+  assert.equal(row.props.title, 'Plain explanations based on ASD-STE100 writing rules (a subset): short prose, text diagrams, offered pages.')
   assert.equal(toggle().type, 'Switch')
   // A visible hint widened the menu past its limits: no node but the label holds text.
   assert.equal(findAll(output, (node) => typeof node.props?.className === 'string' && /hint/.test(node.props.className)).length, 0)
   assert.equal(findAll(output, (node) => node.props?.id !== undefined).length, 0, 'no id, so nothing is duplicated across menus')
   assert.equal(findAll(output, (node) => node.props?.['aria-describedby'] !== undefined).length, 0)
   const words = findAll(output, (node) => node.type === 'span').flatMap((node) => node.children.filter((child) => typeof child === 'string'))
-  assert.deepEqual(words, ['Explainer style'])
+  assert.deepEqual(words, ['Explainer style (ASD-STE100)'])
 })
 
 test('the switch reflects the projection on and off', () => {
@@ -202,12 +202,12 @@ test('a pending change shows the spinner, aria-busy and the updating label; idle
   const idle = mountSwitch(env)
   assert.equal(findAll(idle.output, (node) => node.props?.className === 'ex-spinner').length, 0)
   assert.equal(find(idle.output, (node) => node.props?.className === 'ex-row').props['aria-busy'], false)
-  assert.equal(idle.toggle().props.label, 'Explainer style')
+  assert.equal(idle.toggle().props.label, 'Explainer style (ASD-STE100)')
 
   const busy = mountSwitch(env, { on: false, pending: true, pendingSince: Date.now(), failure: null })
   assert.equal(findAll(busy.output, (node) => node.props?.className === 'ex-spinner').length, 1)
   assert.equal(find(busy.output, (node) => node.props?.className === 'ex-row').props['aria-busy'], true)
-  assert.equal(busy.toggle().props.label, 'Explainer style — Updating…')
+  assert.equal(busy.toggle().props.label, 'Explainer style (ASD-STE100) — Updating…')
   assert.ok(!busy.toggle().props.disabled, 'a focused switch is never disabled mid-flight (that blur closes the host menu)')
   // The spinner is hidden from assistive technology; the row and label say it.
   assert.equal(find(busy.output, (node) => node.props?.className === 'ex-spinner').props['aria-hidden'], 'true')
@@ -463,7 +463,7 @@ test('with no Switch primitive a native button stands in: role, aria-checked, la
   assert.equal(button.props.type, 'button')
   assert.equal(button.props.role, 'switch')
   assert.equal(button.props['aria-checked'], false)
-  assert.equal(button.props['aria-label'], 'Explainer style')
+  assert.equal(button.props['aria-label'], 'Explainer style (ASD-STE100)')
   assert.equal(button.props['aria-describedby'], undefined)
   assert.equal(button.props.id, undefined)
   assert.equal(mountSwitch(env, { ...VIEW, on: true }).toggle().props['aria-checked'], true)
@@ -618,10 +618,10 @@ test('locale: en and zh hold the same keys, the client reads exactly those, and 
   for (const language of ['en', 'zh']) {
     for (const [key, value] of Object.entries(tables[language])) assert.ok(typeof value === 'string' && value.trim() !== '', `${language}:${key}`)
   }
-  assert.equal(tables.en['chip.label'], 'Explainer style')
-  assert.equal(tables.en['chip.hint'], 'Plain explanations: short prose, text diagrams, offered pages.')
-  assert.equal(tables.zh['chip.label'], '讲解风格')
-  assert.equal(tables.zh['chip.hint'], '通俗讲解：简短文字、文本图示、可选页面。')
+  assert.equal(tables.en['chip.label'], 'Explainer style (ASD-STE100)')
+  assert.equal(tables.en['chip.hint'], 'Plain explanations based on ASD-STE100 writing rules (a subset): short prose, text diagrams, offered pages.')
+  assert.equal(tables.zh['chip.label'], '讲解风格（ASD-STE100）')
+  assert.equal(tables.zh['chip.hint'], '基于 ASD-STE100 写作规则（子集）的通俗讲解：简短文字、文本图示、可选页面。')
   // The Chinese text is Chinese: it holds Han characters and no copied English label.
   for (const key of ['chip.label', 'chip.hint', 'chip.pending', 'chip.unavailable', 'chip.failed']) {
     assert.match(tables.zh[key], /[\u4e00-\u9fff]/, key)
@@ -637,9 +637,33 @@ test('locale: the table in use follows the locale service, so zh renders Chinese
     },
   })
   const view = mountSwitch(env, { on: false, pending: true, pendingSince: Date.now(), failure: null })
-  assert.match(text(view.output), /讲解风格/)
-  assert.match(text(view.output), /通俗讲解：简短文字、文本图示、可选页面。/)
+  assert.match(text(view.output), /讲解风格（ASD-STE100）/)
+  assert.match(text(view.output), /基于 ASD-STE100 写作规则（子集）的通俗讲解：简短文字、文本图示、可选页面。/)
   assert.match(text(view.output), /正在更新…/)
+})
+
+test('the accessible name of the switch uses the translated label with the standard, idle and pending', () => {
+  let tables
+  const env = load({
+    locale: {
+      register: (_name, value) => { tables = value; return () => {} },
+      bind: () => (key) => (tables?.zh ?? {})[key] ?? key,
+    },
+  })
+  assert.equal(mountSwitch(env).toggle().props.label, '讲解风格（ASD-STE100）')
+  assert.equal(mountSwitch(env, { on: false, pending: true, pendingSince: Date.now(), failure: null }).toggle().props.label, '讲解风格（ASD-STE100） — 正在更新…')
+  // The label names the standard the style is based on; the tooltip says it is a subset.
+  assert.match(tables.en['chip.hint'], /\(a subset\)/)
+  assert.match(tables.zh['chip.hint'], /（子集）/)
+  // The failure text keeps the display name of the style.
+  assert.equal(tables.en['chip.failed'], 'Could not update Explainer style.')
+  assert.equal(tables.zh['chip.failed'], '无法更新讲解风格。')
+})
+
+test('no conformance claim: the client and the README do not say compliant, certified or conforming', () => {
+  for (const source of [SOURCE, read('../README.md')]) {
+    assert.doesNotMatch(source, /\b(compliant|compliance|complies|certified|conforms|fully conforming)\b/i)
+  }
 })
 
 test('the locale JSON files keep only the package meta; the client words live in the client tables', () => {
@@ -649,14 +673,15 @@ test('the locale JSON files keep only the package meta; the client words live in
 test('the README documents the client switch, its tooltip, its pending spinner and the install step', () => {
   const readme = read('../README.md').replace(/\s+/g, ' ')
   for (const sentence of [
-    'The model-options menu of a conversation has an **Explainer style** switch.',
-    'Hover the row to see its tooltip: Plain explanations: short prose, text diagrams, offered pages.',
+    'The model-options menu of a conversation has an **Explainer style (ASD-STE100)** switch.',
+    'Hover the row to see its tooltip: Plain explanations based on ASD-STE100 writing rules (a subset): short prose, text diagrams, offered pages.',
+    'The label names the standard the style is based on; it is not a claim of conformance. The style follows only a subset of ASD-STE100: sentence length limits, active voice, one term per concept, no idioms, and numbered steps. It does not use the controlled vocabulary.',
     'The row shows no line of text under the label, so the menu keeps its size.',
     'Pressing the switch runs `/explain-style on` or `/explain-style off`, the opposite of what the session shows',
     'While a change is pending the switch shows a spinner.',
     'A press during a pending change is ignored, not queued: the switch accepts a press again when the change finishes, after 30 seconds if the command itself never settles, or after five minutes if the session keeps showing the change as pending.',
     'If the command fails, the menu shows the error in its composer toast; without that channel the switch shows it inline.',
-    'Restart the host after installing and refresh the page. The **Explainer style** switch then appears in the model-options menu.',
+    'Restart the host after installing and refresh the page. The **Explainer style (ASD-STE100)** switch then appears in the model-options menu.',
     'Then run `/explain-style status`: it should answer `Explainer style: off.`',
   ]) assert.ok(readme.includes(sentence), sentence)
   assert.doesNotMatch(readme, /Host half only|no client file|no menu cell|hint under it/)
