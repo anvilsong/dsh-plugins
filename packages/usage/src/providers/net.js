@@ -29,6 +29,19 @@ export function clampMs(value, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.round(n)))
 }
 
+/**
+ * The text of a caught value, safe to print into state: a rejection with no
+ * prototype (`Object.create(null)`) or a throwing getter would make
+ * `String(error)` throw inside the catch block that is meant to report it.
+ */
+export function safeMessage(error) {
+  try {
+    return String(error?.message ?? error)
+  } catch {
+    return 'The error could not be read.'
+  }
+}
+
 /** The prototype marker the Gateway's SRC discovery reads. */
 export const REMOTE_METHOD_MARKER = '@deepseek-ai/dsh-typert-protocol/remote-methods'
 
@@ -62,7 +75,7 @@ export async function fetchUsageJson(ctx, { credentialRef, recordKey, url, auth 
       key = record && typeof record.value === 'string' ? record.value.trim() : ''
     }
   } catch (error) {
-    return { failure: 'credential-read-failed', detail: `Could not read ${recordKey ?? credentialRef}: ${String(error?.message ?? error)}` }
+    return { failure: 'credential-read-failed', detail: `Could not read ${recordKey ?? credentialRef}: ${safeMessage(error)}` }
   }
   if (!key) {
     const ref = recordKey ?? credentialRef
@@ -88,7 +101,7 @@ export async function fetchUsageJson(ctx, { credentialRef, recordKey, url, auth 
     const aborted = error?.name === 'AbortError'
     return {
       failure: aborted ? 'timeout' : 'network',
-      detail: aborted ? `No reply within ${timeoutMs} ms.` : String(error?.message ?? error),
+      detail: aborted ? `No reply within ${timeoutMs} ms.` : safeMessage(error),
     }
   }
 
@@ -118,9 +131,14 @@ export async function fetchUsageJson(ctx, { credentialRef, recordKey, url, auth 
   return { body }
 }
 
-/** Clock time as the text reports print it. */
+/**
+ * Clock time as the text reports print it: the time alone for today, the date
+ * and the time for any other day (a read from two days ago must not look like
+ * one from this morning). The browser half (client.js) applies the same rule.
+ */
 function clock(ms) {
-  return new Date(ms).toLocaleTimeString()
+  const at = new Date(ms)
+  return at.toDateString() === new Date(Date.now()).toDateString() ? at.toLocaleTimeString() : at.toLocaleString()
 }
 
 /**
@@ -135,19 +153,26 @@ export function usageFooter(state) {
   const lines = [state.fetchedAt ? `Last good read: ${clock(state.fetchedAt)}` : 'Last good read: never']
   if (state.status === 'error' || state.error) {
     const at = state.attemptedAt ?? state.fetchedAt
-    lines.push(`Warning: last refresh failed${at ? ` at ${clock(at)}` : ''} (${state.error}): ${state.detail ?? ''}`.trim())
+    // No detail: no trailing colon either.
+    const detail = typeof state.detail === 'string' && state.detail.length > 0 ? `: ${state.detail}` : ''
+    lines.push(`Warning: last refresh failed${at ? ` at ${clock(at)}` : ''} (${state.error})${detail}`)
   }
   return lines
 }
 
 /**
- * Mount one provider's three surfaces in an order that fails whole or not at
- * all: the service first, then its report command, then the poll effect.
+ * Mount one provider's three surfaces in this order: the service, then its
+ * report command, then the poll effect. A failure leaves exactly what was
+ * mounted before it:
  *  - `ctx.provide` throws: nothing else is mounted (no command, no poll) and the
  *    error propagates, so the caller logs the provider as failed to mount.
- *  - `ctx.commands.register` throws (a duplicate name, say): that is logged once,
+ *  - `ctx.commands.register` throws (a duplicate name, say): that is logged once
  *    and the service and the poll stay mounted, so the card still refreshes
  *    instead of sitting at 'idle' with a service nobody polls.
+ *  - `ctx.effect` throws: the service and the command stay mounted (nothing
+ *    unmounts them) but nothing polls. The error propagates, rewrapped so its
+ *    message names the provider and the poll surface; the caller logs the
+ *    provider as failed to mount.
  * @param ctx - plugin context.
  * @param parts - id for the log line, serviceKey, the service, the command definition, the poll effect and its label.
  */
@@ -163,8 +188,12 @@ export function mountSurfaces(ctx, { id, serviceKey, api, command, poll, pollLab
   }
   // First read shortly after mount, then on an interval. The timer is a Cordis
   // effect, so unloading the plugin clears it.
-  if (pollLabel === undefined) ctx.effect(poll)
-  else ctx.effect(poll, pollLabel)
+  try {
+    if (pollLabel === undefined) ctx.effect(poll)
+    else ctx.effect(poll, pollLabel)
+  } catch (error) {
+    throw new Error(`provider "${id}" poll effect failed to start; the service and the command stay mounted but nothing polls: ${safeMessage(error)}`, { cause: error })
+  }
 }
 
 /**
@@ -252,7 +281,7 @@ export function mountProvider(ctx, spec, cfg) {
         })
       }
     } catch (error) {
-      publish({ status: 'error', error: 'unexpected', detail: String(error?.message ?? error), attemptedAt: Date.now() })
+      publish({ status: 'error', error: 'unexpected', detail: safeMessage(error), attemptedAt: Date.now() })
     }
     return cache.state
   }

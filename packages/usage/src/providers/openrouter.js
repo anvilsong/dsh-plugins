@@ -34,7 +34,7 @@ import {
   ENDPOINT_CREDITS,
   ENDPOINT_KEY,
 } from './openrouter-defaults.js'
-import { mountSurfaces, usageFooter } from './net.js'
+import { mountSurfaces, safeMessage, usageFooter } from './net.js'
 
 
 /**
@@ -140,7 +140,7 @@ async function getOpenRouter(url, key, timeoutMs) {
   } catch (error) {
     clearTimeout(timer)
     const aborted = error?.name === 'AbortError'
-    return { failure: aborted ? 'timeout' : 'network', detail: aborted ? `No reply within ${timeoutMs} ms.` : String(error?.message ?? error) }
+    return { failure: aborted ? 'timeout' : 'network', detail: aborted ? `No reply within ${timeoutMs} ms.` : safeMessage(error) }
   }
 
   // Read the body under the same timeout — a hung body must not outlive it.
@@ -306,6 +306,19 @@ export function mountOpenRouter(ctx, config = {}) {
 
   async function run() {
     publish({ status: 'loading' })
+    // A catch-all, like the shared runtime in net.js: whatever else throws
+    // (a credential object with a throwing getter, an odd reply) ends in an
+    // error state instead of leaving 'loading' behind and rejecting the
+    // refresh, the command and the poll tick.
+    try {
+      return await attempt()
+    } catch (error) {
+      publish({ status: 'error', error: 'unexpected', detail: safeMessage(error), attemptedAt: Date.now() })
+      return cache.state
+    }
+  }
+
+  async function attempt() {
 
     // Step 1 — resolve the key. Per-call read, never cached.
     let resolved
@@ -315,7 +328,7 @@ export function mountOpenRouter(ctx, config = {}) {
       publish({
         status: 'error',
         error: 'credential-read-failed',
-        detail: String(error?.message ?? error),
+        detail: safeMessage(error),
         attemptedAt: Date.now(),
       })
       return cache.state

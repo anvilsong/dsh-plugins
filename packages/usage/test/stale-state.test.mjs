@@ -113,6 +113,17 @@ function mount(provider, { missingCredential = false } = {}) {
 
 const time = (ms) => new Date(ms).toLocaleTimeString()
 
+/** Run fn with Date.now fixed at `now` (a time of "today" for the footer), restored afterwards. */
+function withNow(now, fn) {
+  const real = Date.now
+  Date.now = () => now
+  try {
+    return fn()
+  } finally {
+    Date.now = real
+  }
+}
+
 for (const p of RUNTIMES) {
   test(`${p.name} (${p.runtime}): a failed refresh keeps data and fetchedAt, and attemptedAt is the failure time`, async () => {
     const h = mount(p)
@@ -238,6 +249,8 @@ for (const p of PROVIDERS) {
       assert.equal(readyLines.at(-1), `Last good read: ${time(BASE)}`)
       assert.ok(!readyLines.some((line) => line.startsWith('Warning:')))
       assert.ok(!readyLines.some((line) => line.startsWith('Read at')), 'the old Read-at line is gone')
+      assert.equal(ready.text.split('Last good read').length - 1, 1, 'the footer is printed once')
+      assert.equal(ready.text.split('Warning:').length - 1, 0)
 
       h.setNow(BASE + 60_000)
       h.fail()
@@ -248,6 +261,8 @@ for (const p of PROVIDERS) {
       const staleLines = stale.text.split('\n')
       assert.equal(staleLines.at(-2), `Last good read: ${time(BASE)}`)
       assert.equal(staleLines.at(-1), `Warning: last refresh failed at ${time(BASE + 60_000)} (${state.error}): ${state.detail}`)
+      assert.equal(stale.text.split('Last good read').length - 1, 1, 'the footer is printed once')
+      assert.equal(stale.text.split('Warning:').length - 1, 1, 'the warning is printed once')
     } finally {
       h.restore()
     }
@@ -296,7 +311,7 @@ test('the state is additive: attemptedAt is new, nothing is versioned or renamed
   }
 })
 
-test('usageFooter formats a state without attemptedAt (an older host or test fixture)', () => {
+test('usageFooter formats a state without attemptedAt (an older host or test fixture)', () => withNow(BASE + 10_000, () => {
   const old = { status: 'error', error: 'network', detail: 'offline', fetchedAt: BASE, data: {} }
   assert.deepEqual(usageFooter(old), [
     `Last good read: ${time(BASE)}`,
@@ -309,9 +324,61 @@ test('usageFooter formats a state without attemptedAt (an older host or test fix
   ])
   assert.deepEqual(usageFooter({ status: 'error', error: 'timeout', detail: null, fetchedAt: null, attemptedAt: BASE }), [
     'Last good read: never',
-    `Warning: last refresh failed at ${time(BASE)} (timeout):`,
+    `Warning: last refresh failed at ${time(BASE)} (timeout)`,
   ])
+}))
+
+test('usageFooter prints no colon and no detail when there is no detail', () => withNow(BASE + 10_000, () => {
+  for (const detail of [null, undefined, '']) {
+    assert.deepEqual(usageFooter({ status: 'error', error: 'timeout', detail, fetchedAt: BASE, attemptedAt: BASE + 5000 }), [
+      `Last good read: ${time(BASE)}`,
+      `Warning: last refresh failed at ${time(BASE + 5000)} (timeout)`,
+    ], String(detail))
+  }
+  const withDetail = usageFooter({ status: 'error', error: 'timeout', detail: 'No reply within 15000 ms.', fetchedAt: null, attemptedAt: BASE })
+  assert.equal(withDetail.at(-1), `Warning: last refresh failed at ${time(BASE)} (timeout): No reply within 15000 ms.`)
+}))
+
+test('usageFooter prints the date with a time that is not from today, and only the time for today', async () => {
+  const now = new Date(2026, 10, 19, 10, 0, 0).getTime()
+  const twoDaysAgo = new Date(2026, 10, 17, 9, 15, 0).getTime()
+  const earlierToday = new Date(2026, 10, 19, 0, 30, 0).getTime()
+  const realNow = Date.now
+  Date.now = () => now
+  try {
+    assert.notEqual(new Date(twoDaysAgo).toLocaleString(), new Date(twoDaysAgo).toLocaleTimeString())
+    assert.deepEqual(usageFooter({ status: 'ready', fetchedAt: twoDaysAgo, data: {} }), [`Last good read: ${new Date(twoDaysAgo).toLocaleString()}`])
+    assert.deepEqual(usageFooter({ status: 'ready', fetchedAt: earlierToday, data: {} }), [`Last good read: ${new Date(earlierToday).toLocaleTimeString()}`])
+    assert.deepEqual(usageFooter({ status: 'error', error: 'network', detail: 'down', fetchedAt: twoDaysAgo, attemptedAt: earlierToday }), [
+      `Last good read: ${new Date(twoDaysAgo).toLocaleString()}`,
+      `Warning: last refresh failed at ${new Date(earlierToday).toLocaleTimeString()} (network): down`,
+    ])
+    assert.deepEqual(usageFooter({ status: 'error', error: 'network', detail: 'down', fetchedAt: earlierToday, attemptedAt: twoDaysAgo }), [
+      `Last good read: ${new Date(earlierToday).toLocaleTimeString()}`,
+      `Warning: last refresh failed at ${new Date(twoDaysAgo).toLocaleString()} (network): down`,
+    ])
+  } finally {
+    Date.now = realNow
+  }
 })
+
+for (const p of RUNTIMES) {
+  test(`${p.name} (${p.runtime}): a report whose last good read is two days old prints that date`, async () => {
+    const h = mount(p)
+    try {
+      await h.api.refresh()
+      const later = BASE + 2 * 24 * 3_600_000
+      h.setNow(later)
+      h.fail()
+      const stale = await h.command.handler({})
+      const lines = stale.text.split('\n')
+      assert.equal(lines.at(-2), `Last good read: ${new Date(BASE).toLocaleString()}`)
+      assert.equal(lines.at(-1).startsWith(`Warning: last refresh failed at ${time(later)} (`), true, lines.at(-1))
+    } finally {
+      h.restore()
+    }
+  })
+}
 
 for (const p of PROVIDERS.filter((x) => x.runtime === 'net.js')) {
   test(`${p.name}: a missing credential says ${p.oauth ? 'how to sign in' : 'to add the API key'}`, async () => {

@@ -325,6 +325,99 @@ test('OpenRouter failure: a network error is network with the message', async ()
   })
 })
 
+/** Run fn with Date.now fixed at `now`, restored afterwards. */
+async function withNow(now, fn) {
+  const real = Date.now
+  Date.now = () => now
+  try {
+    return await fn()
+  } finally {
+    Date.now = real
+  }
+}
+test('OpenRouter: every failure path sets attemptedAt and leaves fetchedAt null: a missing credential, a credential read failure and an HTTP error', async () => {
+  for (const options of [
+    { resolve: () => undefined, handler: () => json(KEY_REPLY) },
+    { resolve: () => { throw new Error('keychain locked') }, handler: () => json(KEY_REPLY) },
+    { handler: () => json({ error: { message: 'nope' } }, 500) },
+  ]) {
+    await withNow(1_700_000_000_000, async () => {
+      await run(options, async (h) => {
+        const state = await h.api.refresh()
+        assert.equal(state.status, 'error')
+        assert.equal(state.attemptedAt, 1_700_000_000_000, state.error)
+        assert.equal(state.fetchedAt, null)
+      })
+    })
+  }
+})
+
+// --- a catch-all around the whole refresh (the shared runtime in net.js has one) ---
+
+/** A thrown value with no prototype: `String(value)` throws on it. */
+const unprintable = () => Object.create(null)
+
+/** A credentials.resolve result whose `value` getter throws `thrown`. */
+const throwingValue = (thrown) => ({ get value() { throw thrown } })
+
+test('OpenRouter catch-all: a credential read that rejects with an unprintable value is a credential-read-failed state, and the command still answers', async () => {
+  await run({ resolve: () => { throw unprintable() }, handler: () => json(REPLYOpenRouter) }, async (h) => {
+    const state = await h.api.refresh()
+    assert.equal(state.status, 'error')
+    assert.equal(state.error, 'credential-read-failed')
+    assert.equal(typeof state.detail, 'string')
+    assert.ok(state.detail.length > 0)
+    assert.equal(h.calls.length, 0)
+    assert.equal((await h.command.handler({})).kind, 'error')
+  })
+})
+
+test('OpenRouter catch-all: a throw outside the credential read becomes an unexpected error with a message, never a stuck loading state or a rejected refresh', async () => {
+  for (const [thrown, expected] of [[new Error('getter boom'), 'getter boom'], [unprintable(), undefined]]) {
+    await withNow(1_700_000_000_000, async () => {
+      await run({ resolve: () => throwingValue(thrown), handler: () => json(REPLYOpenRouter) }, async (h) => {
+        const state = await h.api.refresh()
+        assert.equal(state.status, 'error', 'not stuck at loading')
+        assert.equal(state.error, 'unexpected')
+        assert.equal(typeof state.detail, 'string')
+        if (expected !== undefined) assert.equal(state.detail, expected)
+        assert.ok(state.detail.length > 0)
+        assert.equal(state.attemptedAt, 1_700_000_000_000)
+        assert.equal(state.fetchedAt, null)
+        assert.equal((await h.api.snapshot()).status, 'error')
+        const result = await h.command.handler({})
+        assert.equal(result.kind, 'error')
+        assert.ok(result.text.includes(state.detail))
+      })
+    })
+  }
+})
+
+test('OpenRouter catch-all: the poll tick of a refresh that throws is not an unhandled rejection', async (t) => {
+  const unhandled = []
+  const listener = (reason) => { unhandled.push(reason) }
+  process.on('unhandledRejection', listener)
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  let api
+  let poll
+  mountOpenRouter({
+    credentials: { resolve: async () => throwingValue(new Error('getter boom')), readRecord: async () => undefined },
+    provide(key, value) { api = value },
+    commands: { register() {} },
+    effect(fn) { poll = fn },
+  }, {})
+  const stop = poll()
+  try {
+    t.mock.timers.tick(1_000)
+    for (let index = 0; index < 5; index += 1) await new Promise((resolve) => setImmediate(resolve))
+    assert.equal((await api.snapshot()).error, 'unexpected', 'the tick ran the refresh')
+    assert.deepEqual(unhandled, [])
+  } finally {
+    stop()
+    process.off('unhandledRejection', listener)
+  }
+})
+
 // --- known drift: desired behaviour, failing today ---
 
 test('OpenRouter renamed /key fields should become bad-response', { todo: 'today: status ready, every figure null (usage, limit, remaining), label null' }, async () => {

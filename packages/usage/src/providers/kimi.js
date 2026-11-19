@@ -30,7 +30,7 @@ import {
   FIXED_POINT_CENTS,
   USAGE_PATH,
 } from './kimi-defaults.js'
-import { mountSurfaces, usageFooter } from './net.js'
+import { mountSurfaces, safeMessage, usageFooter } from './net.js'
 
 
 /** Read a finite number, tolerating strings, null and undefined. */
@@ -211,7 +211,7 @@ async function getKimi(url, key, timeoutMs) {
   } catch (error) {
     clearTimeout(timer)
     const aborted = error?.name === 'AbortError'
-    return { failure: aborted ? 'timeout' : 'network', detail: aborted ? `No reply within ${timeoutMs} ms.` : String(error?.message ?? error) }
+    return { failure: aborted ? 'timeout' : 'network', detail: aborted ? `No reply within ${timeoutMs} ms.` : safeMessage(error) }
   }
 
   let body
@@ -329,6 +329,19 @@ export function mountKimi(ctx, config = {}) {
 
   async function run() {
     publish({ status: 'loading' })
+    // A catch-all, like the shared runtime in net.js: whatever else throws
+    // (a credential object with a throwing getter, an odd reply) ends in an
+    // error state instead of leaving 'loading' behind and rejecting the
+    // refresh, the command and the poll tick.
+    try {
+      return await attempt()
+    } catch (error) {
+      publish({ status: 'error', error: 'unexpected', detail: safeMessage(error), attemptedAt: Date.now() })
+      return cache.state
+    }
+  }
+
+  async function attempt() {
 
     // Step 1 — resolve the credential. Per-call read, never cached.
     let resolved
@@ -338,7 +351,7 @@ export function mountKimi(ctx, config = {}) {
       publish({
         status: 'error',
         error: 'credential-read-failed',
-        detail: String(error?.message ?? error),
+        detail: safeMessage(error),
         attemptedAt: Date.now(),
       })
       return cache.state

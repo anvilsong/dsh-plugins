@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test, { after } from 'node:test'
-import { clampMs, errorMessage, fetchUsageJson, isRecord, mountProvider, num } from '../src/providers/net.js'
+import { clampMs, errorMessage, fetchUsageJson, isRecord, mountProvider, mountSurfaces, num } from '../src/providers/net.js'
+import { mountAnthropic } from '../src/providers/anthropic.js'
 import { mountCodex } from '../src/providers/codex.js'
 import { mountDeepSeek } from '../src/providers/deepseek.js'
 import { mountZhipu } from '../src/providers/zhipu.js'
@@ -358,6 +359,150 @@ test('runtime: the service is provided before the command and one poll effect is
     effect(fn, label) { order.push(`effect:${label}`) },
   }, {})
   assert.deepEqual(order, ['provide', 'register', 'effect:usage: poll deepseek'])
+})
+
+/** Run fn with Date.now fixed at `now` (settable), restored afterwards. */
+async function withNow(now, fn) {
+  const real = Date.now
+  let current = now
+  Date.now = () => current
+  try {
+    return await fn((value) => { current = value })
+  } finally {
+    Date.now = real
+  }
+}
+
+/** A thrown value with no prototype: `String(value)` throws on it. */
+const unprintable = () => Object.create(null)
+
+test('runtime: the unexpected-throw path sets attemptedAt (and leaves fetchedAt alone)', async () => {
+  await withNow(1_700_000_000_000, async () => {
+    let api
+    mountProvider({ provide(k, v) { api = v }, commands: { register() {} }, effect() {} }, {
+      id: 'probe', title: 'Probe', serviceKey: 'probeUsage', commandName: 'usage-probe', commandDescription: 'x', formatReport: () => '',
+      fetchState: async () => { throw new Error('boom') },
+    }, {})
+    const state = await api.refresh()
+    assert.equal(state.error, 'unexpected')
+    assert.equal(state.attemptedAt, 1_700_000_000_000)
+    assert.equal(state.fetchedAt, null)
+  })
+})
+
+test('runtime: a value that cannot be printed, thrown by fetchState, still ends in an error state with a safe message', async () => {
+  let api
+  let command
+  mountProvider({ provide(k, v) { api = v }, commands: { register(c) { command = c } }, effect() {} }, {
+    id: 'probe', title: 'Probe', serviceKey: 'probeUsage', commandName: 'usage-probe', commandDescription: 'x', formatReport: () => '',
+    fetchState: async () => { throw unprintable() },
+  }, {})
+  const state = await api.refresh()
+  assert.equal(state.status, 'error')
+  assert.equal(state.error, 'unexpected')
+  assert.equal(typeof state.detail, 'string')
+  assert.ok(state.detail.length > 0)
+  assert.equal((await command.handler({})).kind, 'error')
+})
+
+test('runtime: credentials.resolve rejecting with a value that cannot be printed is a credential-read-failed state, not a rejected refresh', async () => {
+  await withFetch(() => json(DEEPSEEK_OK), async (calls) => {
+    let api
+    let command
+    mountDeepSeek({
+      credentials: { resolve: async () => { throw unprintable() } },
+      provide(k, v) { api = v },
+      commands: { register(c) { command = c } },
+      effect() {},
+    }, {})
+    const state = await api.refresh()
+    assert.equal(state.status, 'error')
+    assert.equal(state.error, 'credential-read-failed')
+    assert.match(state.detail, /^Could not read DEEPSEEK_API_KEY: \S/)
+    assert.equal(calls.length, 0)
+    assert.equal((await command.handler({})).kind, 'error')
+  })
+})
+
+test('fetchUsageJson: a credential read that rejects with an unprintable value is credential-read-failed with the reference', async () => {
+  const ctx = { credentials: { resolve: async () => { throw unprintable() } } }
+  const result = await fetchUsageJson(ctx, { credentialRef: 'REF', url: 'https://x.test', timeoutMs: 1000 })
+  assert.equal(result.failure, 'credential-read-failed')
+  assert.match(result.detail, /^Could not read REF: \S/)
+})
+
+test('net.js failure: HTTP 401 never gets the sign-in wording; only a missing credential does', async () => {
+  const ref = { credentialRef: 'REF', url: 'https://x.test', timeoutMs: 1000, signIn: 'openai-codex' }
+  await withFetch(() => json({ error: { message: 'token expired' } }, 401), async () => {
+    const result = await fetchUsageJson({ credentials: credentials('tok') }, ref)
+    assert.equal(result.failure, 'http-401')
+    assert.equal(result.detail, 'HTTP 401: token expired')
+    assert.ok(!/sign.?in|provider-login/i.test(result.detail), result.detail)
+  })
+  const missing = await fetchUsageJson({ credentials: credentials(undefined) }, ref)
+  assert.equal(missing.failure, 'missing-credential')
+  assert.match(missing.detail, /Sign in from Settings → Models or run \/provider-login openai-codex/)
+})
+
+test('net.js failure: Codex and Claude 401 replies reach state without the sign-in wording', async () => {
+  for (const [mount, key] of [[mountCodex, 'codexUsage'], [mountAnthropic, 'anthropicUsage']]) {
+    await withFetch(() => json({ error: { message: 'token expired' } }, 401), async () => {
+      let api
+      mount({
+        credentials: { resolve: async () => ({ value: 'tok' }), readRecord: async () => ({ kind: 'grant', payload: { access: 'tok' } }) },
+        provide(k, v) { if (k === key) api = v },
+        commands: { register() {} },
+        effect() {},
+      }, {})
+      const state = await api.refresh()
+      assert.equal(state.error, 'http-401', key)
+      assert.ok(!/sign.?in|provider-login/i.test(state.detail), `${key}: ${state.detail}`)
+    })
+  }
+})
+
+// --- mountSurfaces: what a failure leaves mounted, and what the error names ---
+
+/** A ctx that records what stays mounted; `failEffect` makes ctx.effect throw. */
+function surfaceCtx({ failProvide, failRegister, failEffect } = {}) {
+  const mounted = { service: false, command: false, effect: false }
+  return {
+    mounted,
+    provide() { if (failProvide) throw new Error('provide boom'); mounted.service = true },
+    commands: { register() { if (failRegister) throw new Error('register boom'); mounted.command = true } },
+    effect() { if (failEffect) throw new Error('effect boom'); mounted.effect = true },
+  }
+}
+const SURFACES = { id: 'probe', serviceKey: 'probeUsage', api: {}, command: { name: 'usage-probe' }, poll: () => () => {}, pollLabel: 'usage: poll probe' }
+
+test('mountSurfaces: a ctx.effect that throws leaves the service and the command mounted, and the error names the poll surface and the provider', () => {
+  const ctx = surfaceCtx({ failEffect: true })
+  assert.throws(() => mountSurfaces(ctx, SURFACES), (error) => {
+    assert.match(error.message, /probe/)
+    assert.match(error.message, /poll/)
+    assert.match(error.message, /effect boom/)
+    assert.equal(error.cause?.message, 'effect boom')
+    return true
+  })
+  assert.deepEqual(ctx.mounted, { service: true, command: true, effect: false })
+})
+
+test('mountSurfaces: a command register that throws is logged once and the service and the poll stay mounted; provide failing mounts nothing', () => {
+  const real = console.error
+  const lines = []
+  console.error = (...args) => { lines.push(args.map((a) => (a instanceof Error ? a.message : String(a))).join(' ')) }
+  try {
+    const ctx = surfaceCtx({ failRegister: true })
+    mountSurfaces(ctx, SURFACES)
+    assert.deepEqual(ctx.mounted, { service: true, command: false, effect: true })
+    assert.equal(lines.length, 1)
+    assert.match(lines[0], /usage-probe/)
+    const none = surfaceCtx({ failProvide: true })
+    assert.throws(() => mountSurfaces(none, SURFACES), /provide boom/)
+    assert.deepEqual(none.mounted, { service: false, command: false, effect: false })
+  } finally {
+    console.error = real
+  }
 })
 
 // --- known drift: desired behaviour, failing today ---
