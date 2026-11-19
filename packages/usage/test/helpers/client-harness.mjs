@@ -457,18 +457,25 @@ export function createUsageNamespaceStub(state, { refreshState } = {}) {
 
 /**
  * A providerLogin namespace. `status` answers `{ configured }` (or errors, or
- * never answers); `begin` returns a stream that yields `events`, waits for an
- * answer after each prompt, and then either ends or (hold) never ends.
+ * never answers); `begin` returns a stream handle that yields `events`, waits
+ * for an answer after each prompt, and then either ends, (hold) never ends, or
+ * (failWith) throws that message.
+ *
+ * Like the real RemoteStreamHandle the handle has `dispose()`: it ends the
+ * iteration quietly (no further event, no error) and is counted in
+ * `disposeCalls`. `handles` lists every stream `begin` opened.
  */
-export function createProviderLoginStub({ configured = false, status = 'answer', statusError, events = [], hold = false } = {}) {
+export function createProviderLoginStub({ configured = false, status = 'answer', statusError, events = [], hold = false, failWith } = {}) {
   const statusCalls = []
   const beginCalls = []
   const answers = []
-  let resolveAnswer
-  return {
+  const handles = []
+  const stub = {
     statusCalls,
     beginCalls,
     answers,
+    handles,
+    get disposeCalls() { return handles.reduce((total, handle) => total + handle.disposeCount, 0) },
     async status(request) {
       statusCalls.push(request)
       if (status === 'pending') return new Promise(() => {})
@@ -477,22 +484,41 @@ export function createProviderLoginStub({ configured = false, status = 'answer',
     },
     begin(request) {
       beginCalls.push(request)
-      return {
+      let wake
+      let resolveAnswer
+      const handle = {
+        disposed: false,
+        disposeCount: 0,
         send(value) {
           answers.push(value)
           resolveAnswer?.()
           resolveAnswer = undefined
         },
+        dispose() {
+          handle.disposeCount += 1
+          handle.disposed = true
+          wake?.()
+          resolveAnswer?.()
+        },
         async *[Symbol.asyncIterator]() {
+          const stopped = new Promise((resolve) => { wake = resolve })
           for (const event of events) {
+            if (handle.disposed) return
             yield event
-            if (event.type === 'prompt') await new Promise((resolve) => { resolveAnswer = resolve })
+            if (event.type === 'prompt') {
+              await Promise.race([new Promise((resolve) => { resolveAnswer = resolve }), stopped])
+            }
           }
-          if (hold) await new Promise(() => {})
+          if (handle.disposed) return
+          if (failWith !== undefined) throw new Error(failWith)
+          if (hold) await stopped
         },
       }
+      handles.push(handle)
+      return handle
     },
   }
+  return stub
 }
 
 /**

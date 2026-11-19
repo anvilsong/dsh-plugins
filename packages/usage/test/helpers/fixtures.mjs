@@ -185,5 +185,26 @@ export function anthropic({ fiveHour = 0.23, sevenDay = 0.88 } = {}) {
   }, { endpoint: 'https://api.anthropic.com/api/oauth/usage' })
 }
 
+// ---- Sign-in stream events (providerLogin.begin) ----
+
+/** A ~340-character OAuth authorize URL: it has no space, so it only wraps when told to. */
+export const LONG_AUTH_URL = 'https://auth.example.com/oauth/authorize?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann'
+  + '&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid%20profile%20email%20offline_access'
+  + '&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256'
+  + '&state=7f3a9c1d5e8b4a2f9c0d6e1b3a5f7c9d&originator=codex_cli_rs'
+
+/** A notice with a link and a device code. */
+export const signInNotice = (patch = {}) => ({
+  type: 'notice',
+  notice: { message: 'Finish signing in in the browser window that opened.', url: 'https://auth.example.com/device', code: 'ABCD-1234', ...patch },
+})
+
+/** A text prompt whose message tells the user what to enter. */
+export const textPromptEvent = (patch = {}) => ({
+  type: 'prompt',
+  id: 'prompt-2',
+  prompt: { kind: 'text', message: 'Enter the organisation name', placeholder: 'organisation name', ...patch },
+})
+
 /** A readable summary of every fixture, for tests. */
 export const FIXTURES = { openrouter, kimi, zhipu, deepseek, codex, anthropic }

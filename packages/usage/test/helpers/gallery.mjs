@@ -147,7 +147,7 @@ function chipScenario({ id, provider, title, note, state, open = false, waiting 
 }
 
 /** The OAuth sign-in action, driven through a stub providerLogin stream. */
-function signInScenario({ id, provider, title, note, login = {}, clickSignIn = false, answer, keyConfigured = false }) {
+function signInScenario({ id, provider, title, note, login = {}, clickSignIn = false, answer, cancel = false, keyConfigured = false }) {
   const spec = PROVIDERS[provider]
   return {
     id,
@@ -167,6 +167,10 @@ function signInScenario({ id, provider, title, note, login = {}, clickSignIn = f
         if (answer !== undefined) {
           const control = must(findByType(mount.tree, 'select') ?? findByType(mount.tree, 'input'), `${id}: no prompt control`)
           await change(mount, control, answer)
+        }
+        if (cancel) {
+          const button = must(findByText(mount.tree, 'Cancel'), `${id}: no "Cancel" button`)
+          await click(mount, button)
         }
         return { html: toHtml(mount.tree), css: h.stylesheet }
       } finally {
@@ -188,6 +192,9 @@ const selectPrompt = {
 }
 const textPrompt = { type: 'prompt', id: 'prompt-2', prompt: { kind: 'text', message: 'Enter the organisation name', placeholder: 'organisation name' } }
 const secretPrompt = { type: 'prompt', id: 'prompt-3', prompt: { kind: 'secret', message: 'Paste the one-time code', placeholder: 'one-time code' } }
+
+const longLinkNotice = fixtures.signInNotice({ message: 'Open this link to sign in, then enter the code if asked.', url: fixtures.LONG_AUTH_URL })
+const messagePrompt = fixtures.textPromptEvent({ message: 'Paste the code the browser shows after you approve the sign-in', placeholder: 'authorization code' })
 
 const ready = (provider) => PROVIDERS[provider].fixture()
 const errorWithData = (provider, patch) => fixtures.failed(ready(provider), patch)
@@ -284,6 +291,9 @@ export const SCENARIOS = [
   signInScenario({ id: 'signin-prompt-text', provider: 'anthropic', title: 'Sign-in: prompt, text', note: 'A plain text input with a placeholder.', login: { events: [textPrompt], hold: true }, clickSignIn: true }),
   signInScenario({ id: 'signin-prompt-secret', provider: 'anthropic', title: 'Sign-in: prompt, secret', note: 'A password input; the value never shows.', login: { events: [secretPrompt], hold: true }, clickSignIn: true }),
   signInScenario({ id: 'signin-cancelled', provider: 'codex', title: 'Sign-in: cancelled', note: 'The flow settled as cancelled: the button comes back with a note.', login: { events: [{ type: 'settled', status: 'cancelled' }] }, clickSignIn: true }),
+  signInScenario({ id: 'signin-prompt-with-message', provider: 'codex', title: 'Sign-in: prompt with its message, long link and code', note: 'The host message labels the input; the 340-character link wraps and the code is its own line; Cancel sits next to the waiting button.', login: { events: [longLinkNotice, messagePrompt], hold: true }, clickSignIn: true }),
+  signInScenario({ id: 'signin-cancelled-by-user', provider: 'codex', title: 'Sign-in: cancelled with the Cancel button', note: 'The user pressed Cancel while the flow waited: the stream is closed, the button comes back and a note says so.', login: { events: [longLinkNotice], hold: true }, clickSignIn: true, cancel: true }),
+  signInScenario({ id: 'signin-error', provider: 'anthropic', title: 'Sign-in: the flow failed', note: 'The stream broke: the error shows in red and is announced as an alert (a notice is only a status).', login: { events: [fixtures.signInNotice()], failWith: 'The browser callback timed out. Try signing in again.' }, clickSignIn: true }),
   signInScenario({ id: 'signin-signed-in', provider: 'codex', title: 'Sign-in: signed in (ChatGPT)', note: 'A stored OAuth record: the status row and a re-authenticate button.', login: { configured: true } }),
   signInScenario({ id: 'signin-signed-in-claude', provider: 'anthropic', title: 'Sign-in: signed in (Claude)', note: 'The same row for the Claude route.', login: { configured: true } }),
 ]

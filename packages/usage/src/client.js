@@ -1346,6 +1346,32 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Per-route "signed in just now" signal. ProviderLoginAction marks a route
+     * when its flow settles as authorized; the same card's CardExtras listens
+     * so the usage line appears without a remount. It is a change signal, not
+     * a record: a fresh mount ignores it and reads the stored status instead.
+     */
+    const signInSignal = {
+      versions: new Map(),
+      listeners: new Set(),
+      version(route) { return this.versions.get(route) ?? 0 },
+      mark(route) {
+        this.versions.set(route, this.version(route) + 1)
+        for (const fn of [...this.listeners]) {
+          try {
+            fn(route)
+          } catch {
+            // A broken listener must not break the others.
+          }
+        }
+      },
+      subscribe(fn) {
+        this.listeners.add(fn)
+        return () => this.listeners.delete(fn)
+      },
+    }
+
+    /**
      * One provider card's usage line (`settings.models.provider-card`).
      * Renders nothing until the owner confirms the row's key is configured —
      * usage belongs to set-up providers only. Click expands the full panel.
@@ -1360,13 +1386,23 @@ window.__ModuleLoader__.load({
         let active = true
         const ns = getLoginNs?.()
         if (!ns?.status) return undefined
+        // A sign-in that settles while this read is in flight must win.
+        const seen = signInSignal.version(route)
         void ns.status({ provider: route }).then((result) => {
           const value = result?.ok === true ? result.value : result
-          if (active) setOauthConfigured(value?.configured === true)
+          if (active) setOauthConfigured(value?.configured === true || signInSignal.version(route) !== seen)
         }).catch(() => {
-          if (active) setOauthConfigured(false)
+          if (active) setOauthConfigured(signInSignal.version(route) !== seen)
         })
         return () => { active = false }
+      }, [route])
+      // The card's own sign-in action settled as authorized: show the usage
+      // line now instead of after the next remount.
+      React.useEffect(() => {
+        if (!['openai-codex', 'anthropic'].includes(route)) return undefined
+        return signInSignal.subscribe((signedRoute) => {
+          if (signedRoute === route) setOauthConfigured(true)
+        })
       }, [route])
       if (keyConfigured === false && oauthConfigured !== true) return null
       const wireError = state && state.ok === false ? state.error : null
@@ -1426,11 +1462,32 @@ window.__ModuleLoader__.load({
       const oauthEnabled = nativeAuth?.oauth === true
       const [busy, setBusy] = React.useState(false)
       const [oauthConfigured, setOauthConfigured] = React.useState(null)
-      const [message, setMessage] = React.useState(null)
+      // One line under the button: a notice (role status) or a failure (role alert).
+      const [note, setNote] = React.useState(null)
       const [link, setLink] = React.useState(null)
       const [promptEvent, setPromptEvent] = React.useState(null)
       const [answer, setAnswer] = React.useState('')
       const streamRef = React.useRef(null)
+      // Counts sign-in runs; a run that is no longer current (cancelled,
+      // unmounted, route changed) must not touch state any more.
+      const runRef = React.useRef(0)
+      const wasConfiguredRef = React.useRef(false)
+      const answeredRef = React.useRef(null)
+
+      const showNotice = (text) => setNote({ text, failure: false })
+      const showFailure = (text) => setNote({ text, failure: true })
+      // Ends the current run and cancels its stream. True when a stream was open.
+      const closeStream = () => {
+        runRef.current += 1
+        const stream = streamRef.current
+        streamRef.current = null
+        try {
+          stream?.dispose?.()
+        } catch {
+          // The stream had already finished.
+        }
+        return stream !== null
+      }
 
       // Read the stored OAuth record on every mount. The namespace can appear
       // just after the card, so retry briefly instead of flashing a stale
@@ -1439,11 +1496,13 @@ window.__ModuleLoader__.load({
         let active = true
         let timer
         setOauthConfigured(null)
-        setMessage(null)
+        setBusy(false)
+        setNote(null)
         setLink(null)
         setPromptEvent(null)
         setAnswer('')
-        if (!oauthRoute || !oauthEnabled) return () => { active = false }
+        // Leaving the card (or switching its route) cancels a sign-in in flight.
+        if (!oauthRoute || !oauthEnabled) return () => { active = false; closeStream() }
         const startedAt = Date.now()
         const readStatus = async () => {
           const ns = props.getLoginNs?.()
@@ -1452,7 +1511,7 @@ window.__ModuleLoader__.load({
             if (Date.now() - startedAt >= MOUNT_GRACE_MS) {
               setOauthConfigured(false)
               const error = props.getLoginError?.()
-              if (error) setMessage(error)
+              if (error) showFailure(error)
               return
             }
             timer = setTimeout(readStatus, MOUNT_RETRY_MS)
@@ -1467,13 +1526,14 @@ window.__ModuleLoader__.load({
           } catch (error) {
             if (!active) return
             setOauthConfigured(false)
-            setMessage(error instanceof Error ? error.message : String(error))
+            showFailure(error instanceof Error ? error.message : String(error))
           }
         }
         void readStatus()
         return () => {
           active = false
           clearTimeout(timer)
+          closeStream()
         }
       }, [oauthRoute, oauthEnabled])
 
@@ -1495,9 +1555,13 @@ window.__ModuleLoader__.load({
       const start = async () => {
         if (busy) return
         const wasConfigured = oauthConfigured === true
+        wasConfiguredRef.current = wasConfigured
+        answeredRef.current = null
+        runRef.current += 1
+        const run = runRef.current
         setBusy(true)
         setOauthConfigured(false)
-        setMessage(null)
+        setNote(null)
         setLink(null)
         setPromptEvent(null)
         try {
@@ -1506,8 +1570,9 @@ window.__ModuleLoader__.load({
           const stream = ns.begin({ provider: route, method: 'oauth' })
           streamRef.current = stream
           for await (const event of stream) {
+            if (runRef.current !== run) break
             if (event.type === 'notice') {
-              setMessage(event.notice.message)
+              showNotice(event.notice.message)
               setLink(event.notice.url ? { url: event.notice.url, code: event.notice.code } : null)
             } else if (event.type === 'prompt') {
               setAnswer(event.prompt.kind === 'select' ? event.prompt.options?.[0]?.id ?? '' : '')
@@ -1515,79 +1580,143 @@ window.__ModuleLoader__.load({
             } else if (event.type === 'settled') {
               if (event.status === 'authorized') {
                 setOauthConfigured(true)
-                setMessage(null)
+                setNote(null)
                 setLink(null)
+                // Tell this card's usage line, which reads the status only on mount.
+                signInSignal.mark(oauthRoute)
               } else {
                 setOauthConfigured(wasConfigured)
-                setMessage('Sign-in cancelled.')
+                setLink(null)
+                showNotice('Sign-in cancelled.')
               }
             }
           }
         } catch (error) {
-          setOauthConfigured(wasConfigured)
-          setMessage(error instanceof Error ? error.message : String(error))
+          if (runRef.current === run) {
+            setOauthConfigured(wasConfigured)
+            setLink(null)
+            showFailure(error instanceof Error ? error.message : String(error))
+          }
         } finally {
-          streamRef.current = null
-          setBusy(false)
-          setPromptEvent(null)
+          if (runRef.current === run) {
+            streamRef.current = null
+            setBusy(false)
+            setPromptEvent(null)
+          }
         }
+      }
+
+      const cancel = () => {
+        if (!closeStream()) return
+        setBusy(false)
+        setLink(null)
+        setPromptEvent(null)
+        setAnswer('')
+        setOauthConfigured(wasConfiguredRef.current)
+        showNotice('Sign-in cancelled.')
       }
 
       const submit = () => {
         if (!promptEvent || !streamRef.current) return
+        if (answeredRef.current === promptEvent.id) return
+        answeredRef.current = promptEvent.id
         streamRef.current.send({ type: 'answer', id: promptEvent.id, answer })
         setPromptEvent(null)
         setAnswer('')
       }
 
+      // Enter submits; Enter that confirms an IME composition (keyCode 229)
+      // must not.
+      const onAnswerKeyDown = (event) => {
+        if (event.key !== 'Enter') return
+        if (event.isComposing || event.nativeEvent?.isComposing || event.keyCode === 229) return
+        event.preventDefault()
+        submit()
+      }
+
+      const noteNode = note
+        ? React.createElement(
+            'div',
+            note.failure
+              ? { role: 'alert', className: 'pup-err', style: { marginTop: 6, fontSize: 12, overflowWrap: 'anywhere' } }
+              : { role: 'status', style: { marginTop: 6, fontSize: 12, overflowWrap: 'anywhere' } },
+            note.text,
+          )
+        : null
+
       if (oauthConfigured === true) {
         return React.createElement(
           'div',
-          { style: { marginTop: 8, padding: '0 12px 8px', display: 'flex', alignItems: 'center', gap: 8 } },
+          { style: { marginTop: 8, padding: '0 12px 8px' } },
           React.createElement(
-            'span',
-            { role: 'status', className: 'pup-ok', style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 } },
-            React.createElement('span', { className: 'pup-dot pup-ok' }),
-            `Signed in with ${providerName}`,
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+            React.createElement(
+              'span',
+              { role: 'status', className: 'pup-ok', style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 } },
+              React.createElement('span', { className: 'pup-dot pup-ok' }),
+              `Signed in with ${providerName}`,
+            ),
+            React.createElement(
+              primitives.Button,
+              { type: 'button', variant: 'outline', size: 'sm', onClick: start, disabled: busy },
+              busy ? 'Waiting for sign-in…' : 'Re-authenticate',
+            ),
           ),
-          React.createElement(
-            primitives.Button,
-            { type: 'button', variant: 'outline', size: 'sm', onClick: start, disabled: busy },
-            busy ? 'Waiting for sign-in…' : 'Re-authenticate',
-          ),
+          noteNode,
         )
       }
 
+      const promptId = promptEvent ? `pup-login-${oauthRoute}-${promptEvent.id}` : null
+      const prompt = promptEvent?.prompt
       return React.createElement(
         'div',
         { style: { marginTop: 8, padding: '0 12px 8px' } },
         React.createElement(
-          primitives.Button,
-          { type: 'button', variant: 'outline', size: 'sm', onClick: start, disabled: busy },
-          busy ? 'Waiting for sign-in…' : label,
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+          React.createElement(
+            primitives.Button,
+            { type: 'button', variant: 'outline', size: 'sm', onClick: start, disabled: busy },
+            busy ? 'Waiting for sign-in…' : label,
+          ),
+          busy ? React.createElement(primitives.Button, { type: 'button', variant: 'outline', size: 'sm', onClick: cancel }, 'Cancel') : null,
         ),
-        message ? React.createElement('div', { role: 'status', style: { marginTop: 6, fontSize: 12 } }, message) : null,
-        link ? React.createElement('div', { style: { marginTop: 6, fontSize: 12 } },
-          React.createElement('a', { href: link.url, target: '_blank', rel: 'noreferrer' }, link.url),
-          link.code ? React.createElement('div', null, `Code: ${link.code}`) : null,
+        noteNode,
+        link ? React.createElement('div', { style: { marginTop: 6, fontSize: 12, minWidth: 0, overflowWrap: 'anywhere' } },
+          React.createElement('a', { href: link.url, target: '_blank', rel: 'noreferrer noopener', style: { overflowWrap: 'anywhere' } }, link.url),
+          link.code
+            ? React.createElement('div', { className: 'pup-login-code', style: { marginTop: 4, overflowWrap: 'anywhere', userSelect: 'text' } }, `Code: ${link.code}`)
+            : null,
         ) : null,
-        promptEvent ? React.createElement('div', { style: { marginTop: 8, display: 'flex', gap: 6, alignItems: 'center' } },
-          promptEvent.prompt.kind === 'select'
-            ? React.createElement('select', {
-                className: 'pup-login-control',
-                value: answer,
-                onChange: (event) => setAnswer(event.target.value),
-                style: LOGIN_CONTROL_STYLE,
-              }, promptEvent.prompt.options.map((option) => React.createElement('option', { key: option.id, value: option.id }, option.label)))
-            : React.createElement('input', {
-                className: 'pup-login-control',
-                type: promptEvent.prompt.kind === 'secret' ? 'password' : 'text',
-                value: answer,
-                placeholder: promptEvent.prompt.placeholder,
-                onChange: (event) => setAnswer(event.target.value),
-                style: LOGIN_CONTROL_STYLE,
-              }),
-          React.createElement(primitives.Button, { type: 'button', variant: 'outline', size: 'sm', onClick: submit }, 'Submit'),
+        prompt ? React.createElement('div', { style: { marginTop: 8 } },
+          React.createElement('label', {
+            htmlFor: promptId,
+            style: { display: 'block', marginBottom: 4, fontSize: 12, color: 'var(--dsw-alias-label-primary)', overflowWrap: 'anywhere' },
+          }, prompt.message || 'Your answer'),
+          React.createElement('div', { style: { display: 'flex', gap: 6, alignItems: 'center' } },
+            prompt.kind === 'select'
+              ? React.createElement('select', {
+                  id: promptId,
+                  className: 'pup-login-control',
+                  autoFocus: true,
+                  value: answer,
+                  onChange: (event) => setAnswer(event.target.value),
+                  style: LOGIN_CONTROL_STYLE,
+                }, prompt.options.map((option) => React.createElement('option', { key: option.id, value: option.id }, option.label)))
+              : React.createElement('input', {
+                  id: promptId,
+                  className: 'pup-login-control',
+                  type: prompt.kind === 'secret' ? 'password' : 'text',
+                  autoFocus: true,
+                  value: answer,
+                  placeholder: prompt.placeholder,
+                  onChange: (event) => setAnswer(event.target.value),
+                  onKeyDown: onAnswerKeyDown,
+                  style: LOGIN_CONTROL_STYLE,
+                }),
+            React.createElement(primitives.Button, { type: 'button', variant: 'outline', size: 'sm', onClick: submit }, 'Submit'),
+          ),
         ) : null,
       )
     }
