@@ -47,6 +47,12 @@ export const LIGHT_TOKENS = {
   '--dsw-alias-interactive-bg-hover-solid': '#ececf0',
   '--dsw-radius-sm': '6px',
   '--dsw-radius-xl': '14px',
+  '--dsw-radius-lg': '16px',
+  '--dsw-alias-label-tertiary': '#86868b',
+  '--dsw-alias-interactive-bg-hover': 'rgba(38,49,72,.06)',
+  '--dsw-specific-menu': 'rgba(248,249,250,.94)',
+  '--dsw-menu-backdrop-filter': 'blur(40px) saturate(150%)',
+  '--dsw-elevation-prominent': '0 0 0 .5px rgba(0,0,0,.12),0 3px 8px 0 rgba(0,0,0,.04),0 0 20px 0 rgba(0,0,0,.05)',
   '--g-page-bg': '#f2f2f5',
 }
 
@@ -65,6 +71,12 @@ export const DARK_TOKENS = {
   '--dsw-alias-interactive-bg-hover-solid': '#2c2c30',
   '--dsw-radius-sm': '6px',
   '--dsw-radius-xl': '14px',
+  '--dsw-radius-lg': '16px',
+  '--dsw-alias-label-tertiary': '#8e8e93',
+  '--dsw-alias-interactive-bg-hover': 'rgba(255,255,255,.08)',
+  '--dsw-specific-menu': 'rgba(48,49,54,.94)',
+  '--dsw-menu-backdrop-filter': 'blur(40px) saturate(150%)',
+  '--dsw-elevation-prominent': '0 0 0 .5px rgba(255,255,255,.16),0 3px 8px 0 rgba(0,0,0,.04),0 0 20px 0 rgba(0,0,0,.05)',
   '--g-page-bg': '#111113',
 }
 
@@ -133,11 +145,32 @@ function cardScenario({ id, provider, title, note, state, stub, refresh = false,
 }
 
 /**
+ * The stage an open chip is drawn on. The popover is `position: fixed` and
+ * placed by the client's own measurement; on this page the stage has a
+ * transform, which makes it the box a fixed descendant is placed in, and the
+ * harness viewport has the stage's size. So the popover lands where the
+ * client put it relative to a chip drawn at `anchor` (default: low in the
+ * stage, like the composer dock).
+ */
+export const POP_STAGE = { width: 600, height: 560 }
+const POP_ANCHOR = { left: 150, top: 516 }
+/** The approximate chip and panel sizes the harness reports for the measurement. */
+const CHIP_SIZE = { width: 170, height: 22 }
+const PANEL_SIZE = { width: 420, height: 380 }
+
+function stageRects(anchor) {
+  const trigger = { left: anchor.left, top: anchor.top, width: CHIP_SIZE.width, height: CHIP_SIZE.height, right: anchor.left + CHIP_SIZE.width, bottom: anchor.top + CHIP_SIZE.height }
+  const panel = { left: 0, top: 0, width: PANEL_SIZE.width, height: PANEL_SIZE.height, right: PANEL_SIZE.width, bottom: PANEL_SIZE.height }
+  return (node) => (node?.props?.role === 'dialog' ? panel : trigger)
+}
+
+/**
  * A composer dock chip, optionally with its popover open. `stub` and
  * `refresh` work as for cards: the popover opens for the Refresh and closes
- * again unless `open`.
+ * again unless `open`. `anchor` moves the chip on the stage (the placement
+ * clamps).
  */
-function chipScenario({ id, provider, title, note, state, stub, refresh = false, open = false, waiting = false, group = 'Composer chips' }) {
+function chipScenario({ id, provider, title, note, state, stub, refresh = false, open = false, waiting = false, anchor = POP_ANCHOR, group = 'Composer chips' }) {
   const spec = PROVIDERS[provider]
   return {
     id,
@@ -145,12 +178,13 @@ function chipScenario({ id, provider, title, note, state, stub, refresh = false,
     title,
     note,
     popover: open,
+    anchor: open ? anchor : null,
     async run() {
       const namespaces = state || stub ? { [spec.namespace]: createUsageNamespaceStub(state, stub) } : {}
-      const h = await bootClient({ namespaces, activeProvider: spec.route })
+      const h = await bootClient({ namespaces, activeProvider: spec.route, viewport: POP_STAGE })
       try {
         if (waiting) h.stores.get(provider).waiting = true
-        const mount = await h.mountChip(`${provider}-usage-chip`)
+        const mount = await h.mountChip(`${provider}-usage-chip`, {}, { rect: stageRects(anchor) })
         const chip = () => must(findByType(mount.tree, 'button'), `${id}: the chip has no button`)
         if (open || refresh) await click(mount, chip())
         if (refresh) {
@@ -450,9 +484,24 @@ export const SCENARIOS = [
   chipScenario({ id: 'chip-deepseek-low', provider: 'deepseek', title: 'DeepSeek chip, nearly empty', note: 'Balance of one unit or less: amber dot.', state: fixtures.deepseek({ cny: 0.6 }) }),
   chipScenario({ id: 'chip-error', provider: 'zhipu', title: 'Chip after a failed first read', note: 'No data and an error: the chip says "unavailable" (the "!" mark only beside it) and the dot is red.', state: errorWithoutData('zhipu') }),
   chipScenario({ id: 'chip-loading', provider: 'kimi', title: 'Chip while loading', note: 'No data yet: the chip shows the word "usage".', state: fixtures.loading(ready('kimi'), { keepData: false }) }),
-  chipScenario({ id: 'chip-popover-glm', provider: 'zhipu', title: 'GLM chip, popover open', note: 'Clicking the chip opens the full panel above it.', state: ready('zhipu'), open: true }),
-  chipScenario({ id: 'chip-popover-openrouter', provider: 'openrouter', title: 'OpenRouter chip, popover open', note: 'The key and account sections in the popover.', state: ready('openrouter'), open: true }),
+  chipScenario({ id: 'chip-anthropic', provider: 'anthropic', title: 'Claude chip (same chip type as Kimi)', note: 'Weekly percentage plus the extra usage used; amber dot at 88%.', state: ready('anthropic') }),
+  chipScenario({ id: 'chip-popover-glm', provider: 'zhipu', title: 'GLM chip, popover open', note: 'Clicking the chip opens the full panel above it, as a dialog portaled to the page body; the most used window is the labelled bar.', state: ready('zhipu'), open: true }),
+  chipScenario({ id: 'chip-popover-openrouter', provider: 'openrouter', title: 'OpenRouter chip, popover open', note: 'The key and account sections in the popover, each budget bar with its caption.', state: ready('openrouter'), open: true }),
+  chipScenario({ id: 'chip-popover-kimi', provider: 'kimi', title: 'Kimi chip, popover open', note: 'Quota windows, requests and the Extra Usage wallet; the 7-day window is the labelled bar.', state: ready('kimi'), open: true }),
+  chipScenario({ id: 'chip-popover-codex', provider: 'codex', title: 'Codex chip, popover open', note: 'Plan windows, credits and reset credits.', state: ready('codex'), open: true }),
+  chipScenario({ id: 'chip-popover-anthropic', provider: 'anthropic', title: 'Claude chip, popover open', note: 'Weekly windows, the scoped limit, extra usage and spend; the bar under the figures is captioned with its window.', state: ready('anthropic'), open: true }),
+  chipScenario({ id: 'chip-popover-deepseek', provider: 'deepseek', title: 'DeepSeek chip, popover open', note: 'The balance panel: one row per currency, no bar.', state: ready('deepseek'), open: true }),
+  chipScenario({ id: 'chip-popover-left-edge', provider: 'zhipu', title: 'GLM chip at the left window edge, popover open', note: 'The chip starts 4px from the edge: the measured placement shifts the popover to 12px inside.', state: ready('zhipu'), open: true, anchor: { left: 4, top: 516 } }),
+  chipScenario({ id: 'chip-popover-below', provider: 'zhipu', title: 'GLM chip near the top of the window, popover open', note: 'No room above the chip: the popover opens 8px below it, with a max-height that keeps it 12px above the window bottom.', state: ready('zhipu'), open: true, anchor: { left: 150, top: 20 } }),
   chipScenario({ id: 'chip-popover-waiting', provider: 'deepseek', title: 'DeepSeek chip, host service unreachable', note: 'Idle with the "usage host service is not reachable" hint.', waiting: true, open: true }),
+  cardScenario({
+    id: 'labelled-bar-claude',
+    provider: 'anthropic',
+    title: 'Claude: the labelled worst-window bar (expanded card)',
+    note: 'The live case: the 7-day window at 74%. The bar under the figures has its own caption ("7-day window 74.0% used") and is a progressbar, so it no longer reads as the bar of the last metric row.',
+    state: fixtures.anthropic({ sevenDay: 0.74 }),
+    expand: true,
+  }),
   // ---- sign-in ----
   signInScenario({ id: 'signin-checking', provider: 'codex', title: 'Sign-in: checking the stored state', note: 'The status call has not answered yet.', login: { status: 'pending' } }),
   signInScenario({ id: 'signin-signed-out', provider: 'codex', title: 'Sign-in: signed out (ChatGPT)', note: 'No stored OAuth record and no key: the sign-in button.', login: { configured: false } }),
@@ -492,6 +541,7 @@ export async function renderScenario(scenario) {
     title: scenario.title,
     note: scenario.note,
     popover: scenario.popover === true,
+    anchor: scenario.anchor ?? null,
     expectEmpty: scenario.expectEmpty === true,
     html,
     css,
@@ -531,7 +581,8 @@ body{margin:0;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
 .g-theme.theme-dark{color-scheme:dark}
 .g-theme figcaption{padding:4px 12px;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-secondary);border-bottom:1px solid var(--dsw-alias-border-l1)}
 .g-stage{padding:12px 16px 16px;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-.g-stage-pop{display:flex;justify-content:flex-end;padding-top:340px;padding-left:360px}
+.g-stage-pop{position:relative;transform:translateZ(0);width:${POP_STAGE.width}px;max-width:100%;height:${POP_STAGE.height}px;padding:0;overflow:hidden}
+.g-anchor{position:absolute}
 .g-empty{font-style:italic;color:var(--dsw-alias-label-secondary)}
 .dsw-primitive{font:inherit;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);background:transparent;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm);height:28px;padding:0 10px;cursor:default}
 .dsw-primitive:disabled{opacity:.5}
@@ -539,7 +590,9 @@ body{margin:0;font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
 `
 
 function sectionHtml(entry) {
-  const stage = entry.html === '' ? '<span class="g-empty">(renders nothing)</span>' : entry.html
+  let stage = entry.html === '' ? '<span class="g-empty">(renders nothing)</span>' : entry.html
+  // An open chip sits where the harness measured it; its fixed popover is placed in the transformed stage.
+  if (entry.popover && entry.anchor) stage = `<div class="g-anchor" style="left:${Number(entry.anchor.left)}px;top:${Number(entry.anchor.top)}px">${stage}</div>`
   const stageClass = entry.popover ? 'g-stage g-stage-pop' : 'g-stage'
   const panel = (theme, label) => `<figure class="g-theme theme-${theme}"><figcaption>${label}</figcaption><div class="${stageClass}">${stage}</div></figure>`
   return `<section class="g-scenario" id="s-${escapeHtml(entry.id)}">
@@ -582,7 +635,7 @@ ${pluginCss}
 <header class="g-header">
 <h1>Usage plugin gallery</h1>
 <p>${rendered.length} scenarios, each rendered by the plugin's own client code with fake data, under a light and a dark token sheet.</p>
-<p class="g-banner">The token values below are approximate. They were written by hand, not exported from the host theme, so this page shows structure and layout, not exact colour. Host primitives (the sign-in buttons) are drawn as plain buttons.</p>
+<p class="g-banner">The token values below are approximate. They were written by hand, not exported from the host theme, so this page shows structure and layout, not exact colour. Host primitives (the sign-in buttons) are drawn as plain buttons. An open chip popover is a fixed dialog the client portals to the page body; here each one is drawn where the client's own measurement placed it, on a stage the size of the harness viewport (${POP_STAGE.width} x ${POP_STAGE.height}).</p>
 </header>
 <nav class="g-nav">${nav}</nav>
 <main class="g-main">

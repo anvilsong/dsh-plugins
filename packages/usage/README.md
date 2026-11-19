@@ -188,7 +188,7 @@ Security properties:
 | Surface | Behavior |
 |---|---|
 | Settings → Models provider card | A compact usage line inside each provider's own card; click expands the full panel. Hidden when DSH reports the row's key as not configured, unless the row is an OAuth row (Codex, Claude) with a stored sign-in; it also stays empty until the first read has produced data or a failure |
-| Composer chip | Follows the session's active provider; click opens the panel as a popover |
+| Composer chip | Follows the session's active provider; click opens the panel in a popover above the chip (below it when there is no room), kept inside the window. Escape, a click outside, or opening another chip closes it; Escape returns the focus to the chip. One chip popover is open at a time |
 | Commands | `/usage-<provider>` refreshes, then prints a text report |
 
 Provider cards register by settings namespace and then match each row's

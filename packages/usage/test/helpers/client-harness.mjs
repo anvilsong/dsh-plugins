@@ -7,8 +7,10 @@
  *     renders function components eagerly; hook state is keyed by RENDER PATH
  *     (parent path + component type + key or sibling index), so two instances
  *     of one component type keep separate state;
- *   - a stub `document` that captures the stylesheet the client inserts and
- *     dispatches document events (mousedown, keydown, ...);
+ *   - a stub `document` that captures the stylesheet the client inserts,
+ *     dispatches document events (mousedown, keydown, ...) and tracks
+ *     `activeElement`; a stub `window` with a viewport size and resize/scroll
+ *     listeners; a fake `react-dom` whose `createPortal` leaves a `portal` node;
  *   - stub Remote namespaces, a stub locale service, a session id and a fake
  *     model directory, all supplied by the caller.
  *
@@ -144,13 +146,50 @@ function makeEvent(type, init = {}) {
   }
 }
 
+/** The capture flag of an addEventListener/removeEventListener options argument. */
+const captureOf = (options) => (typeof options === 'boolean' ? options : Boolean(options?.capture))
+
+/**
+ * Event-target methods for the stub document and window. Like the DOM, a
+ * listener added with capture is a separate registration and is removed only
+ * with the same capture flag, so a cleanup that passes another flag leaks and
+ * `listenerCount` shows it. `dispatch` calls capture listeners first.
+ */
+function eventTarget(self) {
+  const listeners = new Map()
+  return {
+    addEventListener(type, listener, options) {
+      if (typeof listener !== 'function') return
+      const capture = captureOf(options)
+      const list = listeners.get(type) ?? []
+      if (list.some((entry) => entry.listener === listener && entry.capture === capture)) return
+      list.push({ listener, capture })
+      listeners.set(type, list)
+    },
+    removeEventListener(type, listener, options) {
+      const capture = captureOf(options)
+      const list = listeners.get(type)
+      const index = list ? list.findIndex((entry) => entry.listener === listener && entry.capture === capture) : -1
+      if (index >= 0) list.splice(index, 1)
+    },
+    listenerCount(type) { return listeners.get(type)?.length ?? 0 },
+    /** Fire an event (mousedown, keydown, resize, ...) at every listener: capture listeners first. */
+    dispatch(type, init = {}) {
+      const event = makeEvent(type, init)
+      const list = [...(listeners.get(type) ?? [])]
+      for (const entry of [...list.filter((item) => item.capture), ...list.filter((item) => !item.capture)]) entry.listener.call(self(), event)
+      return event
+    },
+  }
+}
+
 /**
  * A document stub: `head.appendChild` records inserted elements (the client's
- * stylesheet), `getElementById` finds them, and document-level event listeners
- * can be fired with `dispatch(type, init)`.
+ * stylesheet), `getElementById` finds them, document-level event listeners
+ * can be fired with `dispatch(type, init)`, and `activeElement` follows the
+ * fake elements' `focus()` (see attachRefs).
  */
 export function createStubDocument() {
-  const listeners = new Map()
   const byId = new Map()
   const head = {
     children: [],
@@ -168,27 +207,23 @@ export function createStubDocument() {
       return element
     },
   }
+  const body = {
+    tagName: 'BODY',
+    children: [],
+    parent: null,
+    appendChild(element) { this.children.push(element); return element },
+    contains(other) { return other === this },
+  }
   const document = {
     head,
-    body: { children: [], appendChild(element) { this.children.push(element); return element } },
+    body,
+    /** The focused fake element; the body when nothing is focused. */
+    activeElement: body,
     createElement(tagName) {
       return { tagName: String(tagName).toUpperCase(), id: '', textContent: '', parentNode: null }
     },
     getElementById(id) { return byId.get(id) ?? null },
-    addEventListener(type, listener) {
-      if (typeof listener !== 'function') return
-      const set = listeners.get(type) ?? new Set()
-      set.add(listener)
-      listeners.set(type, set)
-    },
-    removeEventListener(type, listener) { listeners.get(type)?.delete(listener) },
-    listenerCount(type) { return listeners.get(type)?.size ?? 0 },
-    /** Fire a document event (mousedown, keydown, ...) at every listener. */
-    dispatch(type, init = {}) {
-      const event = makeEvent(type, init)
-      for (const listener of [...(listeners.get(type) ?? [])]) listener.call(document, event)
-      return event
-    },
+    ...eventTarget(() => document),
     /** The textContent of every inserted `<style>` element, joined. */
     get styleText() {
       return head.children.filter((element) => element.tagName === 'STYLE').map((element) => element.textContent).join('\n')
@@ -197,40 +232,91 @@ export function createStubDocument() {
   return document
 }
 
+/**
+ * A window stub for the client: the viewport size (`innerWidth`,
+ * `innerHeight`, changeable by the test) and window-level listeners
+ * (resize, scroll) with `listenerCount` and `dispatch`.
+ */
+export function createStubWindow(document, { width = 1280, height = 800 } = {}, extra = {}) {
+  const win = {
+    document,
+    innerWidth: width,
+    innerHeight: height,
+    ...extra,
+    ...eventTarget(() => win),
+  }
+  return win
+}
+
 // ---------------------------------------------------------------------------
 // Fake elements for ref props
 // ---------------------------------------------------------------------------
 
+export const DEFAULT_RECT = { top: 0, left: 0, right: 100, bottom: 20, width: 100, height: 20 }
+
 /**
  * Give every node that has a `ref` prop a fake element and assign it to the
  * ref (object `{ current }` or callback). Elements know their nearest ref'd
- * ancestor, so `contains(target)` works for outside-click tests.
+ * ancestor, so `contains(target)` works for outside-click tests. A `portal`
+ * node (the fake `createPortal`) starts a new tree under the body: like the
+ * DOM, an element inside a portal is NOT contained by the elements around the
+ * portal.
+ *
+ * Options:
+ *   rect      the rect every `getBoundingClientRect()` returns, or a function
+ *             `(node) => rect` called at measurement time
+ *   document  the stub document: `focus()` and `blur()` move its activeElement
+ *   refs      a Set that collects every ref this pass attached
+ *
+ * An object ref that already holds a fake element of the same tag keeps it
+ * (its node, props and parent are updated), the way React keeps a DOM node
+ * across renders, so identity checks such as `activeElement === trigger`
+ * survive a re-render.
  */
-export function attachRefs(tree, { rect = { top: 0, left: 0, right: 100, bottom: 20, width: 100, height: 20 } } = {}) {
+export function attachRefs(tree, { rect = DEFAULT_RECT, document = null, refs = null } = {}) {
   const attached = []
   const visit = (value, parentElement) => {
     for (const node of flattenChildren(value)) {
       if (typeof node !== 'object') continue
+      if (node.type === 'portal') {
+        visit(node.children, null)
+        continue
+      }
       let element = null
       const ref = node.props?.ref
       if (ref && typeof node.type === 'string') {
-        element = {
-          tagName: node.type.toUpperCase(),
-          node,
-          props: node.props,
-          parent: parentElement,
+        const tagName = node.type.toUpperCase()
+        const kept = typeof ref === 'object' && ref.current?.fakeElement === true && ref.current.tagName === tagName ? ref.current : null
+        element = kept ?? {
+          fakeElement: true,
+          tagName,
           isConnected: true,
           focused: false,
+          ownerDocument: document,
           contains(other) {
             for (let current = other; current; current = current.parent) if (current === this) return true
             return false
           },
-          getBoundingClientRect() { return { ...rect } },
-          focus() { this.focused = true },
-          blur() { this.focused = false },
+          getBoundingClientRect() { return { ...(typeof rect === 'function' ? rect(this.node) : rect) } },
+          focus() {
+            this.focused = true
+            if (document) {
+              if (document.activeElement && document.activeElement !== this) document.activeElement.focused = false
+              document.activeElement = this
+            }
+          },
+          blur() {
+            this.focused = false
+            if (document && document.activeElement === this) document.activeElement = document.body
+          },
         }
+        element.node = node
+        element.props = node.props
+        element.parent = parentElement
+        element.isConnected = true
         if (typeof ref === 'function') ref(element)
         else ref.current = element
+        refs?.add(ref)
         attached.push(element)
       }
       visit(node.children, element ?? parentElement)
@@ -244,7 +330,12 @@ export function attachRefs(tree, { rect = { top: 0, left: 0, right: 100, bottom:
 // Fake React
 // ---------------------------------------------------------------------------
 
-function createReactRuntime() {
+/**
+ * `wrap(fn)` runs a render pass and its effects (the client's own code) with
+ * the browser globals installed; `document` is the stub that fake elements
+ * move focus in.
+ */
+function createReactRuntime({ wrap = (fn) => fn(), document = null } = {}) {
   let frame = null
   const typeIds = new WeakMap()
   let nextTypeId = 1
@@ -406,16 +497,28 @@ function createReactRuntime() {
     }
   }
 
+  /** Clear the refs of elements that left the tree, as React does. */
+  function detachRefs(refs) {
+    for (const ref of refs) {
+      if (typeof ref === 'function') ref(null)
+      else ref.current = null
+    }
+  }
+
   /**
    * A mounted root. `render()` runs one pass (effects run after it); `settle()`
    * waits for async work and re-renders while state setters marked it dirty.
+   * Options: `autoRefs` (default true) attaches fake elements after every
+   * pass and clears the refs of elements that are gone; `rect` is handed to
+   * attachRefs (an object or a `(node) => rect` function).
    */
-  function createRoot(component, initialProps, { name = 'root', autoRefs = true } = {}) {
+  function createRoot(component, initialProps, { name = 'root', autoRefs = true, rect } = {}) {
     const runtime = { instances: new Map(), pass: null, dirty: false, idSeq: 0 }
     let props = initialProps
     let tree = null
     let renders = 0
     let unmounted = false
+    let attachedRefs = new Set()
 
     const root = {
       get tree() { return tree },
@@ -427,19 +530,26 @@ function createReactRuntime() {
       render(nextProps) {
         if (unmounted) throw new Error('render on an unmounted root')
         if (nextProps !== undefined) props = nextProps
-        runtime.dirty = false
-        runtime.pass = { seen: new Set(), effects: [], layoutEffects: [] }
-        const previous = frame
-        frame = { path: `root:${name}`, counts: new Map(), instance: null, runtime }
-        try {
-          tree = React.createElement(component, props)
-        } finally {
-          frame = previous
-        }
-        renders += 1
-        if (autoRefs) attachRefs(tree)
-        finishPass(runtime)
-        return tree
+        return wrap(() => {
+          runtime.dirty = false
+          runtime.pass = { seen: new Set(), effects: [], layoutEffects: [] }
+          const previous = frame
+          frame = { path: `root:${name}`, counts: new Map(), instance: null, runtime }
+          try {
+            tree = React.createElement(component, props)
+          } finally {
+            frame = previous
+          }
+          renders += 1
+          if (autoRefs) {
+            const refs = new Set()
+            attachRefs(tree, { rect, document, refs })
+            detachRefs([...attachedRefs].filter((ref) => !refs.has(ref)))
+            attachedRefs = refs
+          }
+          finishPass(runtime)
+          return tree
+        })
       },
       /** Wait for pending promises and re-render until two quiet rounds pass. */
       async settle({ rounds = 25, quiet = 2 } = {}) {
@@ -456,22 +566,35 @@ function createReactRuntime() {
         }
         return tree
       },
-      attachRefs(options) { return attachRefs(tree, options) },
+      attachRefs(options) { return attachRefs(tree, { rect, document, ...options }) },
       unmount() {
         if (unmounted) return
         unmounted = true
-        for (const instance of runtime.instances.values()) {
-          instance.unmounted = true
-          runCleanups(instance)
-        }
+        wrap(() => {
+          for (const instance of runtime.instances.values()) {
+            instance.unmounted = true
+            runCleanups(instance)
+          }
+        })
         runtime.instances.clear()
+        detachRefs(attachedRefs)
+        attachedRefs = new Set()
         tree = null
       },
     }
     return root
   }
 
-  return { React, createRoot }
+  /**
+   * The fake `react-dom`: `createPortal(child, container)` is a `portal` node
+   * that keeps its container. The tree helpers walk into it; attachRefs
+   * starts a new element tree there; html.mjs serializes its children in place.
+   */
+  const ReactDOM = {
+    createPortal(child, container) { return { type: 'portal', props: { container }, children: [child] } },
+  }
+
+  return { React, ReactDOM, createRoot }
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +826,12 @@ function effectFilter(option) {
  *   mountGate       a promise `remote.$mount` waits for; boot does not wait for the mount then,
  *                   so a card can mount before the Remote namespaces exist (`h.mounting` settles later)
  *   effects         'all' (default) | 'none' | [labels] | (label) => boolean
+ *   viewport        { width, height } of the stub window (default 1280 x 800); `h.window`
+ *                   can change it later
+ *
+ * `require('react-dom')` answers the fake ReactDOM (createPortal). Every
+ * render pass of a mounted root, its effects and its unmount run with
+ * `window` and `document` installed, like client code in a page.
  */
 function withBrowserGlobals(fakeWindow, document, fn) {
   const names = { window: fakeWindow, document }
@@ -731,6 +860,7 @@ export async function bootClient(options = {}) {
     mountError,
     mountGate,
     effects = 'all',
+    viewport,
   } = options
   const modelDirectory = options.modelDirectory ?? (activeProvider !== undefined ? createFakeModelDirectory({ provider: activeProvider }) : undefined)
 
@@ -741,7 +871,7 @@ export async function bootClient(options = {}) {
 
   const document = createStubDocument()
   const loaded = []
-  const fakeWindow = { document, __ModuleLoader__: { load(value) { loaded.push(value) } } }
+  const fakeWindow = createStubWindow(document, viewport, { __ModuleLoader__: { load(value) { loaded.push(value) } } })
   withBrowserGlobals(fakeWindow, document, () => {
     vm.runInThisContext(source, { filename: 'usage/src/client.js' })
   })
@@ -749,9 +879,10 @@ export async function bootClient(options = {}) {
     throw new Error(`expected one module load for ${PACKAGE_ID}, saw ${loaded.map((entry) => entry.id).join(', ') || 'none'}`)
   }
 
-  const { React, createRoot } = createReactRuntime()
+  const { React, ReactDOM, createRoot } = createReactRuntime({ wrap: (fn) => withBrowserGlobals(fakeWindow, document, fn), document })
   const exportsValue = loaded[0].factory((specifier) => {
     if (specifier === 'react') return React
+    if (specifier === 'react-dom') return ReactDOM
     if (specifier === PRIMITIVES_SPECIFIER) return primitives
     throw new Error(`unexpected require(${JSON.stringify(specifier)}) from the client module`)
   })
@@ -841,9 +972,11 @@ export async function bootClient(options = {}) {
 
   const h = {
     React,
+    ReactDOM,
     exports: exportsValue,
     ctx,
     document,
+    window: fakeWindow,
     providers,
     stores,
     slots,

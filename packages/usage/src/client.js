@@ -28,6 +28,19 @@ window.__ModuleLoader__.load({
 
     const React = require('react')
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
+    // react-dom is a platform seed word of the web shell's module table, like
+    // react. Only its createPortal is used (the chip popover); without it the
+    // popover renders inline.
+    const createPortal = (() => {
+      try {
+        const dom = require('react-dom')
+        return dom && typeof dom.createPortal === 'function' ? dom.createPortal : null
+      } catch {
+        return null
+      }
+    })()
+    // Placement must run before paint; a renderer without layout effects falls back to effects.
+    const useLayoutEffect = typeof React.useLayoutEffect === 'function' ? React.useLayoutEffect : React.useEffect
 
     const CARD_SLOT = 'settings.models.provider-card'
     const CHIP_SLOT = 'conversation.composer.dock'
@@ -118,8 +131,10 @@ window.__ModuleLoader__.load({
       'gap:10px 14px}',
       '.orup-label{font-size:11px;color:var(--dsw-alias-label-secondary)}',
       '.orup-value{font-variant-numeric:tabular-nums;font-weight:600}',
+      '.orup-meter{margin-top:10px}',
+      '.orup-barcap{font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);margin-bottom:4px}',
       '.orup-bar{height:4px;border-radius:2px;background:var(--dsw-alias-border-l1);',
-      'margin-top:10px;overflow:hidden}',
+      'overflow:hidden}',
       '.orup-bar>i{display:block;height:100%}',
       '.orup-msg{color:var(--dsw-alias-label-secondary);line-height:1.5}',
       '.orup-err{color:var(--dsw-alias-state-error-primary);line-height:1.5;',
@@ -129,22 +144,10 @@ window.__ModuleLoader__.load({
       '.orup-warn{color:var(--dsw-alias-state-warn-primary)}',
       '.orup-bad{color:var(--dsw-alias-state-error-primary)}',
       '.orup-stale{font-size:11px;color:var(--dsw-alias-state-warn-primary);white-space:nowrap}',
-      '.orup-chipwrap{position:relative;display:inline-flex}',
-      '.orup-chip{font:inherit;font-size:12px;display:inline-flex;align-items:center;gap:6px;',
-      'color:var(--dsw-alias-label-secondary);background:transparent;',
-      'border:1px solid var(--dsw-alias-border-l1);border-radius:999px;',
-      'padding:2px 10px;cursor:pointer;white-space:nowrap}',
-      '.orup-chip:hover{border-color:var(--dsw-alias-border-l2);',
-      'color:var(--dsw-alias-label-primary)}',
-      '.orup-chip b{font-weight:600;font-variant-numeric:tabular-nums;',
-      'color:var(--dsw-alias-label-primary)}',
       '.orup-dot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-border-l2)}',
       '.orup-dot.orup-ok{background:var(--dsw-alias-state-success-primary)}',
       '.orup-dot.orup-warn{background:var(--dsw-alias-state-warn-primary)}',
       '.orup-dot.orup-bad{background:var(--dsw-alias-state-error-primary)}',
-      '.orup-pop{position:absolute;bottom:calc(100% + 8px);right:0;z-index:60;',
-      'min-width:340px;max-width:70vw;box-shadow:0 8px 28px rgba(0,0,0,.35)}',
-      '.orup-pop .orup-root{margin-top:0}',
       // ---- Kimi Code (kmup-) ----
       '.kmup-root{border:1px solid var(--dsw-alias-border-l1);border-radius:8px;',
       'background:var(--dsw-alias-bg-layer-1);padding:12px 14px;margin-top:12px;',
@@ -163,8 +166,10 @@ window.__ModuleLoader__.load({
       'gap:10px 14px}',
       '.kmup-label{font-size:11px;color:var(--dsw-alias-label-secondary)}',
       '.kmup-value{font-variant-numeric:tabular-nums;font-weight:600}',
+      '.kmup-meter{margin-top:10px}',
+      '.kmup-barcap{font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);margin-bottom:4px}',
       '.kmup-bar{height:4px;border-radius:2px;background:var(--dsw-alias-border-l1);',
-      'margin-top:10px;overflow:hidden}',
+      'overflow:hidden}',
       '.kmup-bar>i{display:block;height:100%}',
       '.kmup-msg{color:var(--dsw-alias-label-secondary);line-height:1.5}',
       '.kmup-err{color:var(--dsw-alias-state-error-primary);line-height:1.5;',
@@ -174,22 +179,10 @@ window.__ModuleLoader__.load({
       '.kmup-warn{color:var(--dsw-alias-state-warn-primary)}',
       '.kmup-bad{color:var(--dsw-alias-state-error-primary)}',
       '.kmup-stale{font-size:11px;color:var(--dsw-alias-state-warn-primary);white-space:nowrap}',
-      '.kmup-chipwrap{position:relative;display:inline-flex}',
-      '.kmup-chip{font:inherit;font-size:12px;display:inline-flex;align-items:center;gap:6px;',
-      'color:var(--dsw-alias-label-secondary);background:transparent;',
-      'border:1px solid var(--dsw-alias-border-l1);border-radius:999px;',
-      'padding:2px 10px;cursor:pointer;white-space:nowrap}',
-      '.kmup-chip:hover{border-color:var(--dsw-alias-border-l2);',
-      'color:var(--dsw-alias-label-primary)}',
-      '.kmup-chip b{font-weight:600;font-variant-numeric:tabular-nums;',
-      'color:var(--dsw-alias-label-primary)}',
       '.kmup-dot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-border-l2)}',
       '.kmup-dot.kmup-ok{background:var(--dsw-alias-state-success-primary)}',
       '.kmup-dot.kmup-warn{background:var(--dsw-alias-state-warn-primary)}',
       '.kmup-dot.kmup-bad{background:var(--dsw-alias-state-error-primary)}',
-      '.kmup-pop{position:absolute;bottom:calc(100% + 8px);right:0;z-index:60;',
-      'min-width:360px;max-width:70vw;box-shadow:0 8px 28px rgba(0,0,0,.35)}',
-      '.kmup-pop .kmup-root{margin-top:0}',
       // ---- Generic provider (pup-): DeepSeek, GLM, MiniMax, NewAPI ----
       '.pup-root{border:.5px solid var(--dsw-alias-settings-card-stroke);border-radius:var(--dsw-radius-xl);',
       'background:var(--dsw-alias-settings-card-fill);padding:12px 14px;margin-top:12px;',
@@ -210,8 +203,10 @@ window.__ModuleLoader__.load({
       'gap:10px 14px}',
       '.pup-label{font-size:11px;color:var(--dsw-alias-label-secondary)}',
       '.pup-value{font-variant-numeric:tabular-nums;font-weight:600}',
+      '.pup-meter{margin-top:10px}',
+      '.pup-barcap{font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary);margin-bottom:4px}',
       '.pup-bar{height:4px;border-radius:2px;background:var(--dsw-alias-border-l1);',
-      'margin-top:10px;overflow:hidden}',
+      'overflow:hidden}',
       '.pup-bar>i{display:block;height:100%}',
       '.pup-msg{color:var(--dsw-alias-label-secondary);line-height:1.5}',
       '.pup-err{color:var(--dsw-alias-state-error-primary);line-height:1.5;',
@@ -221,22 +216,35 @@ window.__ModuleLoader__.load({
       '.pup-warn{color:var(--dsw-alias-state-warn-primary)}',
       '.pup-bad{color:var(--dsw-alias-state-error-primary)}',
       '.pup-stale{font-size:11px;color:var(--dsw-alias-state-warn-primary);white-space:nowrap}',
-      '.pup-chipwrap{position:relative;display:inline-flex}',
-      '.pup-chip{font:inherit;font-size:12px;display:inline-flex;align-items:center;gap:6px;',
-      'color:var(--dsw-alias-label-secondary);background:transparent;',
-      'border:1px solid var(--dsw-alias-border-l1);border-radius:999px;',
-      'padding:2px 10px;cursor:pointer;white-space:nowrap}',
-      '.pup-chip:hover{border-color:var(--dsw-alias-border-l2);',
-      'color:var(--dsw-alias-label-primary)}',
-      '.pup-chip b{font-weight:600;font-variant-numeric:tabular-nums;',
-      'color:var(--dsw-alias-label-primary)}',
       '.pup-dot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-border-l2)}',
       '.pup-dot.pup-ok{background:var(--dsw-alias-state-success-primary)}',
       '.pup-dot.pup-warn{background:var(--dsw-alias-state-warn-primary)}',
       '.pup-dot.pup-bad{background:var(--dsw-alias-state-error-primary)}',
-      '.pup-pop{position:absolute;bottom:calc(100% + 8px);right:0;z-index:60;',
-      'min-width:340px;max-width:70vw;box-shadow:0 8px 28px rgba(0,0,0,.35)}',
-      '.pup-pop .pup-root{margin-top:0}',
+      // ---- Composer chip and its popover: one shared pill for every provider ----
+      // The pill copies the host's dock pills (dsh-client-ui-chat StatsPills.module.css:
+      // .anchor/.pill) and the popover its stat dialog surface (stat-dialog.module.css:
+      // .panel). The popover is portaled to document.body, so this sheet reaches it.
+      '.usage-chipwrap{display:inline-flex;min-width:0}',
+      '.usage-chip{display:inline-flex;align-items:center;gap:6px;box-sizing:border-box;max-width:100%;',
+      'padding:1px 8px;border:none;border-radius:var(--dsw-radius-sm);background:transparent;',
+      'color:var(--dsw-alias-label-tertiary);font:inherit;',
+      'font-size:calc(var(--dsh-content-font-size-secondary,13px) - 1px);',
+      'line-height:calc(20px + var(--dsh-content-font-delta-secondary,0px));',
+      'font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer}',
+      '.usage-chip[aria-expanded="true"]{background:var(--dsw-alias-interactive-bg-hover);',
+      'color:var(--dsw-alias-label-secondary)}',
+      '@media (hover:hover){.usage-chip:hover{background:var(--dsw-alias-interactive-bg-hover);',
+      'color:var(--dsw-alias-label-secondary)}}',
+      '.usage-chip>*{margin-top:0}',
+      '.usage-chip b{font-weight:600;color:var(--dsw-alias-label-secondary)}',
+      '.usage-pop{position:fixed;z-index:1100;box-sizing:border-box;margin:0;',
+      'width:min(420px,calc(100vw - 24px));',
+      'max-height:calc(100dvh - 12px - max(12px,var(--dsh-frame-overlay-top,12px)));',
+      'overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;outline:none;',
+      'border:0;border-radius:var(--dsw-radius-lg);background:var(--dsw-specific-menu);',
+      '-webkit-backdrop-filter:var(--dsw-menu-backdrop-filter);backdrop-filter:var(--dsw-menu-backdrop-filter);',
+      '--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent)}',
+      '.usage-pop>*{margin-top:0;border:0;border-radius:0;background:transparent}',
     ].join('')
 
     // ---------- shared formatters ----------
@@ -323,17 +331,36 @@ window.__ModuleLoader__.load({
       return budgetLevel(extra.balanceCents, extra.totalCents)
     }
 
-    /** The worst ratio across the Kimi quotas that are present. */
-    function worstRatio(quotas) {
-      if (!quotas) return null
+    /** The fixed Kimi-family quota records, in panel order, with their default labels. */
+    const QUOTA_LABELS = [
+      ['fiveHour', '5-hour window'],
+      ['sevenDay', '7-day window'],
+      ['monthTotal', 'Monthly (all)'],
+      ['monthCode', 'Monthly (code)'],
+    ]
+
+    /** The most used of some `{ ratio, label }` entries (the first one on a tie), or null. */
+    function mostUsed(entries) {
       let worst = null
-      for (const key of ['fiveHour', 'sevenDay', 'monthTotal', 'monthCode']) {
-        const q = quotas[key]
-        if (q && typeof q.usedRatio === 'number') {
-          if (worst === null || q.usedRatio > worst) worst = q.usedRatio
-        }
+      for (const entry of entries) {
+        if (typeof entry.ratio === 'number' && Number.isFinite(entry.ratio) && (worst === null || entry.ratio > worst.ratio)) worst = entry
       }
       return worst
+    }
+
+    /** The most used window of a quota provider's `windows` array: `{ ratio, label }`, or null. */
+    function worstWindowEntry(windows) {
+      return mostUsed((windows ?? []).filter(Boolean).map((w) => ({ ratio: w.usedRatio, label: w.label ?? w.key ?? CHIP_TEXT.window })))
+    }
+
+    /**
+     * The most used window of a Kimi-family state (Kimi, Codex, Claude): the
+     * fixed quota records when present, else the windows array.
+     */
+    function worstQuotaEntry(d) {
+      if (!d) return null
+      if (!d.quotas) return worstWindowEntry(d.windows)
+      return mostUsed(QUOTA_LABELS.filter(([key]) => d.quotas[key]).map(([key, label]) => ({ ratio: d.quotas[key].usedRatio, label: d.quotas[key].label ?? label })))
     }
 
     // ---------- read health: stale, failed and offline reads ----------
@@ -356,6 +383,30 @@ window.__ModuleLoader__.load({
       notAvailableWhy: 'Usage is not available for this provider: {message}',
       readFailed: 'Read failed.',
       remoteFailed: 'The Remote call failed.',
+    }
+
+    /**
+     * Every visible word of the composer chip, its popover and the labelled
+     * bars, in one place (`{name}` is filled by `fill`). `level` names the dot
+     * colour in words for the chip's accessible name; the dot itself is hidden
+     * from assistive tech.
+     */
+    const CHIP_TEXT = {
+      usage: 'usage',
+      balance: 'balance',
+      left: '{amount} left',
+      extra: '{amount} extra',
+      extraUsed: '{amount} extra used',
+      level: { ok: 'level normal', warn: 'level warning', bad: 'level critical' },
+      used: '{percent} used',
+      remaining: '{percent} left',
+      barCaption: '{name} {value}',
+      worstLabel: 'Most used window: {window}',
+      keyBudget: 'Key budget',
+      keyLabel: 'Key budget left',
+      accountBudget: 'Account balance',
+      accountLabel: 'Account balance left',
+      window: 'window',
     }
 
     /** Put values into a HEALTH_TEXT template. */
@@ -518,11 +569,12 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The face of a composer chip, shared by the four chip components: the
+     * The face of a composer chip, used by the one chip shell (UsageChip): the
      * values in bold, the word 'stale' beside stale values, 'unavailable' (with
      * an exclamation mark) when there is nothing to show, the dot level, and an
-     * accessible label that starts with the visible words and adds the read
-     * time and the failure. The mark is never the only signal.
+     * accessible name that starts with the visible words, then names the dot
+     * level in words and adds the read time and the failure. The dot and the
+     * mark are hidden from assistive tech, and never the only signal.
      *
      *   values  [{ key, text }]  the figures, when there is data
      *   empty   the word for a chip with nothing read yet ('usage', 'balance')
@@ -534,19 +586,23 @@ window.__ModuleLoader__.load({
         parts.push(React.createElement('span', { key: 'empty' }, health.unavailable ? HEALTH_TEXT.unavailable : empty))
       }
       const mark = health.stale ? HEALTH_TEXT.stale : health.unavailable ? HEALTH_TEXT.unavailableMark : ''
-      parts.push(React.createElement('span', { key: 'health', className: health.stale ? `${px}-stale` : `${px}-code` }, mark))
-      let label
-      if (health.stale || health.unavailable) {
-        // The same words the chip shows: its figures, else 'unavailable' or the empty word.
-        const shown = [title, ...(values.length ? values.map((value) => value.text) : [health.unavailable ? HEALTH_TEXT.unavailable : empty])]
-        if (health.stale) shown.push(HEALTH_TEXT.stale)
-        const said = [shown.join(' ')]
-        if (health.stale && health.fetchedAt !== null) said.push(fill(HEALTH_TEXT.read, { time: clock(health.fetchedAt) }))
-        const note = healthNote(health)
-        if (note) said.push(note)
-        label = said.join(', ')
-      }
-      return { parts, dot: healthLevel(level, health), label }
+      parts.push(React.createElement('span', { key: 'health', className: health.stale ? `${px}-stale` : `${px}-code`, 'aria-hidden': 'true' }, mark))
+      const dot = healthLevel(level, health)
+      // The same words the chip shows: its figures, else 'unavailable' or the empty word.
+      const shown = [title, ...(values.length ? values.map((value) => value.text) : [health.unavailable ? HEALTH_TEXT.unavailable : empty])]
+      if (health.stale) shown.push(HEALTH_TEXT.stale)
+      const said = [shown.join(' ')]
+      if (dot) said.push(CHIP_TEXT.level[dot])
+      if (health.stale && health.fetchedAt !== null) said.push(fill(HEALTH_TEXT.read, { time: clock(health.fetchedAt) }))
+      const note = healthNote(health)
+      if (note) said.push(note)
+      return { parts, dot, label: said.join(', ') }
+    }
+
+    /** The worst of some indicator levels: 'bad', 'warn', 'ok', or '' when none has one. */
+    function worstLevel(...levels) {
+      for (const level of ['bad', 'warn', 'ok']) if (levels.includes(level)) return level
+      return ''
     }
 
     // ---------- shared components / hooks ----------
@@ -560,6 +616,54 @@ window.__ModuleLoader__.load({
         React.createElement('div', { className: `${px}-value` + (cls ? ` ${px}-${cls}` : '') }, value),
         sub ? React.createElement('div', { className: `${px}-label` }, sub) : null,
       )
+    }
+
+    /**
+     * A labelled meter under a panel's figures: a visible caption naming what
+     * the bar measures and its value ('7-day window 74.0% used'), then the bar
+     * as a progressbar with that value. Without the caption the bar right under
+     * the grid read as the bar of the last metric. The fill keeps its level
+     * colour.
+     *
+     *   name   what the bar measures ('7-day window', 'Key budget')
+     *   value  the value in words ('74.0% used')
+     *   label  the bar's accessible name
+     *   ratio  the filled fraction, 0..1
+     */
+    function labelledBar(px, key, { name, value, label, ratio, level }) {
+      const percent = Math.max(0, Math.min(100, ratio * 100))
+      return React.createElement(
+        'div',
+        { className: `${px}-meter`, key },
+        React.createElement('div', { className: `${px}-barcap` }, fill(CHIP_TEXT.barCaption, { name, value })),
+        React.createElement(
+          'div',
+          {
+            className: `${px}-bar`,
+            role: 'progressbar',
+            'aria-label': label,
+            'aria-valuemin': 0,
+            'aria-valuemax': 100,
+            'aria-valuenow': Math.round(percent * 10) / 10,
+            'aria-valuetext': value,
+          },
+          React.createElement('i', {
+            className: level === 'bad' ? `${px}-bad` : level === 'warn' ? `${px}-warn` : `${px}-ok`,
+            style: { width: percent + '%', background: 'currentColor' },
+          }),
+        ),
+      )
+    }
+
+    /** The labelled bar of a quota panel's most used window. */
+    function worstWindowBar(px, worst) {
+      return labelledBar(px, 'bar', {
+        name: worst.label,
+        value: fill(CHIP_TEXT.used, { percent: pct(worst.ratio) }),
+        label: fill(CHIP_TEXT.worstLabel, { window: worst.label }),
+        ratio: worst.ratio,
+        level: quotaLevel(worst.ratio),
+      })
     }
 
     /**
@@ -710,19 +814,13 @@ window.__ModuleLoader__.load({
           ),
         )
         if (alv) {
-          accountBlocks.push(
-            React.createElement(
-              'div',
-              { className: 'orup-bar', key: 'account-bar' },
-              React.createElement('i', {
-                className: alv === 'bad' ? 'orup-bad' : alv === 'warn' ? 'orup-warn' : 'orup-ok',
-                style: {
-                  width: Math.max(0, Math.min(100, (a.remaining / a.totalCredits) * 100)) + '%',
-                  background: 'currentColor',
-                },
-              }),
-            ),
-          )
+          accountBlocks.push(labelledBar('orup', 'account-bar', {
+            name: CHIP_TEXT.accountBudget,
+            value: fill(CHIP_TEXT.remaining, { percent: pct(a.remaining / a.totalCredits) }),
+            label: CHIP_TEXT.accountLabel,
+            ratio: a.remaining / a.totalCredits,
+            level: alv,
+          }))
         }
       } else if (acct && acct.status === 'error') {
         accountBlocks.push(
@@ -773,19 +871,13 @@ window.__ModuleLoader__.load({
       if (d) {
         children.push(React.createElement('div', { className: 'orup-grid', key: 'grid' }, rows))
         if (lv) {
-          children.push(
-            React.createElement(
-              'div',
-              { className: 'orup-bar', key: 'bar' },
-              React.createElement('i', {
-                className: lv === 'bad' ? 'orup-bad' : lv === 'warn' ? 'orup-warn' : 'orup-ok',
-                style: {
-                  width: Math.max(0, Math.min(100, (d.remaining / d.limit) * 100)) + '%',
-                  background: 'currentColor',
-                },
-              }),
-            ),
-          )
+          children.push(labelledBar('orup', 'bar', {
+            name: CHIP_TEXT.keyBudget,
+            value: fill(CHIP_TEXT.remaining, { percent: pct(d.remaining / d.limit) }),
+            label: CHIP_TEXT.keyLabel,
+            ratio: d.remaining / d.limit,
+            level: lv,
+          }))
         }
         if (note.length) {
           children.push(React.createElement('div', { className: 'orup-code', key: 'note' }, note.join(' · ')))
@@ -797,47 +889,19 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The OpenRouter composer chip: usage and (when available) the account
-     * balance, with a colour dot for the budget level. Click opens the panel.
+     * The OpenRouter chip summary: usage and (when available) the account
+     * balance left; the dot takes the worst of the two budget levels.
      */
-    function OpenRouterChip({ store, getNs }) {
-      const health = useHealth(store)
-      const [open, setOpen] = React.useState(false)
-
+    function openRouterSummary(health) {
       const s = health.state
       const d = health.data
       const acct = s && s.account ? s.account : null
       const a = acct && acct.status === 'ready' ? acct.data : null
-
-      // Dot colour: the worst of the two levels we can compute.
-      const lvk = d ? budgetLevel(d.remaining, d.limit) : null
-      const alv = a ? budgetLevel(a.remaining, a.totalCredits) : null
-      const level = lvk === 'bad' || alv === 'bad' ? 'bad' : lvk === 'warn' || alv === 'warn' ? 'warn' : lvk || alv ? 'ok' : ''
-
       const values = []
       if (d) values.push({ key: 'used', text: usd(d.usage) })
-      if (a && a.remaining !== null) values.push({ key: 'left', text: usd(a.remaining) + ' left' })
-      const face = chipFace({ px: 'orup', title: 'OpenRouter', health, values, empty: 'usage', level })
-
-      return React.createElement(
-        'span',
-        { className: 'orup-chipwrap' },
-        React.createElement(
-          'button',
-          {
-            className: 'orup-chip', type: 'button',
-            onClick: () => setOpen((v) => !v),
-            title: 'OpenRouter usage',
-            'aria-label': face.label,
-          },
-          React.createElement('span', { className: 'orup-dot' + (face.dot ? ' orup-' + face.dot : '') }),
-          React.createElement('span', null, 'OpenRouter'),
-          ...face.parts,
-        ),
-        open
-          ? React.createElement('div', { className: 'orup-pop' }, React.createElement(OpenRouterPanel, { store, getNs }))
-          : null,
-      )
+      if (a && a.remaining !== null) values.push({ key: 'left', text: fill(CHIP_TEXT.left, { amount: usd(a.remaining) }) })
+      const level = worstLevel(d ? budgetLevel(d.remaining, d.limit) : null, a ? budgetLevel(a.remaining, a.totalCredits) : null)
+      return { values, level, empty: CHIP_TEXT.usage }
     }
 
     // ---------- Kimi Code ----------
@@ -860,19 +924,13 @@ window.__ModuleLoader__.load({
       const s = health.state
       const d = health.data
       const status = health.status
-      const worst = d ? (d.quotas ? worstRatio(d.quotas) : worstWindow(d.windows)) : null
-      const wlv = worst !== null ? quotaLevel(worst) : null
+      const worst = worstQuotaEntry(d)
       const plan = d && (d.planType || d.level)
 
       const rows = []
       if (d) {
         const q = d.quotas || {}
-        for (const [key, label] of [
-          ['fiveHour', '5-hour window'],
-          ['sevenDay', '7-day window'],
-          ['monthTotal', 'Monthly (all)'],
-          ['monthCode', 'Monthly (code)'],
-        ]) {
+        for (const [key, label] of QUOTA_LABELS) {
           const m = quotaMetric(key, label, q[key])
           if (m) rows.push(m)
         }
@@ -1032,18 +1090,7 @@ window.__ModuleLoader__.load({
       children.push(healthLines('kmup', health))
       if (d && rows.length) {
         children.push(React.createElement('div', { className: 'kmup-grid', key: 'grid' }, rows))
-        if (wlv) {
-          children.push(
-            React.createElement(
-              'div',
-              { className: 'kmup-bar', key: 'bar' },
-              React.createElement('i', {
-                className: wlv === 'bad' ? 'kmup-bad' : wlv === 'warn' ? 'kmup-warn' : 'kmup-ok',
-                style: { width: Math.max(0, Math.min(100, worst * 100)) + '%', background: 'currentColor' },
-              }),
-            ),
-          )
-        }
+        if (worst) children.push(worstWindowBar('kmup', worst))
         if (note.length) {
           children.push(React.createElement('div', { className: 'kmup-code', key: 'note' }, note.join(' · ')))
         }
@@ -1054,47 +1101,22 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The Kimi Code composer chip: the worst quota percentage and, when
-     * present, the Extra Usage balance (Claude: the amount used), with a
-     * colour dot. Click opens the
-     * panel in a popover.
+     * The Kimi-family chip summary (Kimi Code, Codex, Claude): the most used
+     * quota percentage and, when present, the Extra Usage amount (Claude: the
+     * amount used); the dot takes the worse of the two levels.
      */
-    function KimiChip({ store, getNs, title = 'Kimi Code' }) {
-      const health = useHealth(store)
-      const [open, setOpen] = React.useState(false)
-
+    function kimiSummary(health) {
       const d = health.data
-
-      const worst = d ? (d.quotas ? worstRatio(d.quotas) : worstWindow(d.windows)) : null
-      const wlv = worst !== null ? quotaLevel(worst) : null
+      const worst = worstQuotaEntry(d)
       const extra = d && hasExtraAmount(d.extra) ? d.extra : null
-      const elv = extraLevel(extra)
-      const level = wlv === 'bad' || elv === 'bad' ? 'bad' : wlv === 'warn' || elv === 'warn' ? 'warn' : wlv || elv ? 'ok' : ''
-
       const values = []
-      if (worst !== null) values.push({ key: 'q', text: pct(worst) })
+      if (worst) values.push({ key: 'q', text: pct(worst.ratio) })
       if (extra) {
-        values.push({ key: 'x', text: centsMoney(extra.balanceCents, extra.currency) + (isExtraUsed(extra) ? ' extra used' : ' extra') })
+        const amount = centsMoney(extra.balanceCents, extra.currency)
+        values.push({ key: 'x', text: fill(isExtraUsed(extra) ? CHIP_TEXT.extraUsed : CHIP_TEXT.extra, { amount }) })
       }
-      const face = chipFace({ px: 'kmup', title, health, values, empty: 'usage', level })
-
-      return React.createElement(
-        'span',
-        { className: 'kmup-chipwrap' },
-        React.createElement(
-          'button',
-          {
-            className: 'kmup-chip', type: 'button',
-            onClick: () => setOpen((v) => !v),
-            title: `${title} usage`,
-            'aria-label': face.label,
-          },
-          React.createElement('span', { className: 'kmup-dot' + (face.dot ? ' kmup-' + face.dot : '') }),
-          React.createElement('span', null, title),
-          ...face.parts,
-        ),
-        open ? React.createElement('div', { className: 'kmup-pop' }, React.createElement(KimiPanel, { store, getNs, title })) : null,
-      )
+      const level = worstLevel(worst ? quotaLevel(worst.ratio) : null, extraLevel(extra))
+      return { values, level, empty: CHIP_TEXT.usage }
     }
 
     // ---------- generic providers (pup-) ----------
@@ -1151,8 +1173,7 @@ window.__ModuleLoader__.load({
       const s = health.state
       const d = health.data
       const status = health.status
-      const worst = d ? worstWindow(d.windows) : null
-      const wlv = worst !== null ? quotaLevel(worst) : null
+      const worst = d ? worstWindowEntry(d.windows) : null
       const plan = d ? quotaPlan(d) : null
 
       const rows = []
@@ -1291,17 +1312,7 @@ window.__ModuleLoader__.load({
       children.push(healthLines('pup', health))
       if (d && rows.length) {
         children.push(React.createElement('div', { className: 'pup-grid', key: 'grid' }, rows))
-        if (wlv) {
-          children.push(
-            React.createElement(
-              'div', { className: 'pup-bar', key: 'bar' },
-              React.createElement('i', {
-                className: wlv === 'bad' ? 'pup-bad' : wlv === 'warn' ? 'pup-warn' : 'pup-ok',
-                style: { width: Math.max(0, Math.min(100, worst * 100)) + '%', background: 'currentColor' },
-              }),
-            ),
-          )
-        }
+        if (worst) children.push(worstWindowBar('pup', worst))
         if (note.length) children.push(React.createElement('div', { className: 'pup-code', key: 'note' }, note.join(' · ')))
       }
       if (detailBlocks.length) children.push(...detailBlocks)
@@ -1385,59 +1396,273 @@ window.__ModuleLoader__.load({
       return React.createElement('div', { className: 'pup-root' }, children)
     }
 
-    /** Generic quota chip: worst window percent + dot; click opens the panel. */
-    function QuotaChip({ store, getNs, title }) {
-      const health = useHealth(store)
-      const [open, setOpen] = React.useState(false)
-      const d = health.data
-      const worst = d ? worstWindow(d.windows) : null
-      const wlv = worst !== null ? quotaLevel(worst) : null
-      const values = worst !== null ? [{ key: 'q', text: pct(worst) }] : []
-      const face = chipFace({ px: 'pup', title, health, values, empty: 'usage', level: wlv })
-      return React.createElement(
-        'span',
-        { className: 'pup-chipwrap' },
-        React.createElement(
-          'button',
-          { className: 'pup-chip', type: 'button', onClick: () => setOpen((v) => !v), title: title + ' usage', 'aria-label': face.label },
-          React.createElement('span', { className: 'pup-dot' + (face.dot ? ' pup-' + face.dot : '') }),
-          React.createElement('span', null, title),
-          ...face.parts,
-        ),
-        open ? React.createElement('div', { className: 'pup-pop' }, React.createElement(QuotaPanel, { store, getNs, title })) : null,
-      )
+    /** The generic quota chip summary (GLM, MiniMax): the most used window. */
+    function quotaSummary(health) {
+      const worst = health.data ? worstWindowEntry(health.data.windows) : null
+      return {
+        values: worst ? [{ key: 'q', text: pct(worst.ratio) }] : [],
+        level: worst ? quotaLevel(worst.ratio) : null,
+        empty: CHIP_TEXT.usage,
+      }
     }
 
-    /** Generic balance chip: remaining + dot; click opens the panel. */
-    function BalanceChip({ store, getNs, title }) {
-      const health = useHealth(store)
-      const [open, setOpen] = React.useState(false)
+    /** The generic balance chip summary (DeepSeek, NewAPI): the first balance, or what is left. */
+    function balanceSummary(health) {
       const d = health.data
-
       let text = null
-      let lv = null
+      let level = null
       if (d && Array.isArray(d.balances) && d.balances.length > 0) {
         const b = d.balances[0]
         text = fiat(b.total, b.currency)
-        lv = b.total !== null && b.total <= 0 ? 'bad' : b.total !== null && b.total <= 1 ? 'warn' : 'ok'
+        level = b.total !== null && b.total <= 0 ? 'bad' : b.total !== null && b.total <= 1 ? 'warn' : 'ok'
       } else if (d && d.kind === 'balance' && d.remaining !== null) {
-        text = fiat(d.remaining, d.currency) + ' left'
-        lv = budgetLevel(d.remaining, d.total)
+        text = fill(CHIP_TEXT.left, { amount: fiat(d.remaining, d.currency) })
+        level = budgetLevel(d.remaining, d.total)
       }
-      const values = text ? [{ key: 'b', text }] : []
-      const face = chipFace({ px: 'pup', title, health, values, empty: 'balance', level: lv })
+      return { values: text ? [{ key: 'b', text }] : [], level, empty: CHIP_TEXT.balance }
+    }
+
+    // ---------- the composer chip: one shell for every provider ----------
+
+    /**
+     * The popover's distance from the window edges and from its trigger: the
+     * host's stat dialog uses the same 12px inset and 8px gap
+     * (dsh-client-ui-chat stat-dialog.module.css).
+     */
+    const POP_INSET = 12
+    const POP_GAP = 8
+
+    /**
+     * The chip popover that is open, by its close function: opening another
+     * chip closes it in the same click, so at most one chip popover is open.
+     * The outside-press listeners close it too; this also covers a chip opened
+     * from the keyboard or by script.
+     */
+    const openChip = {
+      close: null,
+      open(close) {
+        const previous = this.close
+        this.close = close
+        if (previous && previous !== close) previous()
+      },
+      closed(close) {
+        if (this.close === close) this.close = null
+      },
+    }
+
+    /** A page-unique id per chip instance, for the trigger's aria-controls. */
+    let chipSeq = 0
+    function useChipId() {
+      const ref = React.useRef(null)
+      if (ref.current === null) {
+        chipSeq += 1
+        ref.current = `usage-chip-pop-${chipSeq}`
+      }
+      return ref.current
+    }
+
+    /** The top inset the desktop frame reserves (`--dsh-frame-overlay-top`, which the host's dialogs honour), else 0. */
+    function frameTop(win) {
+      try {
+        const body = win.document && win.document.body
+        if (!body || typeof win.getComputedStyle !== 'function') return 0
+        const px = parseFloat(win.getComputedStyle(body).getPropertyValue('--dsh-frame-overlay-top'))
+        return Number.isFinite(px) ? px : 0
+      } catch {
+        return 0
+      }
+    }
+
+    /**
+     * Where the open popover goes, measured from the trigger's rect and the
+     * panel's size: above the trigger with an 8px gap (its bottom edge is the
+     * anchor, so a panel that grows after a refresh grows upward), below it
+     * when the room above is too small and the room below is larger, and
+     * left-aligned with the trigger but shifted to stay 12px inside both window
+     * edges. The max-height keeps it inside the window on the side it opens to.
+     * The host's stat dialog makes the same choices with CSS anchor positioning
+     * (stat-dialog.module.css); measuring does not need anchor() support and
+     * can be tested. Null when nothing can be measured.
+     */
+    function popoverPlace(trigger, panel, win) {
+      if (!trigger || !panel || !win || typeof trigger.getBoundingClientRect !== 'function' || typeof panel.getBoundingClientRect !== 'function') return null
+      const vw = win.innerWidth
+      const vh = win.innerHeight
+      if (!(vw > 0 && vh > 0)) return null
+      const anchor = trigger.getBoundingClientRect()
+      const box = panel.getBoundingClientRect()
+      const width = Math.min(box.width, Math.max(0, vw - 2 * POP_INSET))
+      const left = Math.round(Math.max(POP_INSET, Math.min(anchor.left, vw - POP_INSET - width)))
+      const top = Math.max(POP_INSET, frameTop(win))
+      const above = anchor.top - POP_GAP - top
+      const below = vh - POP_INSET - anchor.bottom - POP_GAP
+      if (box.height <= above || above >= below) {
+        return { left, bottom: Math.round(vh - anchor.top + POP_GAP), maxHeight: Math.max(0, Math.floor(above)) }
+      }
+      return { left, top: Math.round(anchor.bottom + POP_GAP), maxHeight: Math.max(0, Math.floor(below)) }
+    }
+
+    /**
+     * A fixed overlay goes to the document body: the docked composer contains
+     * its fixed descendants (the `conversation.composer.dock` slot says so), and
+     * the host's own dock pills portal their dialogs the same way. Without
+     * react-dom (an old host, a test renderer) it stays inline.
+     */
+    function toBody(element) {
+      const body = typeof document !== 'undefined' && document ? document.body : null
+      return createPortal && body ? createPortal(element, body) : element
+    }
+
+    /**
+     * The composer chip: ONE shell for all eight providers. A provider brings
+     * only its summary (figures, level, empty word; see openRouterSummary,
+     * kimiSummary, quotaSummary, balanceSummary), its panel, its chip title and
+     * its colour prefix; chipFace draws the words.
+     *
+     * The trigger is a button with aria-haspopup 'dialog', aria-expanded and,
+     * while open, aria-controls. The popover is a non-modal dialog portaled to
+     * the body and placed by measurement (popoverPlace). Opening moves focus
+     * into it, so the keyboard reaches its Refresh button. Escape closes it and
+     * gives the focus back to the trigger, unless the focus already went
+     * elsewhere (the composer editor keeps it). A press or a click outside the
+     * chip and the dialog closes it and leaves the focus alone; so does focus
+     * moving to another element. Opening another chip closes it (openChip).
+     * Every listener goes away on close and on unmount.
+     */
+    function UsageChip({ store, getNs, title, chipTitle, dialogLabel, px, summary, panel }) {
+      const health = useHealth(store)
+      const [open, setOpen] = React.useState(false)
+      const [place, setPlace] = React.useState(null)
+      const rootRef = React.useRef(null)
+      const triggerRef = React.useRef(null)
+      const panelRef = React.useRef(null)
+      const popId = useChipId()
+      const close = React.useCallback(() => setOpen(false), [])
+      const name = chipTitle || title
+      const label = dialogLabel || name
+      const face = chipFace({ px, title: name, health, ...summary(health) })
+
+      // Open: place it, re-place it on resize and scroll, and move focus into it.
+      useLayoutEffect(() => {
+        if (!open) return undefined
+        const win = typeof window !== 'undefined' ? window : null
+        const measure = () => {
+          const next = popoverPlace(triggerRef.current, panelRef.current, win)
+          if (next) setPlace(next)
+        }
+        measure()
+        if (panelRef.current && typeof panelRef.current.focus === 'function') panelRef.current.focus({ preventScroll: true })
+        if (win && typeof win.addEventListener === 'function') {
+          win.addEventListener('resize', measure)
+          win.addEventListener('scroll', measure, true)
+        }
+        return () => {
+          if (win && typeof win.removeEventListener === 'function') {
+            win.removeEventListener('resize', measure)
+            win.removeEventListener('scroll', measure, true)
+          }
+          setPlace(null)
+        }
+      }, [open])
+
+      // Open: Escape and presses outside the chip and the dialog close it.
+      React.useEffect(() => {
+        if (!open) return undefined
+        const doc = typeof document !== 'undefined' ? document : null
+        if (!doc || typeof doc.addEventListener !== 'function') return undefined
+        const inside = (target) => Boolean(target) && Boolean(
+          (rootRef.current && rootRef.current.contains(target)) || (panelRef.current && panelRef.current.contains(target)),
+        )
+        // A press elsewhere: close, and let the press move the focus where it goes.
+        const onPress = (event) => {
+          if (!inside(event.target)) setOpen(false)
+        }
+        const onKeyDown = (event) => {
+          if (event.key !== 'Escape' || event.isComposing) return
+          const active = doc.activeElement
+          setOpen(false)
+          if (!active || active === doc.body || inside(active)) {
+            if (triggerRef.current && typeof triggerRef.current.focus === 'function') triggerRef.current.focus()
+          }
+        }
+        // Capture: the press closes this popover before another chip's click opens its own.
+        doc.addEventListener('mousedown', onPress, true)
+        doc.addEventListener('click', onPress, true)
+        doc.addEventListener('keydown', onKeyDown)
+        return () => {
+          doc.removeEventListener('mousedown', onPress, true)
+          doc.removeEventListener('click', onPress, true)
+          doc.removeEventListener('keydown', onKeyDown)
+        }
+      }, [open])
+
+      React.useEffect(() => (open ? () => openChip.closed(close) : undefined), [open, close])
+
+      const toggle = () => {
+        if (open) {
+          setOpen(false)
+          return
+        }
+        openChip.open(close)
+        setOpen(true)
+      }
+      // Focus leaving for another element closes it; a window switch (no next element) does not.
+      const onBlur = (event) => {
+        const next = event.relatedTarget
+        if (!next) return
+        if ((rootRef.current && rootRef.current.contains(next)) || (panelRef.current && panelRef.current.contains(next))) return
+        setOpen(false)
+      }
+
+      const dialog = open
+        ? React.createElement(
+            'div',
+            {
+              ref: panelRef,
+              id: popId,
+              role: 'dialog',
+              'aria-label': label,
+              tabIndex: -1,
+              className: 'usage-pop',
+              // Hidden for the one render before it is measured.
+              style: place ? { left: place.left, top: place.top, bottom: place.bottom, maxHeight: place.maxHeight } : { visibility: 'hidden' },
+              onBlur,
+            },
+            React.createElement(panel, { store, getNs, title }),
+          )
+        : null
+
       return React.createElement(
         'span',
-        { className: 'pup-chipwrap' },
+        { ref: rootRef, className: 'usage-chipwrap' },
         React.createElement(
           'button',
-          { className: 'pup-chip', type: 'button', onClick: () => setOpen((v) => !v), title: title + ' balance', 'aria-label': face.label },
-          React.createElement('span', { className: 'pup-dot' + (face.dot ? ' pup-' + face.dot : '') }),
-          React.createElement('span', null, title),
+          {
+            ref: triggerRef,
+            type: 'button',
+            className: 'usage-chip',
+            'aria-haspopup': 'dialog',
+            'aria-expanded': open ? 'true' : 'false',
+            'aria-controls': open ? popId : undefined,
+            'aria-label': face.label,
+            title: label,
+            onClick: toggle,
+          },
+          React.createElement('span', { className: `${px}-dot` + (face.dot ? ` ${px}-${face.dot}` : ''), 'aria-hidden': 'true' }),
+          React.createElement('span', null, name),
           ...face.parts,
         ),
-        open ? React.createElement('div', { className: 'pup-pop' }, React.createElement(BalancePanel, { store, getNs, title })) : null,
+        dialog ? toBody(dialog) : null,
       )
+    }
+
+    /** One stable chip component per provider: the shell with that provider's parts. */
+    function providerChip(p) {
+      const parts = { px: p.px, chipTitle: p.chipTitle, dialogLabel: p.label, summary: p.summary, panel: p.panel }
+      function ProviderChip(props) {
+        return React.createElement(UsageChip, { ...props, ...parts })
+      }
+      return ProviderChip
     }
 
     // ---------- provider-card extras ----------
@@ -1954,19 +2179,20 @@ window.__ModuleLoader__.load({
      */
     const inject = ['slots', 'remote']
 
-    // Stable per-provider wrappers: an inline arrow in the PROVIDERS table
-    // would be a new component type per render and remount the popover each
-    // time, dropping the chip's open state.
+    // Stable per-provider panel wrappers: an inline arrow in the PROVIDERS
+    // table would be a new component type per render and remount the popover
+    // each time, dropping the chip's open state.
     function DeepSeekPanel(props) { return React.createElement(BalancePanel, { ...props, title: 'DeepSeek' }) }
-    function DeepSeekChip(props) { return React.createElement(BalanceChip, { ...props, title: 'DeepSeek' }) }
     function ZhipuPanel(props) { return React.createElement(QuotaPanel, { ...props, title: 'GLM Coding Plan' }) }
-    function ZhipuChip(props) { return React.createElement(QuotaChip, { ...props, title: 'GLM' }) }
     function MiniMaxPanel(props) { return React.createElement(QuotaPanel, { ...props, title: 'MiniMax Coding Plan' }) }
-    function MiniMaxChip(props) { return React.createElement(QuotaChip, { ...props, title: 'MiniMax' }) }
     function NewApiPanel(props) { return React.createElement(BalancePanel, { ...props, title: 'NewAPI' }) }
-    function NewApiChip(props) { return React.createElement(BalanceChip, { ...props, title: 'NewAPI' }) }
 
-    /** The per-provider wiring table: namespace, store, surfaces, gate. */
+    /**
+     * The per-provider wiring table: namespace, store, surfaces, gate. Each
+     * chip is the one shell (UsageChip) with the provider's `summary`,
+     * `panel`, colour prefix and optional short `chipTitle`; its dialog is
+     * labelled with `label`. The `chip` component is bound below the table.
+     */
     const PROVIDERS = [
       {
         id: 'openrouter',
@@ -1975,7 +2201,7 @@ window.__ModuleLoader__.load({
         namespace: 'openrouterUsage',
         store: orStore,
         panel: OpenRouterPanel,
-        chip: OpenRouterChip,
+        summary: openRouterSummary,
         settingsId: 'openrouter-usage',
         chipId: 'openrouter-usage-chip',
         label: 'OpenRouter usage',
@@ -1989,7 +2215,7 @@ window.__ModuleLoader__.load({
         namespace: 'kimiUsage',
         store: kimiStore,
         panel: KimiPanel,
-        chip: KimiChip,
+        summary: kimiSummary,
         settingsId: 'kimi-usage',
         chipId: 'kimi-usage-chip',
         label: 'Kimi Code usage',
@@ -2003,7 +2229,7 @@ window.__ModuleLoader__.load({
         namespace: 'deepseekUsage',
         store: makeStore(),
         panel: DeepSeekPanel,
-        chip: DeepSeekChip,
+        summary: balanceSummary,
         settingsId: 'deepseek-usage',
         chipId: 'deepseek-usage-chip',
         label: 'DeepSeek balance',
@@ -2017,7 +2243,8 @@ window.__ModuleLoader__.load({
         namespace: 'zhipuUsage',
         store: makeStore(),
         panel: ZhipuPanel,
-        chip: ZhipuChip,
+        summary: quotaSummary,
+        chipTitle: 'GLM',
         settingsId: 'zhipu-usage',
         chipId: 'zhipu-usage-chip',
         label: 'GLM Coding Plan usage',
@@ -2031,7 +2258,8 @@ window.__ModuleLoader__.load({
         namespace: 'minimaxUsage',
         store: makeStore(),
         panel: MiniMaxPanel,
-        chip: MiniMaxChip,
+        summary: quotaSummary,
+        chipTitle: 'MiniMax',
         settingsId: 'minimax-usage',
         chipId: 'minimax-usage-chip',
         label: 'MiniMax Coding Plan usage',
@@ -2045,7 +2273,7 @@ window.__ModuleLoader__.load({
         namespace: 'newapiUsage',
         store: makeStore(),
         panel: NewApiPanel,
-        chip: NewApiChip,
+        summary: balanceSummary,
         settingsId: 'newapi-usage',
         chipId: 'newapi-usage-chip',
         label: 'NewAPI token quota',
@@ -2061,7 +2289,7 @@ window.__ModuleLoader__.load({
         namespace: 'codexUsage',
         store: makeStore(),
         panel: KimiPanel,
-        chip: KimiChip,
+        summary: kimiSummary,
         settingsId: 'codex-usage',
         chipId: 'codex-usage-chip',
         label: 'OpenAI Codex usage',
@@ -2075,7 +2303,7 @@ window.__ModuleLoader__.load({
         namespace: 'anthropicUsage',
         store: makeStore(),
         panel: KimiPanel,
-        chip: KimiChip,
+        summary: kimiSummary,
         settingsId: 'anthropic-usage',
         chipId: 'anthropic-usage-chip',
         label: 'Claude usage',
@@ -2083,6 +2311,7 @@ window.__ModuleLoader__.load({
         gate: ['anthropic'],
       },
     ]
+    for (const p of PROVIDERS) p.chip = providerChip(p)
 
     /** Insert one stylesheet into the document, removed when the plugin unloads. */
     function insertStyles() {

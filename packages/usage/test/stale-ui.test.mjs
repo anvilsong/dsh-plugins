@@ -104,9 +104,9 @@ function body(name) {
   return end < 0 ? rest : rest.slice(0, end + 1)
 }
 
-const SURFACES = ['CardExtras', 'OpenRouterPanel', 'KimiPanel', 'QuotaPanel', 'BalancePanel', 'OpenRouterChip', 'KimiChip', 'QuotaChip', 'BalanceChip']
+const SURFACES = ['CardExtras', 'OpenRouterPanel', 'KimiPanel', 'QuotaPanel', 'BalancePanel', 'UsageChip']
 
-test('one helper derives the health; the card line, the four chips and the four panels all use it', () => {
+test('one helper derives the health; the card line, the chip shell and the four panels all use it', () => {
   assert.equal(SOURCE.split('function healthOf(').length - 1, 1, 'healthOf is defined once')
   const health = body('healthOf')
   for (const kind of ['idle', 'ok', 'stale', 'error', 'offline']) assert.ok(health.includes(`'${kind}'`), `healthOf names ${kind}`)
@@ -120,9 +120,9 @@ test('one helper derives the health; the card line, the four chips and the four 
 })
 
 test('the chip words come from one shared helper; the visible wording is gathered in one place', () => {
-  for (const name of ['OpenRouterChip', 'KimiChip', 'QuotaChip', 'BalanceChip']) {
+  assert.match(body('UsageChip'), /\bchipFace\(/, 'the chip shell calls the shared chip helper')
+  for (const name of ['UsageChip', 'openRouterSummary', 'kimiSummary', 'quotaSummary', 'balanceSummary']) {
     const source = body(name)
-    assert.match(source, /\bchipFace\(/, `${name} calls the shared chip helper`)
     assert.ok(!source.includes("'!'"), `${name} has no '!' of its own`)
     assert.ok(!source.includes("'unavailable'"), `${name} has no 'unavailable' of its own`)
   }

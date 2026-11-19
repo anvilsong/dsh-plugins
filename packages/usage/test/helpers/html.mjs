@@ -6,6 +6,7 @@
  *   role, aria-* and data-* are kept; ids, titles and form attributes from a
  *   short allow list are kept; everything else is dropped
  *   functions (event handlers), refs and keys are dropped
+ *   a `portal` node (the harness's fake createPortal) writes its children in place
  *   text and attribute values are HTML-escaped
  *   no script (or other active/embedding) element is ever emitted: it throws
  */
@@ -116,6 +117,9 @@ function renderNode(node, context) {
   if (typeof type === 'function') throw new Error('the tree still holds an unrendered component')
   if (typeof type !== 'string') throw new Error('an element type must be a string')
   if (type === 'fragment') return renderChildren(node.children, context)
+  // The fake createPortal (client-harness.mjs): a static page has no body to
+  // portal into, so the content is written in place.
+  if (type === 'portal') return renderChildren(node.children, context)
 
   let attributes = props
   if (/^[A-Z]/.test(type)) {

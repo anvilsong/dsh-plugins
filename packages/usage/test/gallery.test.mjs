@@ -52,8 +52,7 @@ test('harness boots src/client.js and exposes cards by settings namespace, chips
       assert.equal(h.providers.get(id).store, store)
     }
     assert.ok(h.stylesheet.startsWith('.orup-root{'))
-    assert.ok(h.stylesheet.includes('.kmup-pop .kmup-root{margin-top:0}'))
-    assert.ok(h.stylesheet.includes('.pup-pop .pup-root{margin-top:0}'))
+    assert.ok(h.stylesheet.includes('.usage-pop>*{margin-top:0;'))
     assert.equal(h.document.getElementById('usage-plugin-styles').tagName, 'STYLE')
     assert.deepEqual(h.exports.inject, ['slots', 'remote'])
     assert.equal(h.mounted.length, 1)
@@ -163,9 +162,9 @@ test('hook state stays separate for two real chips that share one chip component
     const mount = await h.mount(Both, { sessionId: 's-1' })
     const chipButtons = () => findAll(mount.tree, (node) => node.type === 'button')
     assert.equal(chipButtons().length, 2)
-    assert.equal(findAll(mount.tree, (node) => node.props?.className === 'kmup-pop').length, 0)
+    assert.equal(findAll(mount.tree, (node) => node.props?.role === 'dialog').length, 0)
     await click(mount, chipButtons()[0])
-    const pops = findAll(mount.tree, (node) => node.props?.className === 'kmup-pop')
+    const pops = findAll(mount.tree, (node) => node.props?.role === 'dialog')
     assert.equal(pops.length, 1)
     assert.ok(textContent(pops[0]).includes('OpenAI Codex'))
     assert.ok(!textContent(pops[0]).includes('Claude'))
@@ -426,7 +425,7 @@ test('scenarios render the provider states they claim to show', async () => {
     'chip-error': ['unavailable', '>!<'],
     'chip-loading': ['>usage<'],
     'chip-popover-waiting': ['not reachable yet'],
-    'chip-popover-glm': ['pup-pop', 'Tool calls'],
+    'chip-popover-glm': ['usage-pop', 'role="dialog"', 'Tool calls'],
     'signin-checking': ['Checking sign-in…'],
     'signin-signed-out': ['Sign in with ChatGPT', 'data-variant="outline"'],
     'signin-status-error': ['The provider login service is unreachable.'],
