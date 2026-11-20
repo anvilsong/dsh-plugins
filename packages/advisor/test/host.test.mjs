@@ -1129,6 +1129,7 @@ test('README: the ptc section names the behaviour, the assumptions, the failure 
     'Host assumptions', 'run_code was requested: this session uses the PTC executor and the native executor could not be mounted for the advisor child (<reason>); run the Advisor from a session on the standard or cordis agent preset',
     'run_code was requested again after the native executor was mounted', '`peerDependencies`', '`*`', 'a mismatch removes the Advisor, not just this feature', 'peerDependenciesMeta',
     'no `engines.dsh`', 'pnpm', '`tool_calls`', 'reason `not_called`', 'run_code in tools',
+    'Live check, 2026-11-19', 'two consults in one ptc session', 'The mount log line was not seen', 'not yet confirmed',
   ]) assert.ok(section.includes(phrase), phrase)
   assert.ok(!section.includes('>=0.2.2-rc.3'), 'the section names one peer range only: the old lower bound is gone')
   assert.ok(readme.includes('mutations, messaging, further delegation, and `run_code` are denied'), 'the verifier line is kept')

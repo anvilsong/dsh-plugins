@@ -634,6 +634,17 @@ in a ptc session:
   that one step still offers `run_code`, and the bound above applies.
 - The installation resolves the bare import of the peer below.
 
+Live check, 2026-11-19. After a Host restart a consult and its verifier ran in
+sessions on the `ptc` preset and on the `standard` preset. In the ledger every
+run is `ok` (consult) or `recorded` (verifier) with `tool_calls` above 0, where
+the runs before the change in `ptc` sessions had `failed` with `tool_calls` 0.
+There were two consults in one ptc session, so the second child was not blocked
+by the first child's mount. These were trivial questions that took 5 to 10
+seconds. The mount log line was not seen, so the mount is shown only by its
+effect, the direct tool calls. A long review in a ptc session is
+not yet confirmed, and neither is the first-step timing above. The `standard`
+consult ran on the lead's model because that session had no Advisor model set.
+
 Peer dependency. `package.json` lists `@deepseek-ai/dsh-tool-executor-native`
 in `peerDependencies` with the range `*`, marked optional in
 `peerDependenciesMeta`, and adds no runtime dependency. A bare import of a Host
