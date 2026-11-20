@@ -635,7 +635,7 @@ in a ptc session:
 - The installation resolves the bare import of the peer below.
 
 Peer dependency. `package.json` lists `@deepseek-ai/dsh-tool-executor-native`
-in `peerDependencies` with the range `>=0.2.2-rc.3`, marked optional in
+in `peerDependencies` with the range `*`, marked optional in
 `peerDependenciesMeta`, and adds no runtime dependency. A bare import of a Host
 package resolves to the installation's copy only when the importing package
 lists it there; an undeclared one is not found, or resolves a private copy. The

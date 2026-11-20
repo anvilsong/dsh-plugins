@@ -1130,5 +1130,6 @@ test('README: the ptc section names the behaviour, the assumptions, the failure 
     'run_code was requested again after the native executor was mounted', '`peerDependencies`', '`*`', 'a mismatch removes the Advisor, not just this feature', 'peerDependenciesMeta',
     'no `engines.dsh`', 'pnpm', '`tool_calls`', 'reason `not_called`', 'run_code in tools',
   ]) assert.ok(section.includes(phrase), phrase)
+  assert.ok(!section.includes('>=0.2.2-rc.3'), 'the section names one peer range only: the old lower bound is gone')
   assert.ok(readme.includes('mutations, messaging, further delegation, and `run_code` are denied'), 'the verifier line is kept')
 })
