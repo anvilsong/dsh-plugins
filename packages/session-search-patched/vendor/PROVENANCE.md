@@ -1,8 +1,11 @@
 # Provenance of the vendored engine sources
 
 This folder holds the bounded-index SQLite session-search engine, rebased onto the
-sources of `@deepseek-ai/dsh-session-query-sqlite` **0.2.2-rc.3**, the build that is
-installed in `/Applications/DeepSeek Harness.app`. Nothing here is built or loaded yet;
+sources of `@deepseek-ai/dsh-session-query-sqlite` **0.2.2-rc.3**, the build that was
+installed in `/Applications/DeepSeek Harness.app` when this note was written. The
+rc.5 build (tag `dsh-v0.2.2-rc.5`, commit `9c2670d3bc`) ships the same `src/index.ts`,
+`src/query.ts` and `src/schema.ts` bytes, which is why the pin admits both versions;
+only the packages' `package.json` versions changed. Nothing here is built or loaded yet;
 `src/` of this package (another task) decides how these files are used.
 
 | File | What it is | sha256 |

@@ -9,7 +9,9 @@
 // Pinned values (docs/composition-spike.md, section 8 and the decision table in
 // section 13; probe output docs/spike/guard-inputs.txt):
 //   version   ctx.get('pluginPackages')?.packageOf(ENGINE_PACKAGE, import.meta.url)?.version
-//             must be exactly PINNED_VERSION
+//             must be exactly one of PINNED_VERSIONS (rc.3 and rc.5 ship the same
+//             engine sources, so one source pin covers both; PINNED_VERSION stays the
+//             newest entry and the value the reasons name)
 //   sources   sha256 of src/index.ts, src/query.ts and src/schema.ts of the shipped
 //             engine package (readable from plugin code inside app.asar) must be
 //             exactly PINNED_SOURCES, the files the patched engine was rebased on
@@ -18,7 +20,8 @@
 
 export const LOG_PREFIX = 'session-search-patched:'
 export const ENGINE_PACKAGE = '@deepseek-ai/dsh-session-query-sqlite'
-export const PINNED_VERSION = '0.2.2-rc.3'
+export const PINNED_VERSIONS = Object.freeze(['0.2.2-rc.3', '0.2.2-rc.5'])
+export const PINNED_VERSION = PINNED_VERSIONS[PINNED_VERSIONS.length - 1]
 export const PINNED_SOURCES = Object.freeze({
   'src/index.ts': '72868e4ae967fee94967df5939ee092a582249ff7b37afc4fe0cf7660d48b8d3',
   'src/query.ts': 'b29363581b715a1eb50509d7c5ff039d7d4004926160cd88ffcbadaa44ca1c48',
@@ -118,8 +121,8 @@ export function checkHost(input) {
     const version = own(input, 'version')
     if (typeof version !== 'string' || version === '') {
       problems.push(`host version of ${ENGINE_PACKAGE} unknown (${missing(version)})`)
-    } else if (version !== PINNED_VERSION) {
-      problems.push(`host ${ENGINE_PACKAGE} is ${flat(version, MAX_ENGINE)}, not the pinned ${PINNED_VERSION}`)
+    } else if (!PINNED_VERSIONS.includes(version)) {
+      problems.push(`host ${ENGINE_PACKAGE} is ${flat(version, MAX_ENGINE)}, not one of the pinned ${PINNED_VERSIONS.join(' / ')}`)
     }
     const sources = own(input, 'sources')
     // `{ error }` in place of the whole table: the reader itself failed.
@@ -137,7 +140,7 @@ export function checkHost(input) {
     }
     return Object.freeze({
       ok: true,
-      reason: `host ${ENGINE_PACKAGE} ${PINNED_VERSION} and the sha256 of its ${Object.keys(PINNED_SOURCES).join(', ')} match the pinned values`,
+      reason: `host ${ENGINE_PACKAGE} ${version} (pinned ${PINNED_VERSIONS.join(' / ')}) and the sha256 of its ${Object.keys(PINNED_SOURCES).join(', ')} match the pinned values`,
     })
   } catch (error) {
     return Object.freeze({ ok: false, reason: `compatibility guard failed: unreadable guard input (${describeError(error)})` })

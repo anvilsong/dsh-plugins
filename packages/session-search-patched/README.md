@@ -12,8 +12,8 @@ the engine that builds the search index in memory, so that
 This is not an official DSH release and not a fix that DSH has accepted: the patch
 comes from two **local, unmerged** commits of an upstream clone (see
 [Provenance and license](#provenance-and-license)). It is pinned to DSH
-**0.2.2-rc.3**; on any other host version it steps aside and the shipped engine
-serves (see [Version pin](#version-pin-and-what-happens-on-another-version)).
+**0.2.2-rc.3 and 0.2.2-rc.5**, whose search-engine sources are identical; on any other
+host version it steps aside and the shipped engine serves (see [Version pin](#version-pin-and-what-happens-on-another-version)).
 
 ## What it is
 
@@ -39,7 +39,7 @@ At each start the row decides which engine provides `sessionQuery`
 
 | Situation | What mounts |
 |---|---|
-| The host passes the guard (the version of `@deepseek-ai/dsh-session-query-sqlite` is exactly `0.2.2-rc.3` and the sha256 of its `src/index.ts`, `src/query.ts` and `src/schema.ts` equal the pinned values) | the patched engine (`src/engine/index.js`) |
+| The host passes the guard (the version of `@deepseek-ai/dsh-session-query-sqlite` is one of `0.2.2-rc.3` or `0.2.2-rc.5` and the sha256 of its `src/index.ts`, `src/query.ts` and `src/schema.ts` equal the pinned values) | the patched engine (`src/engine/index.js`) |
 | The guard fails, or the patched engine fails to load, construct or start | the **shipped** engine class, mounted in this row with the same config; one `warn` line |
 | The row is not inside the isolated `sessionQuery` scope of the group | nothing; one `error` line |
 | A later layer turned the shipped row back on (a provider clash) | nothing: the shipped row serves; one `error` line asks you to remove that override and restart |
@@ -103,25 +103,31 @@ Two failure modes of the shipped rc.3 engine, measured against it in
 
 ## Version pin and what happens on another version
 
-The package is pinned to **DSH 0.2.2-rc.3** twice:
+The package is pinned to **DSH 0.2.2-rc.3 and 0.2.2-rc.5** twice. Both releases ship the
+same `@deepseek-ai/dsh-session-query-sqlite` sources, so one set of sha256 pins covers
+both (checked against tag `dsh-v0.2.2-rc.5`, commit `9c2670d3bc`; between rc.3 and rc.5
+only the two `package.json` versions changed under `packages/session-query`):
 
-- **Bundle level**: `package.json` has `"engines": { "dsh": "0.2.2-rc.3" }`.
+- **Bundle level**: `package.json` has `"engines": { "dsh": "0.2.2-rc.3 || 0.2.2-rc.5" }`.
   `dsh plugin add` **refuses** to install the package on a host whose version does
   not match (the CLI prints `installation rejected … incompatible with dsh …` and
   `nothing was installed`; seen with a copy pinned to rc.4 on an rc.3 host). After
   a host update the installed package is **skipped when the profile loads**, with
   a line `dsh: skipping profile bundle "dsh-plugin-session-search-patched": …
-  requirements {"engines.dsh":"0.2.2-rc.3"} …` on stderr; no row of the package is
+  requirements {"engines.dsh":"0.2.2-rc.3 || 0.2.2-rc.5"} …` on stderr; no row of the package is
   composed and the shipped engine row serves. That skip was reproduced by editing
   `engines.dsh` in an installed copy on an rc.3 host, not on a real newer host.
   The package stays in the profile's `dependencies` until you remove it.
 - **Entry guard**: even when the bundle loads, the row mounts the patched engine
   only when the host's `@deepseek-ai/dsh-session-query-sqlite` is exactly
-  `0.2.2-rc.3` **and** its three source files have the pinned sha256 values (the
+  `0.2.2-rc.3` or `0.2.2-rc.5` (an allow-list, not a range; `PINNED_VERSION` is the
+  newest entry) **and** its three source files have the pinned sha256 values (the
   files this package was rebased on). Otherwise the row mounts the shipped class
   with the same config and logs a `warn` line that names the failed check.
 
-There is no rc.4 variant. The patch was written for rc.3 sources
+There is no rc.4 variant: rc.4's engine is rc.3's (`vendor/PROVENANCE.md`), and neither
+`engines.dsh` nor the guard admits it. The patch was written for rc.3 sources, and rc.5
+ships those same bytes, so `vendor/src/*.ts` is unchanged.
 (`vendor/src/*.ts`); the installed engine files were compared byte for byte
 (`vendor/PROVENANCE.md`).
 
@@ -177,7 +183,7 @@ Four views, from direct to indirect:
 `session-search-patched:`. With the patched engine serving:
 
 ```text
-session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.5 (pinned 0.2.2-rc.3 / 0.2.2-rc.5) and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
 ```
 
 The other variants have the same shape, `session-search-patched: active engine:
@@ -261,7 +267,7 @@ serves); switch this bundle off and on to put its layer after it again.
 
 ## Limits
 
-- **Only DSH 0.2.2-rc.3.** See [Version pin](#version-pin-and-what-happens-on-another-version).
+- **Only DSH 0.2.2-rc.3 and 0.2.2-rc.5.** See [Version pin](#version-pin-and-what-happens-on-another-version).
 - **The entry itself must load.** The fallback covers failures inside the row's
   start; it cannot cover an entry that does not import. If `src/index.host.js` or
   `src/guard.js` cannot be loaded (a syntax error or a missing file in an edited or

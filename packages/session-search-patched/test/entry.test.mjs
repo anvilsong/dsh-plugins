@@ -212,7 +212,7 @@ describe('outcome: compatible host', () => {
 
 describe('outcome: guard or patched-engine failure gives the shipped class with the same config', () => {
   const cases = [
-    ['version mismatch', { world: { version: '0.2.2-rc.4' } }, /compatibility guard failed: host @deepseek-ai\/dsh-session-query-sqlite is 0\.2\.2-rc\.4, not the pinned 0\.2\.2-rc\.3/, { loadPatched: 0 }],
+    ['version mismatch', { world: { version: '0.2.2-rc.4' } }, /compatibility guard failed: host @deepseek-ai\/dsh-session-query-sqlite is 0\.2\.2-rc\.4, not one of the pinned 0\.2\.2-rc\.3 \/ 0\.2\.2-rc\.5/, { loadPatched: 0 }],
     ['version unknown: no pluginPackages service', { world: { packages: 'none' } }, /version of @deepseek-ai\/dsh-session-query-sqlite unknown \(the pluginPackages service is not available\)/, { loadPatched: 0 }],
     ['version unknown: packageOf throws', { world: { packages: 'throws' } }, /unknown \(packageOf failed in the fake host\)/, { loadPatched: 0 }],
     ['version unknown: packageOf finds no package', { world: { packages: 'no-entry' } }, /unknown \(pluginPackages has no @deepseek-ai\/dsh-session-query-sqlite for this package\)/, { loadPatched: 0 }],

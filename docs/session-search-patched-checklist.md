@@ -149,7 +149,7 @@ row and the effect.
    fixed):
 
    ```text
-   session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
+   session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.5 (pinned 0.2.2-rc.3 / 0.2.2-rc.5) and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
    ```
 
    Not that line, but `active engine: shipped SqliteSessionQueryEngine

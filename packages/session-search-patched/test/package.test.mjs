@@ -28,7 +28,7 @@ const PEERS = {
   '@deepseek-ai/schemastery': '~3.19.0',
   '@deepseek-ai/dsh-session': '0.2.2-rc.3',
   '@deepseek-ai/dsh-session-query': '0.2.2-rc.3',
-  '@deepseek-ai/dsh-session-query-sqlite': '0.2.2-rc.3',
+  '@deepseek-ai/dsh-session-query-sqlite': '0.2.2-rc.3 || 0.2.2-rc.5',
 }
 
 const exists = (relative) => fs.existsSync(file(relative))
@@ -66,8 +66,18 @@ describe('package.json', () => {
     assert.deepEqual(pkg.peerDependencies, PEERS)
   })
 
+  test('engines.dsh admits exactly the pinned host versions', () => {
+    assert.deepEqual(pkg.engines, { dsh: '0.2.2-rc.3 || 0.2.2-rc.5' })
+  })
+
+  test('the pin admits rc.3 and rc.5 because the engine sources are identical', () => {
+    const provenance = fs.readFileSync(file('vendor/PROVENANCE.md'), 'utf8')
+    assert.match(provenance, /dsh-v0\.2\.2-rc\.5/, 'the provenance names the rc.5 tag')
+    assert.match(provenance, /ships the same `src\/index\.ts`/, 'the provenance records the identical engine bytes')
+  })
+
   test('engines.dsh is the pinned host version', () => {
-    assert.deepEqual(pkg.engines, { dsh: '0.2.2-rc.3' })
+    assert.deepEqual(pkg.engines, { dsh: '0.2.2-rc.3 || 0.2.2-rc.5' })
   })
 
   test('every export target and the main entry exist', () => {

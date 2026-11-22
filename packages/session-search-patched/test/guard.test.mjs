@@ -21,7 +21,7 @@ const guard = await import('../src/guard.js').catch((error) => {
 })
 const {
   checkHost, checkScope, describeError, ENGINE_PACKAGE, formatLine, isProviderClash,
-  ISOLATED_SCOPE, LOG_PREFIX, PINNED_SOURCES, PINNED_VERSION,
+  ISOLATED_SCOPE, LOG_PREFIX, PINNED_SOURCES, PINNED_VERSION, PINNED_VERSIONS,
 } = guard
 
 const PKG = path.resolve(import.meta.dirname, '..')
@@ -31,7 +31,7 @@ const okInput = () => ({ version: '0.2.2-rc.3', sources: { ...RC3 } })
 const other = (hex) => hex.replace(/^./, (c) => (c === '0' ? '1' : '0'))
 
 test('pinned values equal the spike evidence (decision table and guard-inputs.txt)', () => {
-  assert.equal(PINNED_VERSION, '0.2.2-rc.3')
+  assert.deepEqual([...PINNED_VERSIONS], ['0.2.2-rc.3', '0.2.2-rc.5'])
   assert.equal(ENGINE_PACKAGE, '@deepseek-ai/dsh-session-query-sqlite')
   assert.equal(ISOLATED_SCOPE, 'sessionQuery#optional-session-search')
   assert.equal(LOG_PREFIX, 'session-search-patched:')
@@ -59,14 +59,24 @@ test('checkHost: the pinned version with matching source hashes passes', () => {
   assert.ok(Object.isFrozen(result))
 })
 
-test('checkHost: every version other than the exact pinned string fails', () => {
+test('checkHost: both pinned host versions pass with the pinned sources', () => {
+  for (const version of ['0.2.2-rc.3', '0.2.2-rc.5']) {
+    const result = checkHost({ version, sources: { ...RC3 } })
+    assert.equal(result.ok, true, `${version}: ${result.reason}`)
+    assert.match(result.reason, new RegExp(`host @deepseek-ai/dsh-session-query-sqlite ${version.replace(/\./g, '\\.')}`))
+  }
+})
+
+test('checkHost: every version other than a pinned string fails', () => {
   const cases = [
-    ['0.2.2-rc.4', /0\.2\.2-rc\.4.*not the pinned 0\.2\.2-rc\.3/],
-    ['0.2.2', /not the pinned/],
-    ['0.2.2-rc.3 ', /not the pinned/],
-    [' 0.2.2-rc.3', /not the pinned/],
-    ['v0.2.2-rc.3', /not the pinned/],
-    ['0.2.2-RC.3', /not the pinned/],
+    ['0.2.2-rc.4', /0\.2\.2-rc\.4.*not one of the pinned/],
+    ['0.2.2-rc.6', /not one of the pinned/],
+    ['0.2.3', /not one of the pinned/],
+    ['0.2.2', /not one of the pinned/],
+    ['0.2.2-rc.3 ', /not one of the pinned/],
+    [' 0.2.2-rc.3', /not one of the pinned/],
+    ['v0.2.2-rc.3', /not one of the pinned/],
+    ['0.2.2-RC.3', /not one of the pinned/],
     ['', /unknown/],
     [undefined, /unknown/],
     [null, /unknown/],
