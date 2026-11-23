@@ -121,7 +121,11 @@ export function mapCatalog(raw, provider) {
         const efforts = {}
         for (const [level, wire] of Object.entries(model.thinkingLevelMap)) {
           if (!LEVELS.has(level)) continue
-          if (wire === null || (typeof wire === 'string' && wire.length > 0)) efforts[level] = wire
+          // A null upstream value means "unsupported". DSH deliberately
+          // treats a null reasoningEfforts value as absent, so copying it
+          // would make pi-ai fall back to the wire value "none". Omitting
+          // the key instead makes DSH pin that level to null (unsupported).
+          if (typeof wire === 'string' && wire.length > 0) efforts[level] = wire
         }
         if (Object.keys(efforts).length === 0) {
           issues.push(modelIssue(id, 'thinkingLevelMap has no supported effort'))

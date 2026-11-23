@@ -28,7 +28,7 @@ test('mapCatalog copies only DSH-supported model fields, never upstream compat',
   assert.equal(issues.length, 0)
   assert.deepEqual(models, [{
     id: 'gpt-6.2-astra', name: 'GPT-6.2 Astra', contextWindow: 272000, maxTokens: 128000,
-    input: ['text', 'image'], reasoningEfforts: { off: null, low: 'low', high: 'high', xhigh: 'xhigh', max: 'max' },
+    input: ['text', 'image'], reasoningEfforts: { low: 'low', high: 'high', xhigh: 'xhigh', max: 'max' },
   }])
   assert.equal(Object.hasOwn(models[0], 'compat'), false)
   assert.equal(Object.hasOwn(models[0], 'cost'), false)
@@ -51,6 +51,12 @@ test('reasoning efforts preserve null and string wire values and ignore unknown 
   const { models } = mapCatalog({ group: { one: terra } }, 'openai-codex')
   assert.deepEqual(models[0].reasoningEfforts, { off: 'none', low: 'low', high: 'high', xhigh: 'xhigh', max: 'max' })
   assert.equal(Object.hasOwn(models[0].reasoningEfforts, 'future'), false)
+})
+
+test('null upstream effort values are omitted so DSH pins them as unsupported', () => {
+  const { models } = mapCatalog({ group: { one: astra } }, 'openai-codex')
+  assert.equal(Object.hasOwn(models[0].reasoningEfforts, 'off'), false)
+  assert.equal(models[0].reasoningEfforts.low, 'low')
 })
 
 test('a reasoning model without a thinking map is refused rather than made non-reasoning', () => {

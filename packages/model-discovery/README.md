@@ -110,7 +110,9 @@ Then run `/model-discovery sync` and inspect `/model-discovery status`.
   account, nor that its pricing, rate limits or capabilities are correct for your
   use. Check the provider before relying on a newly discovered model.
 - `reasoningEfforts` maps upstream thinking levels to DSH's supported levels;
-  unknown levels are ignored. A reasoning model with no usable map is skipped.
+  unknown levels are ignored. Null upstream effort values are **omitted**, not
+  copied: DSH treats a copied null as absent and `pi-ai` then falls back to the
+  unsupported wire value `none`. A reasoning model with no usable map is skipped.
 - Only `text` and `image` input modalities are kept. Other modalities are dropped;
   a model left with none is skipped.
 
