@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { installDelegationSupport, startDelegationLoad } from './delegation.js'
 import { loadNativeExecutor } from './executor.js'
 import { createLedger, resolveDataDir } from './ledger.js'
 import {
@@ -234,6 +235,7 @@ function startNativeExecutorLoad(ctx, host) {
 
 export async function apply(ctx, config = {}, host = HOST) {
   const nativeExecutor = startNativeExecutorLoad(ctx, host)
+  const delegation = startDelegationLoad(host.load ?? ((specifier) => import(specifier)))
   const { ledger, problem } = openLedger(ctx, config)
   const workflow = ledger === undefined
     ? undefined
@@ -359,6 +361,16 @@ export async function apply(ctx, config = {}, host = HOST) {
       ledger,
       nativeExecutor,
     }), 'advisor: child boundary')
+  })
+
+  // The lead needs delegation tools in every preset. Existing definitions are
+  // left alone; only missing packages are mounted, while Advisor is on.
+  ctx.inject(['agents', 'subagents', 'tools'], (delegationCtx) => {
+    delegationCtx.effect(() => installDelegationSupport(delegationCtx, {
+      projection,
+      delegation,
+      logger: delegationCtx.logger,
+    }), 'advisor: delegation support')
   })
 
   /** The llm service, read at call time: optional, so neither injected nor cached. */

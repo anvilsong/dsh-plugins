@@ -645,6 +645,36 @@ effect, the direct tool calls. A long review in a ptc session is
 not yet confirmed, and neither is the first-step timing above. The `standard`
 consult ran on the lead's model because that session had no Advisor model set.
 
+### Delegation tools in every preset
+
+While Advisor is on, it also supplies the lead's missing delegation tools. Standard,
+cordis and ptc declare them in a delegation group; **minimal does not**. At apply
+for live root Agents and on `agent/created`, the plugin mounts the host's own
+`tool-subagent` (provider `spawn`, `modelSelection` and `modelDiscovery` on) and
+`tool-subagent-control` (`interrupt: false`) on the root Agent's own scope only
+when those definitions are absent. A missing `list_subagent_models` alone never
+causes a second `subagent` mount. Existing definitions are never replaced, and
+non-root Agents (including every Advisor child) get no such mount.
+
+The mounts are removed when Advisor is turned off, when the Agent is disposed,
+and when the plugin unloads. Turning Advisor on again mounts them again, without
+duplicates. Two `agent/created` events for the same Agent share one in-flight
+mount. If one package fails to load or mount, the other still works, the failed
+fiber is disposed, and one warning names the failure. Both packages are optional
+peers with range `*` for the same reason as the native executor: a failed import
+is survived, and no host-version mismatch can skip the whole Advisor bundle.
+
+Scoped registrations stay visible when a global restriction hides tools. If you
+deliberately restricted delegation for an Agent, do not turn Advisor on for it
+expecting that restriction to remain; turn Advisor off to remove the mounts.
+The read-only guards themselves are unchanged: an Advisor child or verifier still
+gets only glob, grep, read and its submit tools, and `run_code` stays denied.
+
+Live check, 2026-11-22: after reloading the plugin, a cordis session whose tool
+list had lacked `subagent` and `list_subagent_models` exposed both again. The
+minimal mount path is covered by fake-host lifecycle tests, not yet by a live
+minimal session.
+
 Peer dependency. `package.json` lists `@deepseek-ai/dsh-tool-executor-native`
 in `peerDependencies` with the range `*`, marked optional in
 `peerDependenciesMeta`, and adds no runtime dependency. A bare import of a Host

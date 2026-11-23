@@ -38,10 +38,18 @@
     "zod": "4.4.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-tool-executor-native": "*"
+    "@deepseek-ai/dsh-tool-executor-native": "*",
+    "@deepseek-ai/dsh-tool-subagent": "*",
+    "@deepseek-ai/dsh-tool-subagent-control": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-tool-executor-native": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tool-subagent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tool-subagent-control": {
       "optional": true
     }
   },
