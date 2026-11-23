@@ -1,0 +1,40 @@
+{
+  "name": "dsh-plugin-model-discovery",
+  "version": "0.1.0",
+  "description": "Discover newly published pi-ai models and add them to the model catalog without replacing the adapter.",
+  "type": "module",
+  "main": "src/index.host.js",
+  "meta": {
+    "title": "Model discovery",
+    "description": "Add newly published pi-ai models to your catalog automatically."
+  },
+  "exports": {
+    ".": {
+      "default": "./src/index.host.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT",
+  "author": "anvilsong",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anvilsong/dsh-plugin-provider-usage.git",
+    "directory": "packages/model-discovery"
+  }
+}

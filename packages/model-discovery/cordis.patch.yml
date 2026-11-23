@@ -1,0 +1,13 @@
+# Bundle patch for dsh-plugin-model-discovery.
+# One insert row; this package has no client half.
+- insert:
+    - id: model-discovery
+      name: dsh-plugin-model-discovery
+      config:
+        # Check the npm `latest` tag once, then fetch only the provider catalog JSON.
+        enabled: true
+        packageName: '@earendil-works/pi-ai'
+        providers:
+          - openai-codex
+        refreshMs: 21600000
+        timeoutMs: 15000
