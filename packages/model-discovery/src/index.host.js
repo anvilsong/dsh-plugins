@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import {
   latestCatalogUrl,
   mapCatalog,
@@ -48,6 +50,15 @@ export async function apply(ctx, config = {}, host = {}) {
   const resolution = resolveSettings(config)
   const getJson = host.getJson ?? defaultGetJson
   const now = host.now ?? (() => Date.now())
+  const home = (() => {
+    try {
+      const value = ctx.get?.('profileContext')?.home
+      return typeof value === 'string' && value.length > 0 ? value : undefined
+    } catch {
+      return undefined
+    }
+  })()
+  const statusFile = host.statusFile ?? (home === undefined ? undefined : `${home}/model-discovery/status.json`)
   const state = {
     running: false,
     versions: Object.create(null),
@@ -121,6 +132,19 @@ export async function apply(ctx, config = {}, host = {}) {
     if (skipped.length > 0) pieces.push(`Skipped: ${skipped.join(' | ')}.`)
     if (errors.length > 0) pieces.push(`Errors: ${errors.join(' | ')}`)
     state.lastResult = pieces.join('\n')
+    if (statusFile !== undefined) {
+      try {
+        await mkdir(dirname(statusFile), { recursive: true, mode: 0o700 })
+        await writeFile(statusFile, `${JSON.stringify({
+          version: state.lastVersion,
+          added: state.lastAdded,
+          skipped: state.lastSkipped,
+          error: state.lastError,
+          result: state.lastResult,
+          finishedAt: state.lastFinishedAt,
+        }, null, 2)}\n`, { mode: 0o600 })
+      } catch { /* status is diagnostic only; never fail a sync over it */ }
+    }
     if (errors.length > 0) {
       try { logger?.warn?.(`model-discovery: ${errors.join(' | ')}`) } catch { /* no logger */ }
     }
@@ -151,9 +175,19 @@ export async function apply(ctx, config = {}, host = {}) {
     return
   }
   if (resolution.settings.enabled) {
-    const timer = setInterval(() => { void sync(false) }, resolution.settings.refreshMs)
-    timer.unref?.()
-    ctx.effect(() => () => clearInterval(timer))
-    queueMicrotask(() => { void sync(false) })
+    const outsideHmr = () => {
+      const hmr = ctx.get?.('hmr')
+      // HMR serializes reloads in an AsyncLocalStorage transaction. Activate
+      // the editor from outside that zone, otherwise every timer callback is
+      // still a nested HMR transaction even after apply has returned.
+      if (typeof hmr?.executing?.exit === 'function') return hmr.executing.exit(() => sync(false))
+      return sync(false)
+    }
+    ctx.inject(['configEditor'], (editorCtx) => {
+      const timer = setInterval(() => { void outsideHmr() }, resolution.settings.refreshMs)
+      timer.unref?.()
+      editorCtx.effect(() => () => clearInterval(timer))
+      setTimeout(() => { void outsideHmr() }, 0)
+    })
   }
 }

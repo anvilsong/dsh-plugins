@@ -39,9 +39,16 @@ entitlement, quotas and live API availability are separate checks.
 /model-discovery status   # enabled providers, last version, additions and errors
 ```
 
-The first automatic check runs at plugin start. After that, checks run every six
-hours. Manual `sync` is always allowed, including while automatic discovery is
-disabled in config.
+The first automatic check runs at plugin start, outside HMR's activation
+transaction so `configEditor` can open its own write transaction. After that,
+checks run every six hours. Manual `sync` is always allowed, including while
+automatic discovery is disabled in config.
+
+For diagnostics without a chat command, the plugin writes
+`~/.dsh/model-discovery/status.json` after each sync. It records the version,
+added and skipped ids, errors and the same result text as `/model-discovery status`.
+The folder is created with mode 0700 and the file with mode 0600. No credentials
+or provider responses are written there.
 
 ## Config
 

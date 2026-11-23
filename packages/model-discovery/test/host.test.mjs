@@ -59,6 +59,7 @@ function harness({ enabled = true, config = {}, current, editorError, getJsonErr
     get: (name) => name === 'configEditor' ? editor : undefined,
     inject(names, callback) {
       if (names.includes('commands')) callback({ commands: { register: (command) => commands.push(command) } })
+      if (names.includes('configEditor')) callback({ ...editor, effect: ctx.effect })
     },
     effect: (fn) => { cleanups.push(fn()) },
   }
@@ -80,7 +81,7 @@ function harness({ enabled = true, config = {}, current, editorError, getJsonErr
   globalThis.setInterval = setInterval
   globalThis.clearInterval = clearInterval
   return {
-    ctx, commands, cleanups, intervals, edits, warnings, calls, state, getJson,
+    ctx, commands, cleanups, intervals, edits, warnings, calls, state, getJson, editor,
     setEditorError: (value) => { editorErrorValue = value },
     setGetJson: (fn) => { getJsonImpl = fn },
     setBeforeChange: (fn) => { beforeChange = fn },
@@ -90,7 +91,7 @@ function harness({ enabled = true, config = {}, current, editorError, getJsonErr
       } finally {
         globalThis.setInterval = originalSetInterval
       }
-      await new Promise((resolve) => setImmediate(resolve))
+      await new Promise((resolve) => setTimeout(resolve, 0))
     },
   }
 }
@@ -231,6 +232,19 @@ test('status includes the last result, and unknown arguments return usage', asyn
   const usage = await h.commands[0].handler({ rawInput: 'on' })
   assert.equal(usage.kind, 'error')
   assert.match(usage.text, /Usage:/)
+})
+
+test('automatic sync leaves the HMR activation transaction before editing', async () => {
+  const h = harness()
+  let exits = 0
+  h.ctx.get = (name) => {
+    if (name === 'configEditor') return h.editor
+    if (name === 'hmr') return { executing: { exit: (fn) => { exits += 1; return fn() } } }
+    return undefined
+  }
+  await h.start()
+  assert.ok(exits > 0)
+  assert.equal(h.state.config.providers['openai-codex'].models.length, 3)
 })
 
 test('the scheduled timer is disposed on unload', async () => {
