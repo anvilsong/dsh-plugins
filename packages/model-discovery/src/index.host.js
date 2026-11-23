@@ -3,6 +3,7 @@ import { dirname } from 'node:path'
 import {
   latestCatalogUrl,
   mapCatalog,
+  mergeAllowedModels,
   mergeConfig,
   mergeProvider,
   providerCatalogUrl,
@@ -14,6 +15,7 @@ export const name = 'model-discovery'
 export const inject = []
 
 const LLM_ENTRY = '@deepseek-ai/dsh-llm-pi-ai'
+const SETTINGS_ENTRY = '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
 const USAGE = 'Usage: /model-discovery sync|status'
 
 function describe(error) {
@@ -114,6 +116,17 @@ export async function apply(ctx, config = {}, host = {}) {
             return mergeConfig(current, provider, latestMerge.provider)
           })
           added.push(...latestMerge.added)
+          // Defining a model is not enough to make it selectable: DSH also has
+          // an explicit allowedModels route list. Add only missing routes there.
+          const settingsEntry = editor.entries().find((candidate) => candidate.options?.name === SETTINGS_ENTRY)
+          if (settingsEntry !== undefined) {
+            const allowed = mergeAllowedModels(settingsEntry.options?.config?.allowedModels, provider, models)
+            if (allowed.error !== undefined) throw new Error(allowed.error)
+            if (allowed.added.length > 0) {
+              await editor.edit(settingsEntry, (current) => ({ ...current, allowedModels: allowed.allowedModels }))
+              added.push(...allowed.added)
+            }
+          }
           state.versions[provider] = version
         } catch (error) {
           errors.push(`${provider}: ${describe(error)}`)

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   latestCatalogUrl,
+  mergeAllowedModels,
   mapCatalog,
   mergeConfig,
   mergeProvider,
@@ -105,6 +106,21 @@ test('mergeConfig preserves top-level fields and every other provider', () => {
   assert.deepEqual(next.providers.other, { enabled: true })
   assert.equal(next.providers['openai-codex'].models.length, 1)
   assert.deepEqual(current.providers['openai-codex'], {}, 'the input is not mutated')
+})
+
+test('allowed-model merge adds only missing provider/model routes and preserves others', () => {
+  const current = [
+    { provider: 'openai-codex', model: 'gpt-6-astra' },
+    { provider: 'anthropic', model: 'claude-sonnet-5-5' },
+  ]
+  const result = mergeAllowedModels(current, 'openai-codex', [
+    { id: 'gpt-6-astra' }, { id: 'gpt-6.2-astra' },
+  ])
+  assert.deepEqual(result.added, ['gpt-6.2-astra'])
+  assert.deepEqual(result.allowedModels[0], current[0])
+  assert.deepEqual(result.allowedModels[1], current[1])
+  assert.deepEqual(result.allowedModels[2], { provider: 'openai-codex', model: 'gpt-6.2-astra' })
+  assert.equal(mergeAllowedModels({}, 'openai-codex', []).error, 'allowedModels is not an array')
 })
 
 test('settings have safe defaults and reject invalid values', () => {

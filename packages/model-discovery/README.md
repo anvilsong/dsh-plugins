@@ -32,6 +32,12 @@ New models appear in DSH only after they are published in the upstream `pi-ai`
 catalog. **That does not prove your provider account can use them.** Provider
 entitlement, quotas and live API availability are separate checks.
 
+Each sync also adds missing provider/model routes to DSH's
+`subagent-model-selection-settings` `allowedModels` list, additively and without
+reordering or deleting existing routes. DSH samples that policy per Session: a
+Session that already has a model-selection policy keeps it. Start a **new
+Session** after the first sync to see newly allowed models in the menu.
+
 ## Use
 
 ```text

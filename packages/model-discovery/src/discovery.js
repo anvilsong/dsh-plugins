@@ -159,6 +159,22 @@ export function mergeConfig(current, provider, nextProvider) {
   return { ...current, providers: { ...providers, [provider]: nextProvider } }
 }
 
+/** Add only missing provider/model routes to the subagent allow-list. */
+export function mergeAllowedModels(currentAllowed, provider, discovered) {
+  if (currentAllowed !== undefined && !Array.isArray(currentAllowed)) {
+    return { error: 'allowedModels is not an array' }
+  }
+  const existing = currentAllowed ?? []
+  const seen = new Set(existing.map((route) => `${route?.provider}/${route?.model}`))
+  const added = discovered
+    .filter((model) => !seen.has(`${provider}/${model.id}`))
+    .map((model) => ({ provider, model: model.id }))
+  return {
+    allowedModels: [...existing, ...added],
+    added: added.map((route) => route.model),
+  }
+}
+
 export function statusText(settings, state) {
   const lines = [
     `Model discovery is ${settings.enabled ? 'enabled' : 'disabled'} for ${settings.providers.join(', ')}.`,

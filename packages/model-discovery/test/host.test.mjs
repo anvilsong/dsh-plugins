@@ -42,16 +42,35 @@ function harness({ enabled = true, config = {}, current, editorError, getJsonErr
     options: { name: '@deepseek-ai/dsh-llm-pi-ai', config: state.config },
     fiber: { state: 2 },
   }
+  const settingsEntry = {
+    options: {
+      name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings',
+      config: {
+        enabled: true,
+        allowedModels: [
+          { provider: 'openai-codex', model: 'gpt-6-astra' },
+          { provider: 'anthropic', model: 'claude-sonnet-5-5' },
+        ],
+      },
+    },
+    fiber: { state: 2 },
+  }
   const editor = {
-    entries: () => [entry],
+    entries: () => [entry, settingsEntry],
     async edit(receivedEntry, change) {
-      assert.equal(receivedEntry, entry)
+      assert.ok([entry, settingsEntry].includes(receivedEntry))
       if (editorErrorValue !== undefined) throw new Error(editorErrorValue)
       beforeChange?.()
-      const next = change(state.config, {})
-      edits.push(next)
-      state.config = next
-      entry.options.config = next
+      if (receivedEntry === settingsEntry) {
+        const next = change(settingsEntry.options.config, {})
+        edits.push(next)
+        settingsEntry.options.config = next
+      } else {
+        const next = change(state.config, {})
+        edits.push(next)
+        state.config = next
+        entry.options.config = next
+      }
     },
   }
   const ctx = {
@@ -108,10 +127,14 @@ test('sync adds only missing models, preserves existing config, and is idempoten
   assert.equal(h.state.config.keep, true)
   assert.deepEqual(h.state.config.providers.other, { enabled: true })
   assert.equal(provider.models[1].compat, undefined)
-  assert.equal(h.edits.length, 1)
+  assert.equal(h.edits.length, 2, 'one catalog edit and one allow-list edit')
   const result = await h.commands[0].handler({ rawInput: 'sync' })
   assert.match(result.text, /Added: nothing new/)
-  assert.equal(h.edits.length, 1, 'a second sync does not rewrite identical entries')
+  assert.equal(h.edits.length, 2, 'a second sync rewrites neither list')
+  const allowed = h.editor.entries().find((candidate) => candidate.options.name.includes('model-selection-settings')).options.config.allowedModels
+  assert.ok(allowed.some((route) => route.provider === 'openai-codex' && route.model === 'gpt-6.2-astra'))
+  assert.ok(allowed.some((route) => route.provider === 'openai-codex' && route.model === 'gpt-6.1-terra'))
+  assert.ok(allowed.some((route) => route.provider === 'anthropic' && route.model === 'claude-sonnet-5-5'))
 })
 
 test('a newer package version adds newly discovered models without replacing old ones', async () => {
