@@ -36,6 +36,14 @@ active provider.
 |---|---|
 | ![OpenRouter usage chip](docs/images/composer-openrouter-chip.webp) | ![Kimi Code usage chip](docs/images/composer-kimi-chip.webp) |
 
+Codex and Claude cards sign in with your plan through OAuth. These two images
+use sample data and an approximate dark theme rendered from the plugin's own
+test gallery, so they show layout, not real figures or exact colours:
+
+| OpenAI Codex | Claude |
+|---|---|
+| ![OpenAI Codex usage card](docs/images/provider-card-codex.webp) | ![Claude usage card](docs/images/provider-card-claude.webp) |
+
 ## Packages
 
 | Directory | npm package | Purpose |

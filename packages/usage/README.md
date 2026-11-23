@@ -22,6 +22,19 @@ Select **details** to expand the full panel without leaving the provider card.
 
 ![Kimi Code and OpenRouter usage inside their provider cards](https://raw.githubusercontent.com/anvilsong/dsh-plugin-provider-usage/main/docs/images/models-provider-usage.webp)
 
+The Codex and Claude cards sign in with your plan through OAuth and show plan
+quota windows, credits and extra usage:
+
+| OpenAI Codex | Claude |
+|---|---|
+| ![OpenAI Codex card with 5-hour and 7-day windows, credits and extra usage](https://raw.githubusercontent.com/anvilsong/dsh-plugin-provider-usage/main/docs/images/provider-card-codex.webp) | ![Claude card with 5-hour, 7-day and Opus windows, credits spent and extra usage](https://raw.githubusercontent.com/anvilsong/dsh-plugin-provider-usage/main/docs/images/provider-card-claude.webp) |
+
+> The Codex and Claude images are rendered by the plugin's own client code with
+> **sample data** and an approximate dark theme, from the test gallery
+> (`node packages/usage/test/helpers/gallery.mjs`). They show structure and
+> layout, not your real figures or exact colours. The Kimi Code and OpenRouter
+> image above is a real screenshot.
+
 ### Composer chips
 
 The chip follows the active provider. Select it to open the usage panel.
