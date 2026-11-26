@@ -43,7 +43,8 @@
 //   :636-675). Without engines.dsh, DSH checks that peer's range against its
 //   own version and skips the bundle on a mismatch (dsh-app-boot/src/
 //   plugin-compatibility.ts:51-74, profile.ts:699-700), so the range in
-//   package.json is a lower bound only.
+//   package.json is `*`: any narrower range could skip the whole bundle on a
+//   DSH version outside it, while a failed import is already survived.
 
 export const NATIVE_EXECUTOR_PACKAGE = '@deepseek-ai/dsh-tool-executor-native'
 /** The PTC transport's name (dsh-tools RUN_CODE_NAME). */

@@ -5,7 +5,7 @@ Spike record for the client half of `dsh-plugin-sessions`. It answers one questi
 Path prefixes used below:
 
 - `APP/` = `/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/` (the installed app, `0.2.2-rc.3`). Read with a file-read tool only: the packages are inside `app.asar`, so shell `cat`/`ls`/`rg` fail there.
-- `UP/` = `/Users/macbook/projects/deepseek-harness/` (upstream clone, `0.2.2-rc.4`). It is used only where the installed app does not ship the file.
+- `UP/` = `<upstream checkout>/` (upstream clone, `0.2.2-rc.4`). It is used only where the installed app does not ship the file.
 - `INSPECT/` = `/tmp/sessions-plugin-inspect/` (live inspect output that was saved from the running host).
 
 ## Summary

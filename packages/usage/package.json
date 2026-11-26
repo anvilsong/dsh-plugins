@@ -1,12 +1,12 @@
 {
   "name": "dsh-plugin-provider-usage",
-  "description": "Provider usage for DSH — OpenRouter credits, Kimi Code quota, DeepSeek balance, GLM and MiniMax coding-plan windows, NewAPI quota; composer chips gated on the active provider; /usage-* report commands",
-  "version": "0.6.1",
+  "description": "Provider usage for DSH — OpenRouter credits, Kimi Code quota, DeepSeek balance, GLM and MiniMax coding-plan windows, NewAPI quota, OpenAI Codex and Claude plan quota; composer chips gated on the active provider; /usage-* report commands; /provider-login OAuth sign-in",
+  "version": "0.7.0",
   "type": "module",
   "main": "src/index.host.js",
   "meta": {
     "title": "Provider usage",
-    "description": "OpenRouter, Kimi Code, DeepSeek, GLM, MiniMax and NewAPI usage on Settings → Models, in composer chips, and through /usage-* commands"
+    "description": "OpenRouter, Kimi Code, DeepSeek, GLM, MiniMax, NewAPI, OpenAI Codex and Claude usage on Settings → Models, in composer chips, and through /usage-* commands, with OAuth sign-in for Codex and Claude"
   },
   "exports": {
     ".": {
@@ -49,10 +49,11 @@
   "author": "anvilsong",
   "repository": {
     "type": "git",
-    "url": "https://github.com/anvilsong/dsh-plugin-provider-usage.git"
+    "url": "https://github.com/anvilsong/dsh-plugins.git",
+    "directory": "packages/usage"
   },
-  "homepage": "https://github.com/anvilsong/dsh-plugin-provider-usage#readme",
-  "bugs": "https://github.com/anvilsong/dsh-plugin-provider-usage/issues",
+  "homepage": "https://github.com/anvilsong/dsh-plugins/tree/main/packages/usage#readme",
+  "bugs": "https://github.com/anvilsong/dsh-plugins/issues",
   "keywords": [
     "dsh",
     "dsh-plugin",

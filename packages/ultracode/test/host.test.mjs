@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { apply, POLICY } from '../src/index.host.js'
+import { isDelegationTool, MAX_SPAWN_ATTEMPTS } from '../src/state.js'
+
+const readme = () => readFileSync(new URL('../README.md', import.meta.url), 'utf8').replace(/\s+/g, ' ')
 
 function harness() {
   let definition
@@ -46,7 +50,7 @@ test('apply registers the projection, section, and command', async () => {
   await apply(ctx)
   const { definition, section, command, calls } = get()
   assert.equal(definition.key, 'ultracode')
-  assert.equal(definition.stateVersion, 4)
+  assert.equal(definition.stateVersion, 5)
   assert.equal(typeof definition.apply, 'function')
   assert.equal(section.name, 'ultracode:policy')
   assert.equal(section.order, 500)
@@ -124,6 +128,60 @@ test('the command validates input and reports state without changing Team', asyn
   assert.equal((await command.handler({ agent, rawInput: 'bogus' })).kind, 'error')
 })
 
+// Runs a command the way the host does: command/run is folded before the
+// handler, and command/done after it with the handler's outcome.
+async function dispatch(h, rawInput, commandId, time = 1000) {
+  const { definition, command } = h.get()
+  const feed = (event) => h.setState(definition.apply(h.get().state, event))
+  feed({ type: 'command/run', time, data: { name: 'ultracode', args: rawInput, commandId } })
+  const result = await command.handler({ agent: h.agent, rawInput, commandId })
+  feed({ type: 'command/done', data: { commandId, kind: result.kind, text: result.text } })
+  return result
+}
+
+test('a bare /ultracode toggles the mode and its reply names the new mode', async () => {
+  const h = harness()
+  await apply(h.ctx)
+  const { section } = h.get()
+  assert.deepEqual(await dispatch(h, '', 'bare-1'), { kind: 'success', text: 'Ultracode on. The next model request will use exhaustive orchestration.' })
+  assert.equal(h.get().state.active, true)
+  assert.equal(section.text({ agent: h.agent }), POLICY)
+  assert.equal((await h.get().command.handler({ agent: h.agent, rawInput: 'status' })).text, 'Ultracode is on for this session.')
+  assert.deepEqual(await dispatch(h, '  ', 'bare-2', 2000), { kind: 'success', text: 'Ultracode off. The next model request will use the normal workflow.' })
+  assert.equal(h.get().state.active, false)
+  assert.equal(section.text({ agent: h.agent }), '')
+})
+
+test('explicit on and off through the host path still set the mode, and a repeat changes nothing', async () => {
+  const h = harness()
+  await apply(h.ctx)
+  assert.equal((await dispatch(h, 'ON', 'c1')).kind, 'success')
+  assert.equal(h.get().state.active, true)
+  assert.equal((await dispatch(h, 'on', 'c2', 2000)).text, 'Ultracode on. The next model request will use exhaustive orchestration.')
+  assert.equal(h.get().state.active, true)
+  assert.equal((await dispatch(h, 'off', 'c3', 3000)).kind, 'success')
+  assert.equal(h.get().state.active, false)
+})
+
+test('a bare /ultracode while another update is pending is rejected and changes nothing', async () => {
+  const h = harness()
+  await apply(h.ctx)
+  const { definition } = h.get()
+  h.setState(definition.apply(h.get().state, { type: 'command/run', time: Date.now(), data: { name: 'ultracode', args: 'on', commandId: 'first' } }))
+  const result = await dispatch(h, '', 'second', Date.now())
+  assert.equal(result.kind, 'error')
+  assert.match(result.text, /already updating/)
+  assert.equal(h.get().state.active, false)
+  assert.equal(h.get().state.pending.commandId, 'first')
+})
+
+test('an unknown argument returns the usage text and changes nothing', async () => {
+  const h = harness()
+  await apply(h.ctx)
+  assert.deepEqual(await dispatch(h, 'toggle', 'u1'), { kind: 'error', text: 'Usage: /ultracode [on|off|status]' })
+  assert.equal(h.get().state.active, false)
+})
+
 test('a pending command rejects a different command id', async () => {
   const { ctx, get, agent, setState } = harness()
   setState({ active: false, pending: { arg: true, commandId: 'old', startedAt: Date.now() } })
@@ -196,4 +254,29 @@ test('status reports the current run from projection only', async () => {
   const result = await command.handler({ agent, rawInput: 'status' })
   assert.equal(result.kind, 'success')
   assert.match(result.text, /Current run: 7\/24 attempts · stop: none/)
+})
+
+test('the README states the bare toggle, the argument rules and the status texts', () => {
+  const text = readme()
+  for (const sentence of [
+    'With no argument, `/ultracode` toggles the mode, and its reply names the new mode',
+    'Any other argument returns `Usage: /ultracode [on|off|status]`.',
+    '`Ultracode is already updating. Try again after it finishes.`',
+    '`/ultracode status` should then answer `Ultracode is off for this session.`',
+  ]) assert.ok(text.includes(sentence), sentence)
+})
+
+test('the README names the delegation tools the guard counts, and the ones it does not', () => {
+  const text = readme()
+  const counted = ['subagent', 'subagent_fork', 'subagent_codex', 'subagent_claude_code', 'spawn_teammate']
+  assert.ok(text.includes('It counts calls to `subagent`, `subagent_fork`, `subagent_codex`, `subagent_claude_code` and `spawn_teammate`'))
+  for (const name of counted) assert.equal(isDelegationTool(name), true, name)
+  for (const name of ['workflow', 'send_message']) {
+    assert.equal(isDelegationTool(name), false, name)
+    assert.ok(text.includes(`\`${name}\``), name)
+  }
+  assert.equal(MAX_SPAWN_ATTEMPTS, 24)
+  assert.ok(text.includes('**24 direct delegation attempts**'))
+  assert.ok(text.includes('The 25th attempt is denied with `ultracode_budget_exhausted:spawns`.'))
+  assert.ok(text.includes('Only the host guard (24 delegation attempts per turn) is enforced.'))
 })

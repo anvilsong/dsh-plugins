@@ -16,8 +16,12 @@ export const INITIAL_ULTRACODE_STATE = Object.freeze({
   run: null,
 })
 
-function commandArg(event) {
+// The requested mode: `on`, `off`, or no argument, which toggles the current
+// mode as a bare `/advisor` and `/router` do. Any other argument is null. The
+// handler reads the same pre-command `active`, so its reply names this target.
+function commandArg(state, event) {
   const arg = typeof event.data.args === 'string' ? event.data.args.trim().toLowerCase() : ''
+  if (arg === '') return !state.active
   return arg === 'on' ? true : arg === 'off' ? false : null
 }
 
@@ -59,7 +63,7 @@ export function foldUltracode(state, event) {
   }
 
   if (event.type === 'command/run' && event.data.name === 'ultracode') {
-    const arg = commandArg(event)
+    const arg = commandArg(state, event)
     if (arg === null) return state
     if (state.pending) {
       const age = (event.time ?? Date.now()) - state.pending.startedAt

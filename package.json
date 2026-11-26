@@ -2,8 +2,14 @@
   "name": "dsh-plugins",
   "private": true,
   "version": "0.0.0",
-  "description": "Local DeepSeek Harness plugins workspace",
+  "description": "DeepSeek Harness plugins: workspace root (tests and development only; not published)",
   "workspaces": [
     "packages/*"
-  ]
+  ],
+  "devDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0"
+  },
+  "scripts": {
+    "test": "node --test packages/*/test/*.test.mjs packages/session-search-patched/test/upstream/*.test.mjs"
+  }
 }

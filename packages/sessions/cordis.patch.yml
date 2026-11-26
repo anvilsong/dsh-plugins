@@ -2,8 +2,9 @@
 # dataDir holds the plugin-owned audit log (audit.jsonl) and, by default, the
 # trash folder (<dataDir>/trash). The default lives under the DSH home; set an
 # absolute path in a profile's own patch to isolate it. A profile override
-# replaces this whole config block, and a home-level <DSH home>/cordis.patch.yml
-# applies after the profile patch.
+# addresses this row by its bare id sessions-manager (an include-prefixed id
+# matches no row and is skipped). It replaces this whole config block, and a
+# home-level <DSH home>/cordis.patch.yml applies after the profile patch.
 #
 # trashDir is optional and absent here (default <dataDir>/trash). When set, it
 # must be an absolute path on the same device as the session store and outside
@@ -11,7 +12,7 @@
 #
 # recentActivityMinutes  a session active within this many minutes is not pruned
 # listLimit              most rows one Archived page returns
-# largeSessionBytes      on-disk size from which a session counts as large (50 MB)
+# largeSessionBytes      reserved: accepted and clamped, not read in v1 (50 MiB)
 # indexWarnBytes         on-disk size of the whole store that raises the search
 #                        index warning (256 MiB, a heuristic)
 # allowPermanentDelete   false disables "Delete permanently" in Trash

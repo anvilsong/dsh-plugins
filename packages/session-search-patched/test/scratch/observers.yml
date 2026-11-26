@@ -5,11 +5,11 @@
 - id: optional-session-search
   insert:
     - id: ssp-observer-group
-      name: file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/test/scratch/observer/index.js
+      name: file:///Users/<user>/projects/dsh-plugins/packages/session-search-patched/test/scratch/observer/index.js
       config:
         where: group
 - insert:
     - id: ssp-observer-root
-      name: file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/test/scratch/observer/index.js
+      name: file:///Users/<user>/projects/dsh-plugins/packages/session-search-patched/test/scratch/observer/index.js
       config:
         where: root

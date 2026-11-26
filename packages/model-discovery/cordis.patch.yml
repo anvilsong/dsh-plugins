@@ -1,13 +1,23 @@
 # Bundle patch for dsh-plugin-model-discovery.
 # One insert row; this package has no client half.
+# Override it from your profile patch with the bare id `model-discovery`.
 - insert:
     - id: model-discovery
       name: dsh-plugin-model-discovery
       config:
-        # Check the npm `latest` tag once, then fetch only the provider catalog JSON.
+        # Check the npm `latest` tag, then fetch only that version's provider catalog JSON.
+        # Only providers that already list their models explicitly are extended (see README).
         enabled: true
         packageName: '@earendil-works/pi-ai'
+        # A sync never converts a provider without a models list; only the explicit
+        # `/model-discovery seed <provider>` (preview, then confirm) command does.
+        # To add providers, override this row from your profile patch: that config
+        # replaces this whole config (README, "Providers").
         providers:
           - openai-codex
         refreshMs: 21600000
         timeoutMs: 15000
+        # Opt-in: also add subagent routes for models this plugin adds.
+        syncAllowedModels: false
+        # Opt-in: self-hosted routes whose own server is the authority (README, "Local routes").
+        localRoutes: {}

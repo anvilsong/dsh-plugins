@@ -4,6 +4,13 @@
   "description": "Bounded code review with two independent finders and one refuter.",
   "type": "module",
   "main": "src/index.host.js",
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
   "meta": {
     "title": "Code review",
     "description": "Run a bounded review of a workspace, file, or patch."
@@ -21,5 +28,14 @@
       "patch": "./cordis.patch.yml"
     }
   },
-  "license": "MIT"
+  "license": "MIT",
+  "author": "anvilsong",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anvilsong/dsh-plugins.git",
+    "directory": "packages/code-review"
+  },
+  "homepage": "https://github.com/anvilsong/dsh-plugins/tree/main/packages/code-review#readme",
+  "bugs": "https://github.com/anvilsong/dsh-plugins/issues",
+  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "code-review", "review"]
 }

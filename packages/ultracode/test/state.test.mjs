@@ -43,6 +43,46 @@ test('failed commands preserve the previous active value', () => {
   assert.equal(state.pending, null)
 })
 
+test('a bare command toggles: off to on, then on to off', () => {
+  for (const args of ['', '   ', undefined]) {
+    let state = foldUltracode(INITIAL_ULTRACODE_STATE, run(args, 'bare-1'))
+    assert.equal(state.pending.arg, true, JSON.stringify(args))
+    assert.deepEqual(viewUltracode(state).pending, true)
+    state = foldUltracode(state, done('success', 'bare-1'))
+    assert.equal(state.active, true, JSON.stringify(args))
+    assert.equal(state.pending, null)
+    state = foldUltracode(state, run(args, 'bare-2', 200))
+    assert.equal(state.pending.arg, false, JSON.stringify(args))
+    state = foldUltracode(state, done('success', 'bare-2'))
+    assert.equal(state.active, false, JSON.stringify(args))
+  }
+})
+
+test('a failed bare toggle keeps the previous mode', () => {
+  let state = foldUltracode(INITIAL_ULTRACODE_STATE, run('on', 'a'))
+  state = foldUltracode(state, done('success', 'a'))
+  state = foldUltracode(state, run('', 'b', 200))
+  state = foldUltracode(state, done('error', 'b'))
+  assert.equal(state.active, true)
+  assert.equal(state.pending, null)
+})
+
+test('a bare command is ignored while another command is pending', () => {
+  const pending = foldUltracode(INITIAL_ULTRACODE_STATE, run('on', 'a', 100))
+  assert.equal(foldUltracode(pending, run('', 'b', 200)), pending)
+})
+
+test('a cold fold replays bare toggles to the same mode', () => {
+  const history = [run('', 'a'), done('success', 'a'), run('', 'b'), done('success', 'b'), run('', 'c'), done('success', 'c')]
+  assert.equal(history.reduce(foldUltracode, INITIAL_ULTRACODE_STATE).active, true)
+})
+
+test('an unknown argument still changes nothing', () => {
+  for (const args of ['bogus', 'toggle', 'on please', 'status']) {
+    assert.equal(foldUltracode(INITIAL_ULTRACODE_STATE, run(args)), INITIAL_ULTRACODE_STATE, args)
+  }
+})
+
 test('a second command is rejected while one is pending', () => {
   const pending = foldUltracode(INITIAL_ULTRACODE_STATE, run('on', 'a', 100))
   assert.equal(foldUltracode(pending, run('off', 'b', 200)), pending)

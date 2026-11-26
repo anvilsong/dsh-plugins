@@ -389,10 +389,10 @@ test('fail closed: without a usable dataDir, apply() warns, status reports it, a
     assert.doesNotMatch(status.text, /Recent advisor runs|Data directory:/, label)
     onReply((await get().command.handler({ agent, rawInput: 'on' })).text, problem, `${label}: /advisor on`)
     onReply((await get().command.handler({ agent, rawInput: '' })).text, problem, `${label}: toggle on`)
-    assert.equal((await get().command.handler({ agent, rawInput: 'off' })).text, 'Advisor off. Advisor runs and verification stop; model preferences are retained.', `${label}: off needs no notice`)
+    assert.equal((await get().command.handler({ agent, rawInput: 'off' })).text, 'Advisor off. New advisor and verifier children are refused and the Advisor instructions for the lead are removed; a running advisor child is refused when it submits; a running verifier can still finish and record; model preferences are retained.', `${label}: off needs no notice`)
     setState({ active: true, verifierModel: null, advisorModel: null, pending: null })
     assert.equal(get().section.text({ agent }), UNCONFIGURED_POLICY, label)
-    assert.equal((await get().command.handler({ agent, rawInput: '' })).text, 'Advisor off. Advisor runs and verification stop; model preferences are retained.', `${label}: toggle off`)
+    assert.equal((await get().command.handler({ agent, rawInput: '' })).text, 'Advisor off. New advisor and verifier children are refused and the Advisor instructions for the lead are removed; a running advisor child is refused when it submits; a running verifier can still finish and record; model preferences are retained.', `${label}: toggle off`)
   }
   assert.equal(UNCONFIGURED_POLICY, unavailablePolicy(DATA_DIR_NOT_CONFIGURED))
   assert.match(UNCONFIGURED_POLICY, /data directory is not configured/)
@@ -1110,7 +1110,7 @@ test('no plugin prompt, guard text, README or source names an external CLI, its 
   }
 })
 
-test('package.json: the native executor is an optional peer with a lower bound only; no engines pin and no new dependency', () => {
+test('package.json: the native executor and both delegation packages are optional peers with range *; no engines pin and no new dependency', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   assert.deepEqual(manifest.peerDependencies, {
     '@deepseek-ai/dsh-tool-executor-native': '*',

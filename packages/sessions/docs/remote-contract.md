@@ -37,14 +37,14 @@ A refusal is data, not an error: it appears in `reasons` and `skipped` and exclu
 | `locked` | A lock probe finds a member's `session.lock` held, a `*.tmp` publish is in flight in its folder, or the lock cannot be probed. A present but free `session.lock` does not block (every session ever written has one). |
 | `recent` | A member's log was modified within `recentActivityMinutes`. |
 | `kept-descendant` | A member that is not archived is a kept session: its header `origin` is not `subagent` (a user fork). A snapshot in the contract shape, which has no header, falls back to workspace membership. |
-| `parent-kept` | The root has a parent outside the unit, and that parent is kept. |
+| `parent-kept` | A member's parent (usually the root's) exists in the store outside the unit, so it stays when the unit moves. |
 | `cycle` | The `parentSession` links form a loop. |
 | `path-unsafe` | A path is a symbolic link, leaves the store, or fails the folder checks. At apply this includes a session or project folder swapped for a link (or another folder) while the lock probe ran: the folders are checked again right before the rename. |
 | `no-location` | The session has no folder on disk. |
 | `changed` | A fact changed between `plan` and `apply`. |
 | `not-archived` | The session is not archived. |
 | `cross-device` | The folder and the trash are on different devices; there is no copy fallback. |
-| `workspace-missing` | The session's workspace is gone, so a restore cannot re-register it. |
+| `workspace-missing` | The session's workspace is gone, or its folder is missing on disk, so a restore cannot re-register it. |
 | `conflict` | The destination already exists; nothing is overwritten. |
 | `legacy-format` | A member's log has `formatStatus: 'migration-required'` (an old generation): its revision changes with any change in the store, so v1 refuses it (design.md D14). |
 

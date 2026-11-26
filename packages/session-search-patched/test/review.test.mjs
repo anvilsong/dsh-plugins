@@ -207,7 +207,7 @@ describe('the documented log line is the one the code writes', () => {
 const EXTRACT = process.env.SSP_RC3_EXTRACT
 describe('guard pins against the installed app (opt-in)', () => {
   const skip = EXTRACT ? false : 'set SSP_RC3_EXTRACT to a folder with index.ts, query.ts, schema.ts extracted from the installed app'
-  test('the sha256 of the extracted rc.3 sources equal PINNED_SOURCES, the version equals PINNED_VERSION', { skip }, () => {
+  test('the sha256 of the extracted sources equal PINNED_SOURCES, the version is one of PINNED_VERSIONS', { skip }, () => {
     for (const [file, pinned] of Object.entries(guard.PINNED_SOURCES)) {
       const actual = createHash('sha256').update(fs.readFileSync(path.join(EXTRACT, path.basename(file)))).digest('hex')
       assert.equal(actual, pinned, file)
@@ -216,7 +216,7 @@ describe('guard pins against the installed app (opt-in)', () => {
     if (fs.existsSync(manifest)) {
       const { name, version } = JSON.parse(fs.readFileSync(manifest, 'utf8'))
       assert.equal(name, guard.ENGINE_PACKAGE)
-      assert.equal(version, guard.PINNED_VERSION)
+      assert.ok(guard.PINNED_VERSIONS.includes(version), `${version} is not one of ${guard.PINNED_VERSIONS.join(' / ')}`)
     }
   })
 })

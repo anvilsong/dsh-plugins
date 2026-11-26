@@ -54,7 +54,7 @@ Opened from an Archived row or selection, or from the Reclaimable card. A three-
 
 1. **Scope**: all archived (default), archived older than N days, or the current selection.
 2. **Preview** (a dry run, from the Host): roots, descendants, total size, a per-workspace breakdown, and the safety checks grouped by reason with counts. Blocked units are listed as excluded with their reasons.
-3. **Confirm**: tick a box and type the number of sessions in the plan, then press **Move to trash**. The button says *trash*, never *delete*.
+3. **Confirm**: tick a box and type the number of sessions that will move, then press **Move to trash**. The button says *trash*, never *delete*.
 
 The result card shows moved and skipped counts, the trash location, warnings, and **Undo** (restores this batch).
 
@@ -65,9 +65,9 @@ A list of prune batches: time, sessions, size, state (*complete*, *needs recover
 ## Safety rules
 
 - **The unit is a whole tree.** A unit is the top-most archived root plus every descendant (`parentSession` link). One refusal on any member blocks the whole unit, so a kept session never points at a pruned one.
-- **Refusal codes:** `live`, `locked`, `recent`, `kept-descendant`, `parent-kept`, `cycle`, `path-unsafe`, `no-location`, `changed`, `not-archived`, `cross-device`, `workspace-missing`, `conflict`.
+- **Refusal codes:** `live`, `locked`, `recent`, `kept-descendant`, `parent-kept`, `cycle`, `path-unsafe`, `no-location`, `changed`, `not-archived`, `cross-device`, `workspace-missing`, `conflict`, `legacy-format`.
 - **Plan token:** `apply` takes only a plan id issued by the Host and the typed count, never session ids. It re-reads every fact and skips what changed. There is no force option.
-- **Order:** the manifest is written first and synced, then each session folder is renamed into the trash (rename only; a different device is refused, there is no copy), then the registry steps. A crash at any point is recovered by `recover()`, which never deletes.
+- **Order:** the manifest is written first and synced, then, tree by tree, each session folder is renamed into the trash (rename only; a different device is refused, there is no copy) and that tree's registry steps run. A crash at any point is recovered by `recover()`, which never deletes.
 - **User-only:** apply, unarchive, restore and purge refuse any agent caller. The plugin registers no tool and no slash command.
 - **No log reads:** the dashboard uses headers and file metadata only. It never opens a session body and never calls session search.
 - **Audit:** an append-only log in the plugin data directory records every plan, move, restore and purge with ids, counts and reasons, and never titles or message text.
@@ -92,7 +92,7 @@ The planner's open questions, answered by the lead on the user's behalf. The use
 | D11 | Sessions in no workspace are shown as *Unassigned* and are not pruned in v1. |
 | D12 | The plugin never touches the projection cache folder or the search index. The spike found no eviction call. The search index drops unlisted sessions at its next search. Projection-cache rows stay as unserved orphans. The README says so. |
 | D13 | Titles never come from a log read. If the spike finds no cheap source, rows show the short id, workspace and creation date. |
-| D14 | For current-format logs the backend never serves a moved session (it re-finds the folder on every open, stat and read), so no restart is needed. A *restart recommended* warning is returned only when a moved session is in an old format (open read handle) or a second host is in use. Sessions with `formatStatus: 'migration-required'` are refused in v1 (their revision changes with any change in the store). |
+| D14 | For current-format logs the backend never serves a moved session (it re-finds the folder on every open, stat and read), so no restart is needed. A *restart recommended* warning is returned only when the backend still lists a moved session after the move (or cannot answer for it), together with `stale-backend-entry`. Sessions with `formatStatus: 'migration-required'` are refused in v1 (their revision changes with any change in the store), so the old-format read-handle case does not arise; the plugin cannot detect a second host. |
 | D15 | Fallback placement if no slot gives a content area of 720 px or more: a Settings section with a single-column layout. |
 | D16 | No audit rotation in v1. |
 | D17 | The first live run happens on a copied profile and store; then the real store. |

@@ -41,7 +41,7 @@ Suite with `DSH_UPSTREAM_DIR` at the rc.3 checkout: **9 tests, 9 pass, 0 fail**,
 
 ```sh
 export PATH="$HOME/.nvm/versions/node/v24.22.3/bin:$PATH"
-git -C /Users/macbook/projects/deepseek-harness worktree add --detach /tmp/dsh-rc3-s7 dsh-v0.2.2-rc.3   # HEAD 38a6a5c965
+git -C /Users/<user>/projects/deepseek-harness worktree add --detach /tmp/dsh-rc3-s7 dsh-v0.2.2-rc.3   # HEAD 38a6a5c965
 cd /tmp/dsh-rc3-s7
 pnpm install --frozen-lockfile --ignore-scripts --prefer-offline    # pnpm 11.28.5 from packageManager; 6.5 s, from the store
 mkdir -p native/system/packages/darwin-arm64/bin                    # the JSONL session lock needs the native addon
@@ -82,7 +82,7 @@ $ env -u DSH_UPSTREAM_DIR node --test packages/session-search-patched/test/upstr
 exit=0
 ```
 
-Other skips seen: `DSH_UPSTREAM_DIR=/Users/macbook/projects/deepseek-harness` (the clone on
+Other skips seen: `DSH_UPSTREAM_DIR=/Users/<user>/projects/deepseek-harness` (the clone on
 `fix/session-search-bounded-index`) → `# DSH_UPSTREAM_DIR is not the rc.3 checkout: packages/session-query/session-query-sqlite/src/index.ts has sha256 26e33a2bafad…, rc.3 has 72868e4ae967…`;
 `DSH_UPSTREAM_DIR=/nonexistent/dir` → `# DSH_UPSTREAM_DIR lacks node_modules/tsx/dist/esm/api/index.mjs`.
 
@@ -141,7 +141,7 @@ The suite also checks the three generated files against `src/engine/manifest.jso
 test C2, cwd the checkout):
 
 ```sh
-SSP_ENGINE_UNDER_TEST=/Users/macbook/projects/dsh-plugins/packages/session-search-patched/src/engine/index.js \
+SSP_ENGINE_UNDER_TEST=/Users/<user>/projects/dsh-plugins/packages/session-search-patched/src/engine/index.js \
   node node_modules/vitest/vitest.mjs run --config <scratch>/vitest.config.ts \
   --reporter=default --reporter=json --outputFile.json=<tmp>/report.json
 ```
@@ -349,7 +349,7 @@ is `6c578f27a781d5636dfeb43d00f1e16d4286b38463baab42aaaff1b76365940d` before and
 
 ```sh
 export PATH="$HOME/.nvm/versions/node/v24.22.3/bin:$PATH"
-cd /Users/macbook/projects/dsh-plugins
+cd /Users/<user>/projects/dsh-plugins
 P=packages/session-search-patched/test/upstream/engine-probe.mjs
 T=$(node -e 'console.log(require("fs").realpathSync(require("os").tmpdir()))')
 node $P generate --upstream /tmp/dsh-rc3-s7 --out "$T/ssp-s7-syn-large" --plan large
@@ -436,13 +436,13 @@ Observations for the lead (no product code was changed):
 
 ```sh
 rm -rf "$T/ssp-s7-syn-large"                                              # synthetic store (1.1 GB decoded, 310 MB on disk)
-git -C /Users/macbook/projects/deepseek-harness worktree remove --force /tmp/dsh-rc3-s7
-git -C /Users/macbook/projects/deepseek-harness worktree prune
-git -C /Users/macbook/projects/deepseek-harness worktree list              # only the main checkout
+git -C /Users/<user>/projects/deepseek-harness worktree remove --force /tmp/dsh-rc3-s7
+git -C /Users/<user>/projects/deepseek-harness worktree prune
+git -C /Users/<user>/projects/deepseek-harness worktree list              # only the main checkout
 ```
 
 Done after the runs above: the synthetic store (300 MB on disk) and the worktree are removed,
-`worktree list` shows only `/Users/macbook/projects/deepseek-harness e1f2349309 [fix/session-search-bounded-index]`,
+`worktree list` shows only `/Users/<user>/projects/deepseek-harness e1f2349309 [fix/session-search-bounded-index]`,
 and no `ssp-upstream-*` folder is left under `os.tmpdir()`. The store copy `/tmp/ssp-scratch-store`
 belongs to the lead and was left in place, unchanged (listing sha256 in §8.2).
 

@@ -2,6 +2,6 @@
 Already up to date
 
 dependencies:
-- dsh-plugin-session-search-patched link:/Users/macbook/projects/dsh-plugins/packages/session-search-patched
+- dsh-plugin-session-search-patched link:/Users/<user>/projects/dsh-plugins/packages/session-search-patched
 
 Done in 173ms using pnpm v11.28.5

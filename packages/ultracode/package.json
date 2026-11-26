@@ -53,7 +53,10 @@
   "author": "anvilsong",
   "repository": {
     "type": "git",
-    "url": "https://github.com/anvilsong/dsh-plugin-provider-usage.git",
+    "url": "https://github.com/anvilsong/dsh-plugins.git",
     "directory": "packages/ultracode"
-  }
+  },
+  "homepage": "https://github.com/anvilsong/dsh-plugins/tree/main/packages/ultracode#readme",
+  "bugs": "https://github.com/anvilsong/dsh-plugins/issues",
+  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "ultracode", "orchestration"]
 }

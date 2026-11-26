@@ -1,7 +1,7 @@
 Already up to date
 
 dependencies:
-+ dsh-plugin-session-search-patched 0.1.0 <- ../../../../../../../../../../../Users/macbook/projects/dsh-plugins/packages/session-search-patched
++ dsh-plugin-session-search-patched 0.1.0 <- ../../../../../../../../../../../Users/<user>/projects/dsh-plugins/packages/session-search-patched
 
 [WARN] The package dsh-plugin-session-search-patched, which you have just pnpm linked, has the following peerDependencies specified in its package.json:
 

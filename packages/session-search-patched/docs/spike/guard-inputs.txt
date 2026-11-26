@@ -58,6 +58,6 @@
 }
 
 # fallback run H9 (SPIKE_PROBE_MODE=broken): patched module import fails, shipped class mounted in the new row
-{"time": "2026-11-18T09:22:36.546Z", "pid": 72302, "event": "probe-fallback", "rowId": "session-query-sqlite-patched", "reason": {"code": "ERR_MODULE_NOT_FOUND", "message": "Cannot find module '/Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/probe/missing-patched-engine.js' imported from /Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/probe/index.js"}}
+{"time": "2026-11-18T09:22:36.546Z", "pid": 72302, "event": "probe-fallback", "rowId": "session-query-sqlite-patched", "reason": {"code": "ERR_MODULE_NOT_FOUND", "message": "Cannot find module '/Users/<user>/projects/dsh-plugins/packages/session-search-patched/docs/spike/probe/missing-patched-engine.js' imported from /Users/<user>/projects/dsh-plugins/packages/session-search-patched/docs/spike/probe/index.js"}}
 {"time": "2026-11-18T09:22:36.547Z", "pid": 72302, "event": "probe-engine-settled", "rowId": "session-query-sqlite-patched", "engine": "SqliteSessionQueryEngine", "state": 2}
 {"time": "2026-11-18T09:22:36.547Z", "pid": 72302, "event": "sessionQuery-up", "where": "group", "scope": "sessionQuery#optional-session-search", "provider": {"ctor": "SqliteSessionQueryEngine", "row": "session-query-sqlite-patched", "fiberState": "ACTIVE", "scope": "sessionQuery#optional-session-search"}}

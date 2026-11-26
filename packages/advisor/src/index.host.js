@@ -522,7 +522,7 @@ export async function apply(ctx, config = {}, host = HOST) {
           kind: 'success',
           text: active
             ? `Advisor on. The in-process advisor and read-only verification are enabled.${refusal === undefined ? '' : `\n${refusal} Until then advisor runs and verification are refused.`}`
-            : 'Advisor off. Advisor runs and verification stop; model preferences are retained.',
+            : 'Advisor off. New advisor and verifier children are refused and the Advisor instructions for the lead are removed; a running advisor child is refused when it submits; a running verifier can still finish and record; model preferences are retained.',
         }
       },
     })

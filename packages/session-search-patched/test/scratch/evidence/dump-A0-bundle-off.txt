@@ -1302,12 +1302,12 @@
       name: '@deepseek-ai/dsh-tool-session-query'
     - id: ssp-observer-group
       name: >-
-        file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/test/scratch/observer/index.js
+        file:///Users/<user>/projects/dsh-plugins/packages/session-search-patched/test/scratch/observer/index.js
       config:
         where: group
 # == /private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-5Cp7ZF/home/.dsh/profiles/web/cordis.patch.yml
 - id: ssp-observer-root
   name: >-
-    file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/test/scratch/observer/index.js
+    file:///Users/<user>/projects/dsh-plugins/packages/session-search-patched/test/scratch/observer/index.js
   config:
     where: root

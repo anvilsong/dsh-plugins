@@ -4,9 +4,52 @@ Opt-in lead-controlled model routing with three session-scoped complexity-level
 shortlists for ordinary DeepSeek Harness subagents. Each shortlist entry may
 carry the reasoning effort to pass with its model.
 
+## Install
+
+### Desktop app
+
+Open **Settings → Plugins → Add plugin → Install a third-party plugin**.
+Enter `dsh-plugin-router`, install it, and enable it.
+
+### Web or CLI
+
+```sh
+dsh plugin --profile web add dsh-plugin-router@latest
+```
+
+Replace `web` with your profile name when needed. Restart the Host and
+refresh the page after installing or updating.
+
+Registry installation works only once `dsh-plugin-router` is published on
+npm. To use a source checkout instead, link the package directory into a
+development profile from the repository root, after `npm ci` there (the Host half
+imports `zod`):
+
+```sh
+npm ci
+dsh plugin --profile web add "$PWD/packages/router"
+```
+
+With a linked directory, restart the Host after Host-code changes and reload
+the page after client-only changes.
+
+**Requirements.** The package declares a Host entry and a Web client. The Host
+half uses the `systemPrompt`, `sessionProjections` and `commands` services;
+the Web client adds the model-options menu controls described below. Its peer
+dependency is `@deepseek-ai/cordis` `^4.0.0`.
+
+**Explicit routes need DSH's subagent model selection.** In DSH's
+**Subagent** settings, under **Model selection**, turn on **Allow agents to
+choose models for Subagents** and choose the models agents may pick (labels
+as in DSH 0.2.2-rc.5). DSH records that list in a Session before its first
+model request, and only for Sessions created after the setting is saved.
+Without it, every level can only Inherit: the menu says so, and
+`/router level <level> <provider>/<model>` is rejected.
+
 ## Use
 
 ```text
+/router           # toggle: manual ↔ off
 /router manual
 /router on        # alias for manual
 /router off
@@ -41,27 +84,33 @@ model, its effort rows, indented native menu rows (see [Effort per entry](#effor
 draft while the flyout is open and are committed as one `/router level`
 command when it closes (or when the menu closes), so each edit session adds
 one command entry to the chat. The cell shows a spinner until the session
-confirms the change, for at most 30 seconds after its command starts: a change
-the session neither confirms nor rejects by then reverts to the session's
-value and is reported once in the composer's toast (a newer choice made
-meanwhile is kept and committed next). Router commands from this menu run one
+confirms the change. A change the session neither confirms nor rejects within
+30 seconds of its command's start reverts to the session's value and is
+reported once in the composer's toast (a newer choice made meanwhile is kept
+and committed next). Router commands from this menu run one
 at a time per session: the switch, the three cells, and a draft committed as
 the menu closes share one queue, so a change made while another command is
 queued or running waits its turn, and further presses of the switch are
 ignored until its command lands or fails. Time spent waiting does not count
 toward the 30 seconds; a command that has not returned 30 seconds after it
-started no longer holds up the queue. Up to four models per level; further
+started no longer holds up the queue. The 30-second deadline has no timer of
+its own: it is checked whenever the menu renders again (for example on a
+session update, when another router command ends, or on your next interaction
+with the menu), so a hung change reverts, and stops holding up the queue, at
+the first such render after 30 seconds. Up to four models per level; further
 rows are disabled. Saved routes that are no longer authorized appear under
 **Unavailable** and are dropped, with their efforts, by the next change. Arrow
 keys move through the model rows and the effort rows of checked models; Escape, Tab,
-or ArrowLeft closes the flyout and returns focus to its cell. Rejections
-recorded in the session log (for example "Router is already updating") appear
-in the composer's toast.
+or ArrowLeft closes the flyout and returns focus to its cell. When the session
+log records a rejection of a command this menu sent (for example "Router is
+already updating"), it appears in the composer's toast; rejections of other
+commands, such as a typed `/router`, are not shown there.
 
 Selections are session-scoped and retained across off/on. Every level defaults
 to Inherit. Invalid or unauthorized routes, and malformed effort tokens, reject
-the whole command without changing the level. Null route policy means
-Inherit-only. Saved DSH route-policy changes apply only to new Sessions.
+the whole command without changing the level. A Session without DSH's subagent
+model selection (see [Install](#install)) can only Inherit, and changes to
+that setting apply only to new Sessions.
 
 ## Effort per entry
 
@@ -75,14 +124,15 @@ Each shortlist entry is a model plus, optionally, the effort to pass with it.
   inner spaces. An entry without a token runs at its model's own default
   effort. `inherit` takes no token, there is no level-wide token and no
   effort-only form, and every command states the whole level: an entry's
-  effort is never kept from the saved level. The same model may appear only
-  once per level, whatever its efforts. Efforts are not checked against the
-  model when they are set. An entry typed with `effort=default` is legal: it
-  stores the id `default`, which the lead passes as `reasoning_effort`
-  "default" although it reads like the model default (`effort: default`) in
-  the `router:` line, and replaying a state version 4 log can produce it.
+  effort is never kept from the saved level. The same route
+  (`<provider>/<model>`) may appear only once per level, whatever its efforts.
+  Efforts are not checked against the model when they are set. An entry typed
+  with `effort=default` is legal: it stores the id `default`, which the lead
+  passes as `reasoning_effort` "default" although it reads like the model
+  default (`effort: default`) in the `router:` line.
 - **Effort rows.** Under each checked model row the flyout shows that model's
-  effort rows, indented under it, as a group labelled `Effort for <model>`.
+  effort rows, indented under it, as a group whose accessible label is
+  `Effort for <model>` (there is no visible heading).
   They are native menu rows like the model rows and the Advisor's Effort group
   (single-choice, a check on the chosen row, a right-aligned *recommended*
   caption on the recommended row), not pills: **Default** (named after the
@@ -133,15 +183,13 @@ Each shortlist entry is a model plus, optionally, the effort to pass with it.
   children carry no Host check, and the `router:` line is the lead's only
   statement of intent; the `reasoning_effort` argument of the subagent call
   itself is also recorded in the session log.
-- **Behaviour change.** Before this version the lead chose effort by level
-  (`low` for Mechanical when advertised, the route default for Ordinary, the
-  highest advertised effort for Hard judgment when useful). That rule is gone:
-  an entry without an effort now means the model's own default. The Host does
+- **Entries without an effort.** An entry without an effort runs at its
+  model's own default; the lead never picks an effort by level. The Host does
   not rewrite saved lists; the model menu adds the recommended effort once to
   saved Hard judgment entries without one (see
   [Automatic recommended effort](#automatic-recommended-effort)), and
-  Mechanical entries keep their models' defaults: add `effort=low` to keep the
-  old behaviour.
+  Mechanical entries keep their models' defaults: add `effort=low` to an entry
+  that should run at low effort.
 
 `/router status` reports the current mode and every level's entries in
 command form (`<provider>/<model> effort=<id>`), marking entries whose route is
@@ -150,16 +198,18 @@ reports only which target is updating. Once the
 [observe-only audit](#observe-only-audit) has counted a request or an
 Advisor-reserved child, up to two last lines report its counts.
 
-**Upgrade note.** The projection moved to state version 5 (entries gained an
-optional effort), so cached Router state is rebuilt once from the session log.
-Commands from before efforts carry no token, so their entries run at their
-models' defaults. A development build briefly kept one effort preference per
-level (`effort=auto|lowest|default|highest`, state version 4); replaying such a
-log reads `a/b,c/d effort=highest` as the effort id `highest` on the last
-entry (and `effort=default` as the id `default`), and `inherit effort=...` is
-no longer accepted, so a level that was reset that way is not reset on replay:
-it keeps its earlier shortlist, which comes back. Reset levels set with the
-earlier effort preference.
+**Upgrade note (pre-release 0.3.0 builds only).** Earlier pre-release builds
+had no per-entry efforts: the lead chose effort by level (`low` for Mechanical
+when advertised, the route default for Ordinary, the highest advertised effort
+for Hard judgment when useful). Their cached Router state is rebuilt once from
+the session log. Their level commands carry no effort token, so those entries
+now run at their models' defaults; add `effort=low` to Mechanical entries to
+keep the old Mechanical behaviour. If a build you used took one level-wide
+effort token (`effort=auto|lowest|default|highest`), replay reads that token as
+the effort id of the level's last entry (`a/b,c/d effort=highest` gives `c/d`
+the id `highest`; `effort=default` gives the id `default`), and a reset typed
+as `inherit effort=...` is no longer accepted, so that level comes back with
+its earlier shortlist. Set such levels again.
 
 ## Automatic recommended effort
 
@@ -234,6 +284,14 @@ Caveats:
 
 ## Routing rules
 
+While Router is on, these rules are added to the lead's system prompt (the
+`router:policy` section, with the session's shortlists). They are instructions
+to the lead model, not Host checks: nothing is blocked or rewritten when the
+lead departs from them (see [Observe-only audit](#observe-only-audit)). The
+policy also asks the lead to call `list_subagent_models` before the first
+ordinary fresh in-process subagent call in each turn and to use only the
+provider/model ids it returns.
+
 - **Ordinary is the default.** Mechanical requires all three: fully specified
   work, no judgment, and a deterministically checkable result. Work that meets
   all three is Mechanical, for example running a named check and reporting its
@@ -247,11 +305,12 @@ Caveats:
   resolves downward, but work that clearly meets a lower level's criteria is not
   raised for safety. The `/router status` per-level line shows which shortlist
   ran, not whether the level was the right one.
-- **Mechanical governs only work the lead chooses to delegate.** Fully specified,
-  checkable work, such as running a named check, is normally run by the lead
-  itself, so `mechanical 0` in `/router status` is the expected reading, not a
-  fault. The tier exists to hold a cheap route behind three strict criteria; a
-  user who wants no cheap route leaves it at Inherit, which is the default. If
+- **Mechanical governs only work the lead chooses to delegate.** When the lead
+  runs fully specified, checkable work (such as a named check) itself instead
+  of delegating it, nothing reaches the Mechanical shortlist, so `mechanical 0`
+  in `/router status` is not by itself a fault. The tier exists to hold a
+  cheap route behind three strict criteria; a user who wants no cheap route
+  leaves it at Inherit, which is the default. If
   replays of at least 10 sessions that include plan-driven parallel workers
   still show `mechanical 0`, merge it into Ordinary in the same change as the
   next router state-version bump (the Advisor's plan levels name Mechanical
@@ -275,8 +334,10 @@ Caveats:
   silent fallback. There are no retries on another model and no mid-run route
   changes; the one retry above keeps the route.
 - **Other backends are unchanged.** Discovery and `router:` lines apply only to
-  ordinary fresh in-process `subagent` calls. Advisor-reserved verifiers never
-  use these shortlists; they keep Advisor's own Inherit-or-explicit selection.
+  ordinary fresh in-process `subagent` calls. Advisor-reserved children
+  (`advisor-verifier-*`, `advisor-planner-*` and `advisor-consult-*`) are told
+  never to use these shortlists; when the Advisor plugin is installed, its own
+  Host guard enforces its Inherit-or-explicit selection for them.
 
 Before each delegation the lead states:
 
@@ -335,7 +396,7 @@ pending, status still reports only the update.
 | `unlisted_closed` | Names a route no level shows while every level shows a shortlist. |
 | `unlisted_open` | Names a route no level shows while at least one level reads Inherit, where the policy allows a named non-cost reason. |
 | `no_shortlist` | Names a route while no level shows any entry. |
-| `malformed` | Has arguments that are no JSON object, a provider without a model or a model without a provider, an effort without both, or an empty or non-text route value. |
+| `malformed` | Has arguments that are no JSON object, a provider without a model or a model without a provider, an effort without both, or an empty or non-text `provider`, `model` or `reasoning_effort`. |
 
 - **Fidelity, not judgment.** The audit measures whether requests carry a
   shown route and its effort, not whether the level was right: a 100 % match
@@ -375,8 +436,11 @@ pending, status still reports only the update.
   retry, and only a request the audit counts breaks the adjacency. Requests
   are not paired with their results.
 - **Per session, from the log.** The counts are a host-only projection of the
-  session log: no file, setting or configuration. They replay from the log, so
-  sessions that existed before this version are counted from their start. A
+  session log: the plugin writes no file of its own and has no setting or
+  configuration (DSH may cache the projection state, and rebuilds it from the
+  log when the state version changes). They replay from the log, so sessions
+  that existed before the plugin was installed or updated are counted from
+  their start. A
   fork child inherits its parent's log, so its counts start with the parent's.
   Of the requests themselves, only the last effort match is kept: its provider
   and model ids (cut to 200 characters), its effort id and its turn number;
@@ -397,14 +461,22 @@ pending, status still reports only the update.
   `{events, router: {mode, selections}, total, counts, levels, reserved, discovery}`:
 
   ```sh
-  <decompress the session log> | node packages/router/scripts/audit-replay.mjs
+  # From a clone of this repository, after `npm install` at its root:
+  zstd -dc < <session log>.jsonl.zstd | node packages/router/scripts/audit-replay.mjs
+  # A log stored uncompressed (`.jsonl`) is piped in directly:
+  node packages/router/scripts/audit-replay.mjs < <session log>.jsonl
   ```
 
-  It reads JSONL from stdin only (decompress the log first), skips lines that
-  are no JSON (`events` counts the lines it folded), and touches no file,
-  network, clock or environment. It is a development tool in this repository:
-  the package's `files` list does not include `scripts/`, so it is not
-  published.
+  DSH stores a session log as `.jsonl.zstd` (Zstandard) or `.jsonl`,
+  depending on its configured compression; this README does not document
+  where the files live. The script reads JSONL from stdin only (decompress the
+  log first), skips lines that are no JSON (`events` counts the lines it
+  folded, the log's header line included), and touches no file, network, clock
+  or environment. It needs the repository's installed dependencies (`zod`,
+  through `src/audit.js`). Its tests feed it hand-built events shaped like a
+  session log; it is not tested here against a log written by DSH. It is a
+  development tool in this repository: the package's `files` list does not
+  include `scripts/`, so it is not published.
 - **Not covered.** Subagent calls dispatched programmatically (from
   `run_code`) are logged as `tool/ptc-dispatch` events and are not counted. A
   call that names only an `agent_preset` counts as `inherit`, even when the
@@ -426,22 +498,26 @@ all of these hold:
 - the guard reuses this classifier, fails open, is injected optionally, is
   opt-in per session, and names the allowed entries in its denial.
 
-## Jev auto mode
+## Automatic routing (not included)
 
-Jev auto routing is **not included**. `/router auto` returns an explanatory
-error. This version is lead-only: no classifier, direct OpenRouter client,
-route scoring, learning, retries, task graph, or second orchestration framework.
-
-## Host updates
-
-The installed package links to this directory. Restart DSH manually after Host
-code changes; the existing Web URL and `app.asar` are left untouched.
+An automatic routing mode, which the command reply calls "Jev auto mode", is
+**not part of this plugin**: `/router auto` returns an error that points to
+`/router manual`. The label "Jev" is not defined anywhere in this repository, and
+this version has nothing to configure for it. This version is lead-only: no
+classifier, direct OpenRouter client, route scoring, learning, plugin-side
+retries, task graph, or second orchestration framework. The lead's one retry
+without the effort (see [Effort per entry](#effort-per-entry)) is its own
+action under the policy, not a plugin feature.
 
 ## Tests
+
+From the root of a clone of this repository, after `npm install`:
 
 ```sh
 node --test packages/router/test/*.test.mjs
 ```
+
+The tests are not part of the published package.
 
 ## License
 

@@ -66,7 +66,7 @@ repository's `node_modules/@deepseek-ai/cordis/lib/index.js`) and
 `dsh/node_modules/@deepseek-ai/dsh-session-query/lib/index.js` (0.2.2-rc.3), plus the export lists of
 `dsh-session/lib/index.js` and `schemastery/lib/index.mjs`.
 
-How the shipped file was built: rc.3 `tsconfig.base.json` (`git -C /Users/macbook/projects/deepseek-harness show dsh-v0.2.2-rc.3:tsconfig.base.json`)
+How the shipped file was built: rc.3 `tsconfig.base.json` (`git -C /Users/<user>/projects/deepseek-harness show dsh-v0.2.2-rc.3:tsconfig.base.json`)
 has `"target": "es2024"` and `"verbatimModuleSyntax": false`; the engine's tsconfig writes to
 `lib/types`, and a bundler step joined those outputs into `lib/index.js` (region markers
 `//#region lib/types/schema.js` shipped:8 and `//#region lib/types/index.js` shipped:460). With a target
@@ -77,7 +77,7 @@ Type strip has the same field semantics and keeps every value import; §4 shows 
 ## 3. Generation
 
 ```sh
-cd /Users/macbook/projects/dsh-plugins
+cd /Users/<user>/projects/dsh-plugins
 node packages/session-search-patched/scripts/build.mjs
 ```
 
@@ -243,7 +243,7 @@ The rc.3 sources go through the same generator and config in a temp package root
 `--root`), so both sides are stripped the same way:
 
 ```sh
-PKG=/Users/macbook/projects/dsh-plugins/packages/session-search-patched; R=/tmp/ssp-s4/rc3pkg
+PKG=/Users/<user>/projects/dsh-plugins/packages/session-search-patched; R=/tmp/ssp-s4/rc3pkg
 mkdir -p $R/vendor/src $R/scripts
 cp /tmp/ssp-s4/shipped/{index,query,schema}.ts $R/vendor/src/ && cp $PKG/scripts/build.config.json $R/scripts/
 node $PKG/scripts/build.mjs --root $R
@@ -317,7 +317,7 @@ of the engine class is named `ctx` or `name`. Nothing was changed in `vendor/` o
 ## 8. Test and negative controls
 
 ```sh
-cd /Users/macbook/projects/dsh-plugins
+cd /Users/<user>/projects/dsh-plugins
 node --test packages/session-search-patched/test/engine-artifact.test.mjs
 #   tests 8, pass 6, skipped 2 (opt-in), fail 0
 SSP_RC3_EXTRACT=/tmp/ssp-s4/shipped node --test packages/session-search-patched/test/engine-artifact.test.mjs

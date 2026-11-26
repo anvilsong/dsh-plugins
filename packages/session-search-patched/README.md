@@ -4,16 +4,25 @@ An **unofficial** patched copy of the SQLite engine behind DeepSeek Harness'
 optional session search. It keeps the shipped search as it is and replaces only
 the engine that builds the search index in memory, so that
 
-- a large session store no longer aborts the host with a JavaScript out-of-memory
-  error during the first search, and
+- the first search on a large session store needs far less JavaScript heap (its
+  peak follows the largest logs, not the whole store) and is much less likely to
+  abort with an out-of-memory error, and
 - a session that appends while you work no longer forces a re-read of the whole
   store.
 
 This is not an official DSH release and not a fix that DSH has accepted: the patch
 comes from two **local, unmerged** commits of an upstream clone (see
-[Provenance and license](#provenance-and-license)). It is pinned to DSH
-**0.2.2-rc.3 and 0.2.2-rc.5**, whose search-engine sources are identical; on any other
-host version it steps aside and the shipped engine serves (see [Version pin](#version-pin-and-what-happens-on-another-version)).
+[Provenance and license](#provenance-and-license)). It is not affiliated with,
+reviewed or endorsed by DeepSeek or the DeepSeek Harness maintainers. The two commits
+were written by this package's author (anvilsong) in a local clone; they exist only on
+a local branch of that clone and have no upstream review. Provided as is, without
+warranty (MIT).
+
+It is pinned to DSH **0.2.2-rc.3 and 0.2.2-rc.5**, whose search-engine sources are
+identical; on any other host version it steps aside and the shipped engine serves (see
+[Version pin](#version-pin-and-what-happens-on-another-version)). rc.5 is admitted on
+source identity alone: no run of this package on an rc.5 host is recorded, and every
+host run in this README was on rc.3.
 
 ## What it is
 
@@ -69,7 +78,8 @@ Two failure modes of the shipped rc.3 engine, measured against it in
 
    On a 691 MB (decoded) copy of a real store of 253 sessions the shipped engine
    aborted at 256 MB and completed from 512 MB (peaks 395 to 760 MB); the patched
-   engine completed at every cap from 256 MB (peaks 205 to 369 MB). So on a store of
+   engine completed at every cap from 256 MB (peaks 205 to 356 MB sampled, up to
+   369 MB by GC trace). So on a store of
    that size under a heap of several gigabytes the shipped engine may still
    complete; the patch matters when the store is large against the heap. The
    host's own heap ceiling is stated in [`packages/sessions/README.md`](../sessions/README.md)
@@ -105,8 +115,15 @@ Two failure modes of the shipped rc.3 engine, measured against it in
 
 The package is pinned to **DSH 0.2.2-rc.3 and 0.2.2-rc.5** twice. Both releases ship the
 same `@deepseek-ai/dsh-session-query-sqlite` sources, so one set of sha256 pins covers
-both (checked against tag `dsh-v0.2.2-rc.5`, commit `9c2670d3bc`; between rc.3 and rc.5
-only the two `package.json` versions changed under `packages/session-query`):
+both (checked against tag `dsh-v0.2.2-rc.5`, commit `9c2670d3bc`, of an upstream
+clone; between rc.3 and rc.5 only the `version` fields of the `package.json` files
+changed under `packages/session-query` and `packages/core/session`). rc.5 is admitted
+on that source identity. On 2026-11-23 the three engine files (`index.ts`, `query.ts`,
+`schema.ts`) of the installed DSH 0.2.2-rc.5 app were hashed with sha256 and equal the
+pins below. No run of this package on an rc.5 host is recorded; the entry guard
+re-checks the installed bytes at each start and falls back to the shipped class if
+they differ. The
+two pins:
 
 - **Bundle level**: `package.json` has `"engines": { "dsh": "0.2.2-rc.3 || 0.2.2-rc.5" }`.
   `dsh plugin add` **refuses** to install the package on a host whose version does
@@ -124,12 +141,18 @@ only the two `package.json` versions changed under `packages/session-query`):
   newest entry) **and** its three source files have the pinned sha256 values (the
   files this package was rebased on). Otherwise the row mounts the shipped class
   with the same config and logs a `warn` line that names the failed check.
+- **Do not grant a DSH version exemption for this package.** An exact-version
+  exemption (`dsh plugin allow-version` or the plugin manager) loads the bundle on an
+  unpinned host. The bundle patch still switches the shipped row off. The guard then
+  mounts the shipped class in this row, but if the row's scope check or the entry
+  import fails on that host, search has no engine until you remove the bundle.
 
-There is no rc.4 variant: rc.4's engine is rc.3's (`vendor/PROVENANCE.md`), and neither
-`engines.dsh` nor the guard admits it. The patch was written for rc.3 sources, and rc.5
-ships those same bytes, so `vendor/src/*.ts` is unchanged.
-(`vendor/src/*.ts`); the installed engine files were compared byte for byte
-(`vendor/PROVENANCE.md`).
+rc.4 is not admitted: its engine sources equal rc.3's (`vendor/PROVENANCE.md`), but no
+run of this package on an rc.4 host is recorded, so neither `engines.dsh` nor the guard
+lists it. The patch was written for the rc.3 sources and rc.5 ships the same bytes, so
+`vendor/src/*.ts` is unchanged. The engine files of the installed rc.3 app were
+compared byte for byte (`vendor/PROVENANCE.md`); for rc.5 only the git tag
+`dsh-v0.2.2-rc.5` was compared.
 
 ## Install
 
@@ -137,7 +160,12 @@ The package is not published on npm, so install it from a source checkout by its
 folder path. Install it only into a profile that has the optional session-search
 bundle selected: this package's layer must come **after** that bundle's layer
 (installing appends it last), otherwise both patches are skipped with a warning
-and the shipped engine keeps serving.
+and the shipped engine keeps serving. Select the optional bundle
+`@deepseek-ai/dsh-experimental-session-search` first with the plugin manager's
+bundle switch (Plugins page); on rc.3 no `dsh` CLI command selects an optional
+bundle (`docs/composition-spike.md` §2).
+
+Run from the root of your checkout:
 
 ```sh
 dsh plugin --profile web add "$PWD/packages/session-search-patched"
@@ -167,7 +195,8 @@ the shipped row off whatever the entry does (see [Limits](#limits)).
 The first install on your own profile is a step to take with a way back ready:
 read [Rollback](#rollback) first, and follow
 [`docs/session-search-patched-checklist.md`](../../docs/session-search-patched-checklist.md).
-The install was verified on scratch DSH homes only (`docs/scratch-verification.md`).
+The install was verified on scratch DSH homes of an rc.3 host only
+(`docs/scratch-verification.md`).
 
 The package declares the host packages it imports as `peerDependencies`
 (`@deepseek-ai/cordis`, `@deepseek-ai/schemastery`, `@deepseek-ai/dsh-session`,
@@ -186,15 +215,20 @@ Four views, from direct to indirect:
 session-search-patched: active engine: patched SqliteSessionQueryEngine (./engine/index.js); reason: host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.5 (pinned 0.2.2-rc.3 / 0.2.2-rc.5) and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values
 ```
 
+The version in the reason is the host's: on rc.3 it reads `host
+@deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 (pinned 0.2.2-rc.3 / 0.2.2-rc.5)`. This
+text is built by `src/guard.js`; the scratch hosts (rc.3, before rc.5 was admitted)
+logged the older wording without the `(pinned …)` part.
+
 The other variants have the same shape, `session-search-patched: active engine:
 <engine>; reason: <reason>`:
 
 | Level | `<engine>` | When |
 |---|---|---|
 | `info` | `patched SqliteSessionQueryEngine (./engine/index.js)` | the guard passed and the patched engine started |
-| `warn` | `shipped SqliteSessionQueryEngine (@deepseek-ai/dsh-session-query-sqlite) as fallback` | the reason is `compatibility guard failed: …` (version or source hash), or `the patched engine failed to start: …`, or `the patched engine ./engine/index.js did not load: …` |
+| `warn` | `shipped SqliteSessionQueryEngine (@deepseek-ai/dsh-session-query-sqlite) as fallback` | the reason is `compatibility guard failed: …` (version or source hash), or `the patched engine failed to start: …`, or `the patched engine ./engine/index.js did not load: …`, or `the patched engine ./engine/index.js has no default export class` |
 | `error` | `none (another row already provides sessionQuery in this group)` | provider clash: another row (a profile or home `cordis.patch.yml` row with id `optional-session-query-sqlite`) turned the shipped engine back on; it serves, remove the override and restart |
-| `error` | `none` | the row is not in the isolated scope, or both engines failed (the reason then ends with `search is unavailable in this group until the cause is fixed and the host is restarted`) |
+| `error` | `none` | the row is not in the isolated scope, or both engines failed (the reason then ends with `search is unavailable in this group until the cause is fixed and the host is restarted`), or the reason is `unexpected entry failure: …` |
 | `warn` | `none` | the row stopped while its engine was starting |
 
 **Where the line goes.** The line goes to the host's **in-memory logger buffer**
@@ -223,8 +257,8 @@ the GUI was not verified here.
 
 **4. Behaviour.** Same results as before (22 queries gave byte-identical results
 with the bundle off and on on the scratch store copy), lower host memory on a large
-store, and no `SESSION_QUERY_PERSISTENCE_FAILED` while a session appends. These
-show the effect, not the cause.
+store, and fewer `SESSION_QUERY_PERSISTENCE_FAILED` errors while a session appends
+(see [Limits](#limits)). These show the effect, not the cause.
 
 The dump and the Plugins page show the **row**, not the class inside it: when the
 guard fails, the same row `session-query-sqlite-patched` serves the *shipped*
@@ -267,15 +301,16 @@ serves); switch this bundle off and on to put its layer after it again.
 
 ## Limits
 
-- **Only DSH 0.2.2-rc.3 and 0.2.2-rc.5.** See [Version pin](#version-pin-and-what-happens-on-another-version).
+- **Only DSH 0.2.2-rc.3 and 0.2.2-rc.5**, rc.5 on source identity alone (no rc.5 host
+  run is recorded). See [Version pin](#version-pin-and-what-happens-on-another-version).
 - **The entry itself must load.** The fallback covers failures inside the row's
   start; it cannot cover an entry that does not import. If `src/index.host.js` or
   `src/guard.js` cannot be loaded (a syntax error or a missing file in an edited or
   half-copied folder), the bundle patch still switches the shipped row off, so no
   engine provides `sessionQuery` and search is dead until you remove the bundle.
-  A folder that is missing as a whole is safe: the bundle is then skipped and the
-  shipped row serves (`docs/scratch-verification.md` §7.2). Reasoned from the
-  loader, not run on a host.
+  Reasoned from the loader, not run on a host. A folder that is missing as a whole
+  leaves search working: the bundle is then skipped and the shipped row serves (run
+  on a scratch host, `docs/scratch-verification.md` §7.2).
 - **A clash is not retried.** When a later layer re-enables the shipped row, the
   new row mounts nothing; if that override goes away while the host runs, the
   group has no engine until a restart (`test/review.test.mjs`).
@@ -303,8 +338,8 @@ serves); switch this bundle off and on to put its layer after it again.
   (10.3 s against 14.5 s at 512 MB).
 - **A quiet search for a very frequent term** took about 12 s on the 1.126 GB
   index for both engines (the SQL is `query.ts`, which is not patched).
-- **Verified on scratch DSH homes with a copy of one store**, not on a live
-  profile. The live-session paths of the two engines were compared by the engine
+- **Verified on scratch DSH homes of an rc.3 host with a copy of one store**, not
+  on a live profile. The live-session paths of the two engines were compared by the engine
   spec and by the C3 model, not on a running host with real streaming.
 - The bundle switch was exercised by editing `dsh.profile.bundles` of the scratch
   profile, as the plugin manager does; the plugin manager's own code path was not
@@ -316,7 +351,8 @@ serves); switch this bundle off and on to put its layer after it again.
 ## Provenance and license
 
 The engine sources are the sources of `@deepseek-ai/dsh-session-query-sqlite`
-**0.2.2-rc.3**, as installed in the app, with the patch of the local commit
+**0.2.2-rc.3**, as installed in the app when `vendor/PROVENANCE.md` was recorded
+(2026-11-18), with the patch of the local commit
 `da482fcac4` ("fix(session-query-sqlite): index persisted sessions one at a time")
 rebased on them. The commit `e1f2349309` ("fix(session-search): read hit titles one
 log at a time") changes no engine source; it adds `persistedReadConcurrency: 1` to
@@ -334,9 +370,15 @@ reproduces. **Both commits are local and unmerged** (branch
 | `vendor/tests/sqlite.spec.ts` | the engine spec of rc.3 with the commit's test changes and a vendored cost block |
 | `vendor/PROVENANCE.md` | hashes, commands and the rebase record |
 
-The plugin's own code (`src/index.host.js`, `src/guard.js`, `scripts/`, `test/`) is
-MIT, see [`LICENSE`](LICENSE). The vendored sources are MIT, Copyright (c) 2026
-DeepSeek, see [`vendor/LICENSE.upstream`](vendor/LICENSE.upstream). The package's
+Code derived from upstream (`vendor/src/*.ts`, the generated `src/engine/*.js`,
+`patches/engine-0.2.2-rc.3.diff` and `vendor/tests/sqlite.spec.ts`) comes from
+DeepSeek Harness (<https://github.com/deepseek-ai/deepseek-harness>, package
+`@deepseek-ai/dsh-session-query-sqlite` 0.2.2-rc.3): MIT, Copyright (c) 2026
+DeepSeek, see [`vendor/LICENSE.upstream`](vendor/LICENSE.upstream). The changes
+in it (the bounded-index patch and the spec's added cost block) are by anvilsong,
+also MIT. The plugin's own code
+(`src/index.host.js`, `src/guard.js`, `cordis.patch.yml`, `scripts/`, `test/`) is
+MIT, Copyright (c) 2026 anvilsong, see [`LICENSE`](LICENSE). The package's
 `files` list ships `src`, `cordis.patch.yml`, `README.md`, `LICENSE`,
 `vendor/src`, `vendor/PROVENANCE.md`, `vendor/LICENSE.upstream` and `patches`; it
 does **not** ship `vendor/tests`, `docs`, `scripts` or `test` (a folder install
@@ -347,11 +389,13 @@ dialect, layers, guard inputs, transitions, decisions),
 [`docs/build-audit.md`](docs/build-audit.md) (generated engine against the shipped
 build), [`docs/verification.md`](docs/verification.md) (spec, appending session,
 same hits, heap tables), [`docs/scratch-verification.md`](docs/scratch-verification.md)
-(the package on an rc.3 host with a store copy).
+(the package on an rc.3 host with a store copy), [`docs/rollout-record.md`](docs/rollout-record.md)
+(the final review before an install on a real profile; nothing was installed there).
 
 ## Tests
 
-Use Node 24.
+Use Node 24 (tested with 24.22.3; the repository's `.nvmrc`). Run from the repository root, after `npm install` there (it installs the
+shared test dependency `@deepseek-ai/cordis` ~4.1.0 of the root `package.json`):
 
 ```sh
 node --test packages/session-search-patched/test/*.test.mjs
@@ -359,12 +403,16 @@ node packages/session-search-patched/scripts/build.mjs --check
 node packages/session-search-patched/scripts/scratch-home.mjs --self-test
 ```
 
-The first command ran 151 tests: 147 pass, 4 skipped, 0 fail. The skipped ones are
-opt-in: three need `SSP_RC3_EXTRACT` (a folder with `index.ts`, `query.ts`,
-`schema.ts`, `lib/index.js` as `index.js` and optionally `package.json`, extracted
-from the installed app; `docs/build-audit.md` §2 and §8), one needs
+The first command ran 154 tests: 150 pass, 4 skipped, 0 fail (Node v24.22.3). The
+skipped ones are opt-in: three need `SSP_RC3_EXTRACT` (a folder with `index.ts`,
+`query.ts`, `schema.ts`, `lib/index.js` as `index.js` and optionally `package.json`,
+extracted from the installed app; `docs/build-audit.md` §2 and §8), one needs
 `DSH_UPSTREAM_DIR` (`test/composition.test.mjs`: the bundle patch composed by the
-rc.3 loader code with the other layers). With both set: 159 tests, 159 pass.
+rc.3 loader code with the other layers). If that folder holds a `package.json`,
+`test/review.test.mjs` expects its version to be one of `PINNED_VERSIONS` (rc.3 or
+rc.5). With both set the suite ran 159 tests,
+159 pass, before the rc.5 change added three tests; that opt-in run was not repeated
+since.
 
 The engine experiments against an rc.3 source checkout are optional and skip
 themselves without one:

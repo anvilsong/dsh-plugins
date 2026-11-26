@@ -1,12 +1,12 @@
 {
   "name": "dsh-plugin-model-discovery",
   "version": "0.1.0",
-  "description": "Discover newly published pi-ai models and add them to the model catalog without replacing the adapter.",
+  "description": "Append models from the latest pi-ai catalog to llm-pi-ai providers that already list their models explicitly.",
   "type": "module",
   "main": "src/index.host.js",
   "meta": {
     "title": "Model discovery",
-    "description": "Add newly published pi-ai models to your catalog automatically."
+    "description": "Append new pi-ai catalog models to providers that list their models explicitly."
   },
   "exports": {
     ".": {
@@ -34,7 +34,10 @@
   "author": "anvilsong",
   "repository": {
     "type": "git",
-    "url": "https://github.com/anvilsong/dsh-plugin-provider-usage.git",
+    "url": "https://github.com/anvilsong/dsh-plugins.git",
     "directory": "packages/model-discovery"
-  }
+  },
+  "homepage": "https://github.com/anvilsong/dsh-plugins/tree/main/packages/model-discovery#readme",
+  "bugs": "https://github.com/anvilsong/dsh-plugins/issues",
+  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "models", "pi-ai", "catalog"]
 }

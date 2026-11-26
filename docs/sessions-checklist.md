@@ -93,9 +93,13 @@ nothing you do in scenarios 1 to 14 can touch the real store.
 
 ## 1. Install and restart
 
-1. In the copy's GUI, open **Settings → Plugins → Add plugin → Install a
-   third-party plugin**, enter `dsh-plugin-sessions` (or, from a checkout, run
-   `dsh plugin --profile <profile> add "$PWD/packages/sessions"`), and enable it. (If the copy already carries the plugin, check that it is enabled.)
+1. The package is not on npm: install the folder `packages/sessions` of this
+   repository (README, "Install"). In a checkout where `npm install` has run at
+   the repository root, run
+   `DSH_HOME="$COPY" dsh plugin --profile <profile> add "$PWD/packages/sessions"`
+   (or, in the copy's GUI, **Settings → Plugins → Add plugin** with the option
+   that installs a local folder), and enable it. (If the copy already carries
+   the plugin, check that it is enabled.)
 2. Restart the Host. Refresh the page.
 3. Expect: a **Sessions** row in the left sidebar under **New Session**, after
    **Plugins** and **Automation tasks**. Click it: the center column shows
@@ -280,22 +284,27 @@ batch listed, or any session outside the batch removed. Read "Safety rules".
    `$COPY/profiles/<profile>/cordis.patch.yml`:
 
    ```yaml
-   - id: include:sessions-manager
+   - id: sessions-manager
      name: dsh-plugin-sessions
      config:
        allowPermanentDelete: false
    ```
 
-   (An override replaces the whole `config`; the unlisted options keep their
-   defaults.) Start the Host on the copy again, refresh.
+   Use the bare row id `sessions-manager`, never `include:sessions-manager`
+   (that id matches no row, and the override is skipped). (An override replaces
+   the whole `config`; the unlisted options keep their defaults.) Start the Host
+   on the copy again, refresh.
 2. Prune a small tree. **Trash**: **Delete permanently…** is disabled, with the
    note that permanent delete is turned off and `allowPermanentDelete` is false.
    **Restore batch** still works.
 3. Remove the override, restart, refresh: the button works again.
 
 Failure means: a delete that still runs, or a Restore that is blocked. Read
-"Configuration" first. If the Host reports a patch error for the override, note
-its text and use **Settings → Plugins** instead.
+"Configuration" first. If the Host log shows `patch: entry … not found` for the
+override, or the button stays enabled, the override was not applied: check that
+the row id is the bare `sessions-manager` and that the file is the copy's
+profile patch. The plugin has no Settings form, so the patch is the only way to
+change this option.
 
 ## 11. zh locale
 

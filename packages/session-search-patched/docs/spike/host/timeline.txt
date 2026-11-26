@@ -323,7 +323,7 @@
 09:22:36.454 sessionQuery-up    where=js-version-eq-rc4-should-mount provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE]
 09:22:36.468 search-error       where=root provider=SqliteSessionQueryEngine@session-query-sqlite[ACTIVE] code=SESSION_QUERY_SEARCH_DISABLED session search is disabled: this deployment configures the session-query index with openAt "never"
 09:22:36.545 probe-apply        row=session-query-sqlite-patched mode=broken scope=sessionQuery#optional-session-search
-09:22:36.546 probe-fallback     row=session-query-sqlite-patched {"reason": {"code": "ERR_MODULE_NOT_FOUND", "message": "Cannot find module '/Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/probe/missing-patched-engine.js' imported from /Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/probe/index.js"}}
+09:22:36.546 probe-fallback     row=session-query-sqlite-patched {"reason": {"code": "ERR_MODULE_NOT_FOUND", "message": "Cannot find module '/Users/<user>/projects/dsh-plugins/packages/session-search-patched/docs/spike/probe/missing-patched-engine.js' imported from /Users/<user>/projects/dsh-plugins/packages/session-search-patched/docs/spike/probe/index.js"}}
 09:22:36.547 sessionQuery-up    where=group provider=SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE]
 09:22:36.547 probe-engine-settled row=session-query-sqlite-patched {"engine": "SqliteSessionQueryEngine", "state": 2}
 09:22:36.565 search-ok          where=group provider=SqliteSessionQueryEngine@session-query-sqlite-patched[ACTIVE] items=0

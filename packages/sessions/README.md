@@ -6,8 +6,8 @@ archived sessions into a trash folder.
 
 ## What it is
 
-DSH has no session delete. Archiving only hides a session: its log stays on
-disk. This plugin adds one page that
+DSH (as of 0.2.2-rc.4) has no session delete. Archiving only hides a session:
+its log stays on disk. This plugin adds one page that
 
 - shows the size of the store, per workspace and for the largest sessions;
 - lists archived sessions (the top-most archived session of a tree, with its
@@ -19,11 +19,12 @@ disk. This plugin adds one page that
 The page is for the owner of the machine. The plugin registers no agent tool
 and no slash command, and it never prunes, restores or deletes on its own: no
 schedule, no automatic prune, no expiry. Only recovery runs without a click:
-when the Host starts and whenever the page reads the Trash tab afresh (**Refresh**,
-the timed refresh, and the read the page makes by itself after every change), it can finish an
-interrupted operation (move folders back toward the store, run registry steps
-still owed), never more; a registry step that fails three times in a row is
-then left for your next change (see [Recovery](#recovery)). It never opens a session
+when the Host starts, and when the page reads the Trash tab afresh (**Refresh**,
+the timed refresh, and the read the page makes by itself after every change)
+while a batch still owes registry steps, it can finish an interrupted operation
+(move folders back toward the store, run registry steps still owed), never
+more; a registry step that fails three times in a row is then left for your
+next change (see [Recovery](#recovery)). It never opens a session
 log body and never calls session search. A session title comes from the host's projection cache (no log read);
 without one, a row shows the short session id.
 
@@ -41,6 +42,9 @@ sits under **New Session** next to **Plugins** and **Automation tasks**. In a
 collapsed rail, use its icon; in a window under 768 px, open the drawer first.
 On macOS Desktop with the sidebar hidden, press Mod+B. Opening a session, **New
 Session** or another panel leaves the page; coming back reads the Host again.
+(Where the row sits, the shortcut and the drawer are host behaviour, taken from
+the DSH 0.2.2-rc.3 sources in [`docs/placement.md`](docs/placement.md); another
+release may differ.)
 
 The header shows the store folder, **Prune available** or **Read-only**, the
 time of the last read and **Refresh**. Three tabs follow.
@@ -66,8 +70,9 @@ time of the last read and **Refresh**. Three tabs follow.
 - Rows are archived roots; children are not listed on their own. A row shows
   the combined size with children, last activity, age and a *blocked* badge
   that names the refusal.
-- Filters, applied by the Host: workspace, older than N days, larger than N MB,
-  and text (session id, title or workspace name, at most 200 characters). Sort
+- Filters, applied by the Host: workspace, older than N days (no activity in
+  the tree for at least N days; the plugin has no archive date), larger than N
+  MB, and text (session id, title or workspace name, at most 200 characters). Sort
   by size (default, largest first), last activity (newest first) or title (A to
   Z). Rows are grouped by workspace.
 - **Unarchive** (the host's own call) returns sessions to the normal list. A
@@ -79,13 +84,13 @@ time of the last read and **Refresh**. Three tabs follow.
 
 **Prune panel** (an in-page dialog; nothing moves before the last step)
 
-1. **Scope**: all archived sessions, archived sessions older than N days, or
-   the current selection.
+1. **Scope**: all archived sessions, archived sessions older than N days (as
+   the filter: no activity in the tree for N days), or the current selection.
 2. **Preview**: a dry run from the Host. Roots, descendants, total size, a
    per-workspace breakdown and the safety checks. Blocked trees are listed as
    excluded, with their reasons.
-3. **Confirm**: tick the box and type the number of sessions in the plan, then
-   press **Move to trash**. The button says *trash*, never *delete*. The result
+3. **Confirm**: tick the box and type the number of sessions that will move
+   (blocked trees excluded; the dialog shows it), then press **Move to trash**. The button says *trash*, never *delete*. The result
    card shows moved and skipped counts, the batch id, the trash folder,
    warnings and **Undo**.
 
@@ -110,7 +115,26 @@ column below 720 px of content width.
 The package is not published on npm yet, so install it from a source checkout
 by its folder path.
 
+### Requirements
+
+- **DeepSeek Harness 0.2.2-rc.3 or 0.2.2-rc.4.** The plugin was written against
+  these releases: the store-safety findings come from the 0.2.2-rc.4 sources,
+  and the installed 0.2.2-rc.3 app was read, not run
+  ([`docs/store-safety.md`](docs/store-safety.md)). Other releases have not been
+  checked. The package declares no `engines.dsh`, so DSH does not refuse it on
+  another release, and prune moves session folders by that release's store
+  layout: read the store-safety findings before you prune on another release.
+- Peer dependency `@deepseek-ai/cordis` `~4.1.0` (the host's copy) and the
+  dependency `@deepseek-ai/dsh-typert-protocol` `0.2.2-rc.3`.
+- **macOS** for prune; elsewhere the page is read-only (see
+  [Limits](#limits-you-should-know)).
+- **From a fresh clone, run `npm install` at the repository root first**, so
+  that the dependency `@deepseek-ai/dsh-typert-protocol` is present in the
+  repository's `node_modules`.
+
 ### Desktop app
+
+The dialog wording depends on the DSH release.
 
 1. Open **Settings → Plugins → Add plugin**.
 2. Choose the option that installs a local folder and select
@@ -134,15 +158,21 @@ needs a Host restart; a change to `src/client.js` needs only a page refresh.
 
 The bundle patch inserts one row, `sessions-manager`, with the defaults below.
 The plugin declares no Settings form, so to change an option, override the row
-in `<DSH home>/profiles/<profile>/cordis.patch.yml`, in the same form as the
-usage package:
+in `<DSH home>/profiles/<profile>/cordis.patch.yml`, addressed by its bare id:
 
 ```yaml
-- id: include:sessions-manager
+- id: sessions-manager
   name: dsh-plugin-sessions
   config:
     allowPermanentDelete: false
 ```
+
+Use the bare id `sessions-manager`. An `include:`-prefixed id matches no row:
+the override is then skipped with a `patch: entry … not found` warning, and the
+defaults stay in force. **After a restart, check that the override took
+effect:** with `allowPermanentDelete: false`, **Delete permanently…** on every
+Trash tab row is disabled, and a note says that permanent delete is turned off
+(both appear once the trash holds a batch).
 
 **Config is replaced as a whole.** Restate every option you want to keep; an
 option you leave out takes its default. A home-level `<DSH home>/cordis.patch.yml`
@@ -153,10 +183,10 @@ applies after the profile patch.
 | Field | Default | Range | Meaning |
 |---|---|---|---|
 | `dataDir` | `<DSH home>/sessions-manager` | absolute path | Plugin-owned folder: `audit.jsonl` and, by default, `trash/`. Must lie outside the sessions tree. |
-| `trashDir` | `<dataDir>/trash` | absolute path | Optional. Must be on the **same device** as the sessions tree, outside it, with no symlinked component; an existing folder must be yours and not writable by group or others. |
+| `trashDir` | `<dataDir>/trash` | absolute path | Optional. Must be on the **same device** as the sessions tree, outside it, with no symlinked component; an existing folder must be yours and not writable by group or others. This holds for the default `<dataDir>/trash` too: if the DSH home or `dataDir` is reached through a symbolic link, the page is read-only (`trash-unusable`); set `dataDir` to the real path. |
 | `recentActivityMinutes` | `30` | 1 to 10080 (one week) | A tree with a member whose log changed within this many minutes is not pruned (`recent`). Never 0. |
 | `listLimit` | `500` | 10 to 5000 | Most rows one Archived request returns. A narrower filter shows the rest. |
-| `largeSessionBytes` | `52428800` (50 MB) | 1 MiB to 1 TiB | Reserved. Accepted and clamped, but nothing in v1 reads it. |
+| `largeSessionBytes` | `52428800` (50 MiB) | 1 MiB to 1 TiB | Reserved. Accepted and clamped, but nothing in v1 reads it. |
 | `indexWarnBytes` | `268435456` (256 MiB) | 1 MiB to 1 TiB | On-disk size of the whole store at which the *Search index load* hint turns **High**. A heuristic, see [Limits](#limits-you-should-know). |
 | `allowPermanentDelete` | `true` | `true` or `false` | `false` turns **Delete permanently…** off. Any other value is an invalid config. |
 | `refreshMs` | `0` | `0` (off), or 5000 to 3600000 | Refresh interval of the page while it is visible. A value from 1 to 4999 becomes 5000. |
@@ -170,12 +200,17 @@ line-separator, bidirectional-control or backtick characters, no surrounding
 whitespace; on Windows a drive or UNC share. An invalid path never falls back
 to a default. An invalid config (or an unset `dataDir` with no DSH home) does
 not stop the Host: the plugin logs `sessions-manager: invalid plugin config: …`
-and runs read-only with reason `sessions-manager/trash-unusable`.
+and runs read-only. On macOS, with the host services present, the reason is
+`sessions-manager/trash-unusable` (elsewhere `unsupported-platform` is reported
+first), and the Trash tab fails with `trash-unusable`.
 
 ## Data directory and trash layout
 
-Everything the plugin writes is in `dataDir` (folders mode 0700, files 0600).
-Nothing is created until the first Preview, prune or Unarchive (on macOS an
+Everything the plugin writes itself is in `dataDir` and the trash folder (which
+is `<dataDir>/trash` unless `trashDir` names another place), with folders mode
+0700 and files 0600. The only other things it changes are the session folders it
+renames, a missing project folder that a restore recreates in the store (mode
+0700), and the registry, through the host's own calls. Nothing is created until the first Preview, prune or Unarchive (on macOS an
 Unarchive takes the trash lock, which creates `trash/`). The sessions themselves are
 never copied: a prune renames session folders, so the trash must be on the same
 device as the store.
@@ -205,9 +240,12 @@ moved or removed. A batch wholly back in the store with every registry step
 done is **closed**: its journal ends with a `closed` line, the Trash tab hides
 it, and recovery skips it after reading only the end of that journal (a fixed
 four file calls per closed batch, whatever it held; the check at Host start
-adds an lstat of the folder). Its small manifest, hints
-and journal stay in the folder; only **Delete permanently…** (by batch id)
-removes a batch.
+adds an lstat of the folder). Its small manifest, hints and journal (and the
+empty project folders under its `sessions/`) stay in the folder. The page never
+lists a closed batch, so it offers no way to delete one: the folder stays until
+you remove `<trashDir>/<batchId>` by hand, with the Host stopped, after checking
+that its `sessions/` holds no session folder. **Delete permanently…** removes
+only batches the Trash tab lists.
 
 ## Safety rules
 
@@ -215,16 +253,27 @@ removes a batch.
 - **Plan token.** `apply` takes only a plan id issued by the Host and the typed
   count, never session ids. It re-reads every fact and skips what changed. There
   is no force option.
-- **Order.** Manifest and registry hints are written first and synced; then each
-  session folder is renamed into the trash (rename only, never a copy); then
-  the registry steps run: unpin, detach from the workspace, unarchive.
+- **Order.** Manifest and registry hints are written first and synced; then,
+  tree by tree, that tree's session folders are renamed into the trash (rename
+  only, never a copy) and that tree's registry steps run: unpin, detach from
+  the workspace, unarchive.
 - **One at a time.** A second change while one runs gets `busy`; the trash
-  `.lock` also excludes a second process, and Unarchive takes the same lock. A stale lock (dead pid, reused pid,
-  or an unreadable one older than 60 s) is replaced and journaled.
+  `.lock` also excludes a second process, and Unarchive takes the same lock (on
+  macOS, when prune is available). A stale lock is replaced and journaled: one
+  whose recorded pid on this host is dead, one that records this process's own
+  pid with another start time, or an unreadable one older than 60 s. A lock
+  recorded under another host name is never replaced, and a recorded pid that
+  now belongs to another running process counts as alive; every change then
+  gets `busy`. To clear such a lock, stop every Host that uses this trash,
+  check that `<trashDir>/.lock` names no running process, and remove that file
+  by hand.
 - **User-only.** Every method refuses an agent caller.
-- **Audit first.** The `apply-start` line must be written before anything moves.
+- **Audit first.** The `apply-start` line must be written before any session
+  moves into the trash. (The recovery that every change runs first may already
+  have moved interrupted folders back to the store.)
 - **Never touched:** `session.lock`, the workspace registry file, the
-  projection-cache folder, the search database, project folders.
+  projection-cache folder, the search database. Project folders are never moved
+  or removed (a restore may recreate a missing one).
 
 Refusal codes (a refusal is data on a row or in a result, not an error):
 
@@ -241,8 +290,8 @@ Refusal codes (a refusal is data on a row or in a result, not an error):
 | `changed` | A fact differs between plan and apply (membership, size, revision, log time), or a rename failed unexpectedly. |
 | `not-archived` | The session is not (or no longer) archived. |
 | `cross-device` | The folder and the trash are on different devices; there is no copy fallback. |
-| `workspace-missing` | The tree is in no workspace (*Unassigned* sessions are not pruned), or on restore its workspace is gone. |
-| `conflict` | The destination exists, even as an empty folder or a lock-only leftover; nothing is overwritten. |
+| `workspace-missing` | The tree is in no workspace (*Unassigned* sessions are not pruned), or on restore its workspace is gone or its folder on disk is missing. |
+| `conflict` | The destination exists, even as an empty folder or a lock-only leftover; nothing is overwritten. On restore also: the store still lists that session id (or cannot answer for it). |
 | `legacy-format` | A member's log is in an old format (`migration-required`); such sessions are refused in v1. |
 
 Error codes (these fail the call): `sessions-manager/forbidden` (an agent
@@ -254,8 +303,8 @@ holds no batch reads the same), `unsupported-platform` (no
 lock probe), `trash-unusable` (invalid config, audit log or trash folder not
 usable, overlap with the store, another device), `batch-not-found`,
 `invalid-request` and `store-unreadable` (the backend's session listing failed,
-for example because a project folder vanished while it ran; nothing was moved,
-try again). `unsupported-backend`, `unsupported-platform` and
+for example because a project folder vanished while it ran; no session was
+moved into the trash, try again). `unsupported-backend`, `unsupported-platform` and
 `trash-unusable` are also the three reasons the page can be read-only.
 
 Warnings in a result: `stale-backend-entry` (the backend still lists a moved
@@ -264,18 +313,24 @@ session; that tree's registry steps wait), `registry-step-failed`,
 
 ## Limits you should know
 
+What this section says about DSH itself (its session search, caches, workspace
+registry, session locks and persistence backend) is a set of findings from the
+DSH 0.2.2-rc.4 sources ([`docs/store-safety.md`](docs/store-safety.md)); they have
+not been re-checked for other releases.
+
 - **Sizes are on-disk bytes.** They add up the allocated blocks of every file
-  in a session folder, as `du` counts, up to three levels down. Logs are stored
-  compressed, so these are compressed sizes. Raw size is never computed.
-  Reclaimable counts the same bytes.
+  in a session folder, as `du` counts, up to three levels down. When a folder
+  cannot be read, the backend's size of the log is used instead (or the log's
+  file size). Logs are stored compressed, so these are compressed sizes. Raw
+  size is never computed. Reclaimable counts the same bytes.
 - **The index-load hint is a heuristic.** The host's experimental session search
   builds an in-memory index of every stored session, and the host heap ceiling
   is about 4 GiB. **High** only says that the store's on-disk size reached
   `indexWarnBytes`. It does not read or measure the search index. A single
   stored session with an event type this build does not know can make every
   search fail (`session history storage is unavailable`); the page does not
-  look for it and cannot fix it. Move that session's folder out of the store by
-  hand; it is usually a session that belongs to no workspace and is not
+  look for it and cannot fix it. With the Host stopped, move that session's
+  folder out of the store by hand; it is usually a session that belongs to no workspace and is not
   archived, which v1 does not prune.
 - **Prune is available only on macOS.** It needs the session lock probe:
   `session.lock` is the target of the backend's kernel lock, an empty file that
@@ -333,8 +388,9 @@ session; that tree's registry steps wait), `registry-step-failed`,
   folder: disk space only, and nothing deletes it.
 - **A moved session is gone at once** for sessions in the current format: the
   backend finds the folder again on every open, so no restart is needed. A
-  *restart recommended* warning appears only if the backend still lists a moved
-  session, or a second host is in use. A session in an **old format** (a log that
+  *restart recommended* warning appears only when the backend still lists a
+  moved session after the move (or cannot answer for it). The plugin cannot
+  detect a second host. A session in an **old format** (a log that
   needs a migration) is **refused** (`legacy-format`) and its tree stays: its
   revision changes with any change in the store, so a before-and-after check
   would be wrong.
@@ -349,7 +405,8 @@ session; that tree's registry steps wait), `registry-step-failed`,
   its move still restores), re-attaches the session to its workspace, puts it
   back before its recorded neighbour, archives it again if it was archived, and
   pins it again only if it was pinned and is not archived. A tree whose
-  workspace no longer exists stays in the trash (`workspace-missing`); a
+  workspace no longer exists, or whose workspace folder is missing on disk,
+  stays in the trash (`workspace-missing`); a
   missing project folder is recreated (mode 0700) when the manifest recorded
   it.
 - **A log that changed while in the trash.** Only the restore call itself is
@@ -373,9 +430,12 @@ session; that tree's registry steps wait), `registry-step-failed`,
   other sessions to make room would take registry calls on sessions outside the
   batch, which the plugin never makes. When the batch's ids were the newest
   archived and the newest pinned, the exact order comes back.
-- **Findings come from the rc.4 sources, run on macOS (APFS)**; the installed
-  rc.3 was read, not run. The page itself was not driven in a browser by the
-  spike. How long an already open sidebar keeps a row after a prune is untested.
+- **What was tested.** The findings about DSH itself come from the DSH
+  0.2.2-rc.4 sources, run on macOS (APFS); the installed 0.2.2-rc.3 was read,
+  not run; other releases have not been re-checked. The page is tested only in
+  simulated browsers (the package tests); no completed run of the manual GUI
+  checklist is recorded in this repository. How long an already open sidebar
+  keeps a row after a prune is untested.
 
 ## Recovery
 
@@ -383,9 +443,12 @@ session; that tree's registry steps wait), `registry-step-failed`,
   batch** in the Trash tab. Both are the same action. Check the result: a
   skipped tree stays whole in the trash with its reason. `conflict`: something
   now exists at the recorded folder; move it away yourself, then restore again.
+  (A restore also reports `conflict` when the store still lists that session id
+  elsewhere, or cannot answer for it; then nothing is at the recorded folder.)
   A batch in conflict still holds its own copy of that session, and the Trash
   tab counts it: **Delete permanently…** on that batch deletes that copy too.
-  `workspace-missing`: recreate or re-add the workspace, then restore again.
+  `workspace-missing`: recreate or re-add the workspace (or recreate its
+  folder on disk), then restore again.
   If the workspace goes away during the restore itself (after the restore's
   check and before the attach), the folders are back in the store all the
   same: the attach is journaled as skipped, the result says *needs recovery*
@@ -416,7 +479,8 @@ session; that tree's registry steps wait), `registry-step-failed`,
   appends the missing journal lines, finishes registry steps a crash left undone
   and renames a tree that is split between store and trash back whole into the
   store. **Recovery never deletes and never moves toward the trash.** Folders
-  named `.staging-*` hold no session; the plugin reports and never deletes them.
+  named `.staging-*` hold no session; the plugin leaves them in place, never
+  deletes them and does not show them on the page.
   A `.purge-<batchId>` folder is a delete that stopped: run **Delete
   permanently…** on that batch again to finish it.
 - **Last resort, with the Host stopped.** `manifest.json` lists each session's
@@ -427,8 +491,14 @@ session; that tree's registry steps wait), `registry-step-failed`,
   back too, re-attaches those sessions to their workspace, archives again the
   ones that were archived and pins again the ones that were pinned, as a
   restore would. Prefer the page.
-- **Stop using the plugin.** Disable it in **Settings → Plugins**. The trash and
-  the audit log stay where they are.
+- **Stop using the plugin.** First restore every batch you want to keep. Then
+  disable it in **Settings → Plugins**. The trash and the audit log stay where
+  they are. Sessions left in the trash are invisible to DSH. The last-resort
+  `mv` above relies on the plugin's next recovery to re-attach, archive and pin
+  the sessions; without the plugin, a folder moved back by hand is not
+  re-attached to its workspace (it shows under *Ungrouped*, as observed in
+  [`docs/store-safety.md`](docs/store-safety.md), Ghost ids) and is not
+  archived or pinned again.
 
 ## Audit log format
 
@@ -452,18 +522,21 @@ text is ever recorded**. A line over 4 MiB is refused, not cut.
 | `op` | Written | Carries |
 |---|---|---|
 | `plan` | each Preview | `planId`, `digest`, `counts` (units, ready, blocked, sessions, readySessions), `bytes` |
-| `apply-start` | before anything moves; **fails closed** | `planId`, `digest`, `counts` |
+| `apply-start` | before any session moves into the trash (after the recovery the prune runs first); **fails closed** | `planId`, `digest`, `counts` |
 | `unit-moved` | after each moved tree | `batchId`, `planId`, `sessions[]`, `bytes` |
 | `unit-skipped` | a tree refused at its rename step (trees the re-read skips are only counted in `apply-end`) | `batchId`, `planId`, `reasons[]` |
 | `registry-step` | after each tree's registry steps | `batchId`, `counts` (steps, failed), `outcome` |
 | `apply-end` | the end of a prune | `planId`, `batchId`, `counts`, `bytes`, `outcome` |
 | `recover` | when a recovery changed something | `counts` (batches, appended, moved, steps: registry steps that ran and did not fail; a recovery whose only work was failed attempts writes no line) |
-| `restore-start`, `restore-end` | a restore | `batchId`, and `counts`, `bytes`, `outcome` at the end |
-| `purge-start`, `purge-end`, `purge-failed` | a permanent delete | `batchId`, and `counts`, `bytes`, `outcome` or `errorCode` |
+| `restore-start`, `restore-end` | a restore (`restore-start` after its recovery, before the restore moves any folder back; **fails closed**) | `batchId`, and `counts`, `bytes`, `outcome` at the end |
+| `purge-start`, `purge-end`, `purge-failed` | a permanent delete (`purge-start` after its recovery, before anything is deleted; **fails closed**) | `batchId`, and `counts`, `bytes`, `outcome` or `errorCode` |
 
-If the `apply-start` line cannot be written, nothing moves and the call fails
-with `trash-unusable`. Any later write failure returns an `audit-failed`
-warning and never stops the work. Unarchive is the host's own call and writes
+If the `apply-start`, `restore-start` or `purge-start` line cannot be written,
+the call fails with `trash-unusable` before the prune moves a session into the
+trash, the restore moves a folder back or the purge deletes anything. (The recovery that each of these calls
+runs first may already have finished interrupted work, and then writes its own
+`recover` line.) Any other write failure returns an `audit-failed` warning and
+never stops the work. Unarchive is the host's own call and writes
 no line. `outcome` is `complete`, `partial`, `needs-recovery` or `conflict`
 (or `ok`, or `failed` for a registry step).
 
@@ -482,6 +555,9 @@ no line. `outcome` is `complete`, `partial`, `needs-recovery` or `conflict`
 - A force override
 
 ## Tests
+
+From the repository root, after `npm install` (it installs the test and
+package dependencies):
 
 ```sh
 node --test packages/sessions/test/*.test.mjs

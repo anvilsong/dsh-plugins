@@ -26,8 +26,8 @@ const OPTIONAL_PATHS = new Set(['README.md'])
 const PEERS = {
   '@deepseek-ai/cordis': '~4.1.0',
   '@deepseek-ai/schemastery': '~3.19.0',
-  '@deepseek-ai/dsh-session': '0.2.2-rc.3',
-  '@deepseek-ai/dsh-session-query': '0.2.2-rc.3',
+  '@deepseek-ai/dsh-session': '0.2.2-rc.3 || 0.2.2-rc.5',
+  '@deepseek-ai/dsh-session-query': '0.2.2-rc.3 || 0.2.2-rc.5',
   '@deepseek-ai/dsh-session-query-sqlite': '0.2.2-rc.3 || 0.2.2-rc.5',
 }
 

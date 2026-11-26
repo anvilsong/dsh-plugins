@@ -39,5 +39,14 @@
   },
   "dependencies": { "zod": "4.4.3" },
   "peerDependencies": { "@deepseek-ai/cordis": "^4.0.0" },
-  "license": "MIT"
+  "license": "MIT",
+  "author": "anvilsong",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anvilsong/dsh-plugins.git",
+    "directory": "packages/router"
+  },
+  "homepage": "https://github.com/anvilsong/dsh-plugins/tree/main/packages/router#readme",
+  "bugs": "https://github.com/anvilsong/dsh-plugins/issues",
+  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "router", "model-routing", "subagent"]
 }

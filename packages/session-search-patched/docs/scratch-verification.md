@@ -134,7 +134,7 @@ H2 (bundle on, cold install), `facts` record (whole record in `report-A.jsonl.tx
 | base chain | `SqliteSessionQueryEngine → SessionQueryEngine → Service`, `basesIdenticalToShipped: true` (the patched engine extends the host's `SessionQueryEngine` and cordis `Service`, not private copies) |
 | row config seen by the engine | `persistedReadConcurrency: 1`, `openAt: first-search` (shipped row: 4, the default) |
 | `packageOf(peer, file:///…/session-search-patched/src/index.host.js)` and `(…, …/src/engine/index.js)` | `@deepseek-ai/cordis` 4.1.0, `schemastery` 3.19.0, `dsh-session` 0.2.2-rc.3, `dsh-session-query` 0.2.2-rc.3, `dsh-session-query-sqlite` **0.2.2-rc.3**, every `dir` under `/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/` |
-| contrast, H1 (package not installed, same URL) | `@deepseek-ai/cordis` → `/Users/macbook/projects/dsh-plugins/node_modules/@deepseek-ai/cordis` (this repository's private copy), the other four unresolved: the host copies come from the installed package's `peerDependencies`, not from the URL |
+| contrast, H1 (package not installed, same URL) | `@deepseek-ai/cordis` → `/Users/<user>/projects/dsh-plugins/node_modules/@deepseek-ai/cordis` (this repository's private copy), the other four unresolved: the host copies come from the installed package's `peerDependencies`, not from the URL |
 | shipped sources vs `src/guard.js` pins (in-host read through app.asar) | `src/index.ts` 41094 B `72868e4a…`, `src/query.ts` 15548 B `b2936358…`, `src/schema.ts` 6098 B `2cc4c7c8…`: all `equalsGuardPin: true` |
 | the guard itself | passed: the entry's own line names reason `host @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3 and the sha256 of its src/index.ts, src/query.ts, src/schema.ts match the pinned values` (it is printed only when the entry's `packageOf(ENGINE, import.meta.url)` returned exactly `0.2.2-rc.3` and all three hashes matched) |
 | store | `configRoot` = `root` = `<A>/home/.dsh/sessions`, inside the scratch DSH_HOME, 253 listed |
@@ -323,7 +323,7 @@ behaviour for both engines (it is the persistence backend's); recorded as findin
 
 ### 7.4 (d) install without restart (HMR)
 
-H4 runs with the bundle removed (shipped serves, queries `4700711b…`). At 10:07:04 `node scripts/scratch-home.mjs dsh <A> -- plugin --profile web add "/Users/macbook/projects/dsh-plugins/packages/session-search-patched"`
+H4 runs with the bundle removed (shipped serves, queries `4700711b…`). At 10:07:04 `node scripts/scratch-home.mjs dsh <A> -- plugin --profile web add "/Users/<user>/projects/dsh-plugins/packages/session-search-patched"`
 ([cli](../test/scratch/evidence/install-A4-hot.txt), exit 0 at 10:07:05). Snapshots once a second (timeline-A lines 131-221):
 
 | time | state |

@@ -56,7 +56,7 @@ patch -s -o patched-index.ts index.ts < $PKG/patches/engine-0.2.2-rc.3.diff     
 | upstream suite, once | `DSH_UPSTREAM_DIR=/tmp/dsh-rc3-s10 SSP_RC3_EXTRACT=/tmp/ssp-s10/shipped node --test packages/session-search-patched/test/upstream/*.test.mjs` | **9 tests, 9 pass, 0 fail, exit 0, 30 s**; C2: `sqlite.spec.ts` 92 passed, `identity.spec.ts` 1 passed; C3 confirms for 8 and 32 sessions (shipped source and compiled app engine alike): shipped cold pass `FAILED` with 16 / 64 reads, next search 8 / 32 reads, patched 9 / 33 then 0; an append between searches costs **1 read for every engine**. `git status --porcelain` of the worktree empty before and after |
 
 The skipped tests are opt-in only: three need `SSP_RC3_EXTRACT`, one `DSH_UPSTREAM_DIR` (package), one
-`DSH_UPSTREAM_DIR` (`packages/sessions`). rc.3 worktree: `git -C /Users/macbook/projects/deepseek-harness worktree add --detach /tmp/dsh-rc3-s10 dsh-v0.2.2-rc.3` (HEAD `38a6a5c965`),
+`DSH_UPSTREAM_DIR` (`packages/sessions`). rc.3 worktree: `git -C /Users/<user>/projects/deepseek-harness worktree add --detach /tmp/dsh-rc3-s10 dsh-v0.2.2-rc.3` (HEAD `38a6a5c965`),
 `pnpm install --frozen-lockfile --ignore-scripts --prefer-offline` (6.3 s), the native addon copied from
 `app.asar.unpacked` (sha256 `6c89a8ca…4c4b30`), removed at the end (§11).
 
@@ -145,7 +145,7 @@ No change to `src/`, `vendor/`, `scripts/`, `cordis.patch.yml` or `package.json`
 ## 6. Rollout plan for the lead
 
 The live host: pid 48548, listening on 127.0.0.1:3080, started 00:13:47 as
-`dsh --profile web --no-open --port 3080 --trusted-host macbooks-macbook-pro.tailc68efc.ts.net`
+`dsh --profile web --no-open --port 3080 --trusted-host <trusted-host>`
 (`ps`: `…/MacOS/DeepSeek Harness --expose-internals …/dsh-desktop-host/lib/cli.js --profile web --no-open --port 3080 --trusted-host …`,
 parent pid 1, no launchd job of its own; `/usr/local/bin/dsh` → `…/Contents/Resources/runtime/cli/bin/dsh`).
 The lead's session runs inside this host: any restart ends the lead's current turn, and while the
@@ -173,7 +173,7 @@ restarts the host with B1 and B6 below; continue at §6.3.
 ### 6.2 Before (lead, with the user's approval for each read of the real profile)
 
 1. **Frozen copy** (F2): after the commit gate, export the reviewed commit:
-   `D=$HOME/dsh-local/session-search-patched-0.1.0; mkdir -p "$D" && git -C /Users/macbook/projects/dsh-plugins archive <commit> packages/session-search-patched | tar -x --strip-components=2 -C "$D"`,
+   `D=$HOME/dsh-local/session-search-patched-0.1.0; mkdir -p "$D" && git -C /Users/<user>/projects/dsh-plugins archive <commit> packages/session-search-patched | tar -x --strip-components=2 -C "$D"`,
    then `node "$D/scripts/build.mjs" --check` (exit 0) and `diff -r "$D/src" packages/session-search-patched/src` (empty).
    Installing straight from the working tree also works (S8), but then nobody may edit `src/` while it is installed.
 2. `dsh --version` → `0.2.2-rc.3`, else **stop**.
@@ -201,7 +201,7 @@ restarts the host with B1 and B6 below; continue at §6.3.
 ### 6.3 Steps (B)
 
 ```sh
-PKG="$HOME/dsh-local/session-search-patched-0.1.0"   # or /Users/macbook/projects/dsh-plugins/packages/session-search-patched
+PKG="$HOME/dsh-local/session-search-patched-0.1.0"   # or /Users/<user>/projects/dsh-plugins/packages/session-search-patched
 B="$HOME/dsh-rollout-backup-YYYYMMDD"                 # the folder of §6.2 step 5
 # B1 stop the host and wait until the port is free
 kill -TERM $(lsof -t -nP -iTCP:3080 -sTCP:LISTEN); while lsof -nP -iTCP:3080 -sTCP:LISTEN >/dev/null; do sleep 1; done
@@ -214,7 +214,7 @@ node -e 'const m=require(process.argv[1]),b=m.dsh.profile.bundles;console.log(b.
 # B5 host stopped, so rewriting cordis.yml is safe: shipped row disabled: true, tool row, session-query-sqlite-patched; stderr without "not found"
 dsh --profile web --dump-config > "$B/dump-after.txt" 2> "$B/dump-after.stderr.txt"; grep -n -A 24 'id: optional-session-search$' "$B/dump-after.txt"; cat "$B/dump-after.stderr.txt"
 # B6 start the host as the user normally does; this is the observed command line, with stderr kept
-nohup dsh --profile web --no-open --port 3080 --trusted-host macbooks-macbook-pro.tailc68efc.ts.net > "$B/host.out" 2> "$B/host.err" &
+nohup dsh --profile web --no-open --port 3080 --trusted-host <trusted-host> > "$B/host.out" 2> "$B/host.err" &
 ```
 
 ### 6.4 After the restart: what to observe
@@ -300,8 +300,8 @@ wholesale override and the bundle-order flip skip the swap without a log line (a
 ## 11. Clean-up and files
 
 ```sh
-git -C /Users/macbook/projects/deepseek-harness worktree remove --force /tmp/dsh-rc3-s10
-git -C /Users/macbook/projects/deepseek-harness worktree prune
+git -C /Users/<user>/projects/deepseek-harness worktree remove --force /tmp/dsh-rc3-s10
+git -C /Users/<user>/projects/deepseek-harness worktree prune
 rm -rf /tmp/ssp-s10                     # extraction, re-derivation roots, run logs
 ```
 

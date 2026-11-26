@@ -39,5 +39,14 @@
     "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.3"
   },
   "peerDependencies": { "@deepseek-ai/cordis": "~4.1.0" },
-  "license": "MIT"
+  "license": "MIT",
+  "author": "anvilsong",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anvilsong/dsh-plugins.git",
+    "directory": "packages/sessions"
+  },
+  "homepage": "https://github.com/anvilsong/dsh-plugins/tree/main/packages/sessions#readme",
+  "bugs": "https://github.com/anvilsong/dsh-plugins/issues",
+  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "sessions", "prune", "storage"]
 }

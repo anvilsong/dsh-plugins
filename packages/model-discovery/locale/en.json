@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Model discovery",
-    "description": "Add newly published pi-ai models to your catalog automatically."
+    "description": "Append new pi-ai catalog models to providers that list their models explicitly."
   }
 }

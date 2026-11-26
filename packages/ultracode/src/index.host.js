@@ -50,7 +50,7 @@ const viewSchema = z.object({
 export async function apply(ctx) {
   const projection = await ctx.sessionProjections.register({
     key: 'ultracode',
-    stateVersion: 4,
+    stateVersion: 5,
     stateSchema,
     init: () => ({ ...INITIAL_ULTRACODE_STATE }),
     apply: foldUltracode,

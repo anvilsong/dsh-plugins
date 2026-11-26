@@ -1,0 +1,29 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # macOS only: the Sessions package's lock probe and several path tests are
+    # written for macOS. Other platforms are not verified.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.3'
+          cache: npm
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Test (umask 022)
+        run: npm test
+      - name: Test (umask 002)
+        run: (umask 002 && npm test)

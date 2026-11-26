@@ -1110,7 +1110,20 @@ test('the README states the budget, pin, guidance, pre-existing and class-of-bug
     'the counts come from `git diff --numstat` against the pinned commit, and git counts the lines of untracked files; the host does not read them',
     'skipped as `over_budget`',
     'Reviewed: <sha7> (<branch>) + N changed files, state <12 hex>, captured when queued',
-    'HEAD is resolved once, when the command runs, and every later git call uses that commit',
+    'HEAD is resolved once, when the command runs, and every later git call that reads a commit uses that commit; the branch name is read from HEAD at the same time.',
+    'N counts the files kept for review; skipped files are not counted.',
+    'A path that starts with `-`, contains NUL, CR or LF, or is longer than 4,096 characters returns `Usage: /code-review [path]`.',
+    'Only git-style sections (`diff --git a/<path> b/<path>`) are read',
+    'still queues a review with no files',
+    'the whole review fails and is reported as failed. It is never called dry, and findings from earlier rounds are not returned.',
+    'That last match is not anchored to the end of the name, so it also skips source files such as `user.mapper.ts`, `data.mapping.js` or `foo.min.json`.',
+    '`ttf`, `otf` and `ico` files are skipped with the reason `generated`.',
+    'The only git calls that cover a sensitive file are the scope-wide `--numstat`, which returns line counts, and `git ls-files`',
+    'The workflow script enforces the output schema, so guidance cannot change it.',
+    'Read-only by instruction: the prompts forbid code changes, tests that write, staging, and formatting. The review agents keep the session\'s normal tool permissions, so nothing enforces this.',
+    'The task is about 19 KB of fixed text plus the JSON-escaped scope: a 70 KB test patch of ordinary code gives a 91 KB task.',
+    'A task over 150 KB is named in the command\'s reply',
+    'npm install dsh plugin --profile <profile> add "$PWD/packages/code-review"',
     'edits made while the review runs are not detected, and nothing is re-checked when the report is written',
     '`Reviewed: patch <12 hex>`',
     '`Reviewed: no commits yet`',
@@ -1696,6 +1709,17 @@ test('a patch of about 70 KB keeps the whole queued message small enough to rela
     const size = Buffer.byteLength(steerText(h))
     assert.ok(size < 100_000, `message is ${size} bytes`)
     assert.ok(size < patchBytes * 1.6 + 20_000, `message is ${size} bytes for a ${patchBytes} byte patch`)
+    // The README's example: a 70 KB test patch gives a 91 KB task (about 19 KB of fixed text plus the escaped scope).
+    assert.ok(patchBytes > 69_000 && patchBytes < 71_500, `patch is ${patchBytes} bytes`)
+    assert.ok(size > 89_000 && size < 93_000, `message is ${size} bytes`)
+    const empty = await temp()
+    try {
+      await writeFile(path.join(empty, 'none.patch'), 'not a git patch\n')
+      const fixed = Buffer.byteLength(steerText((await review(empty, 'none.patch', { git: false })).h))
+      assert.ok(fixed > 17_500 && fixed < 20_500, `fixed text is ${fixed} bytes`)
+    } finally {
+      await cleanup(empty)
+    }
     // The old shape held the patch four times, so it was above 3x the patch size.
   } finally {
     await cleanup(cwd)
@@ -1753,4 +1777,89 @@ test('the queued follow-up message carries a non-empty string id, a fresh one fo
   } finally {
     await cleanup(cwd)
   }
+})
+
+// The README's Use and Skipped files sections: each documented rule, as the code applies it.
+
+test('the documented usage errors: a leading dash, a line break, NUL, more than 4,096 characters, or a path outside the workspace', async () => {
+  const cwd = await temp()
+  try {
+    await writeFile(path.join(cwd, 'a.js'), 'const a = 1\n')
+    const h = harness(cwd)
+    await apply(h.ctx)
+    for (const rawInput of ['-a.js', 'a.js\nb.js', 'a.js\rb', 'a\0.js', 'a'.repeat(4097)]) {
+      assert.deepEqual(await h.command().handler({ agent: h.agent, rawInput }), { kind: 'error', text: 'Usage: /code-review [path]' }, JSON.stringify(rawInput.slice(0, 20)))
+    }
+    assert.deepEqual(await h.command().handler({ agent: h.agent, rawInput: '..' }), { kind: 'error', text: 'The review path must stay inside the workspace.' })
+    assert.equal(h.steered(), null)
+  } finally {
+    await cleanup(cwd)
+  }
+})
+
+test('outside git a single file is reviewed whole and its size is not counted against the limits', async () => {
+  const cwd = await temp()
+  try {
+    await writeFile(path.join(cwd, 'big.js'), numbered(5000))
+    const { h, result } = await review(cwd, 'big.js', { git: false })
+    assert.equal(result.kind, 'success')
+    assert.deepEqual(counts(steerSpec(h).args.scope.files), [{ path: 'big.js', added: 0, deleted: 0 }])
+  } finally {
+    await cleanup(cwd)
+  }
+})
+
+test('outside git a directory lists every file it does not review, including each file under node_modules', async () => {
+  const cwd = await temp()
+  try {
+    await mkdir(path.join(cwd, 'node_modules', 'dep'), { recursive: true })
+    await writeFile(path.join(cwd, 'a.js'), 'const a = 1\n')
+    for (let index = 0; index < 5; index += 1) await writeFile(path.join(cwd, 'node_modules', 'dep', `f${index}.js`), '1\n')
+    const { h } = await review(cwd, '', { git: false })
+    const { scope } = steerSpec(h).args
+    assert.deepEqual(scope.files.map((file) => file.path), ['a.js'])
+    assert.equal(scope.skipped.filter((entry) => entry.path.startsWith('node_modules/') && entry.reason === 'generated').length, 5)
+  } finally {
+    await cleanup(cwd)
+  }
+})
+
+test('the documented name rules: the unanchored .map match, a build segment, binary extensions as generated, unsafe names', async () => {
+  const cwd = await temp()
+  try {
+    await mkdir(path.join(cwd, 'src', 'build'), { recursive: true })
+    for (const file of ['src/ok.ts', 'src/user.mapper.ts', 'src/data.mapping.js', 'src/foo.min.json', 'src/build/index.ts', 'logo.png', 'credentialsHelper.ts', 'secrets.json', '.env.local']) {
+      await writeFile(path.join(cwd, file), 'x\n')
+    }
+    const { h } = await review(cwd, '', { git: false })
+    const { scope } = steerSpec(h).args
+    assert.deepEqual(scope.files.map((file) => file.path), ['src/ok.ts'])
+    const reasons = Object.fromEntries(scope.skipped.map((entry) => [entry.path, entry.reason]))
+    for (const file of ['src/user.mapper.ts', 'src/data.mapping.js', 'src/foo.min.json', 'src/build/index.ts', 'logo.png']) assert.equal(reasons[file], 'generated', file)
+    for (const file of ['credentialsHelper.ts', 'secrets.json', '.env.local']) assert.equal(reasons[file], 'sensitive', file)
+  } finally {
+    await cleanup(cwd)
+  }
+})
+
+test('a patch without git-style sections still queues a review with no files', async () => {
+  const cwd = await temp()
+  try {
+    await writeFile(path.join(cwd, 'plain.diff'), '--- a.js\n+++ a.js\n@@ -1 +1 @@\n-old\n+new\n')
+    await writeFile(path.join(cwd, 'noprefix.patch'), 'diff --git a.js a.js\n--- a.js\n+++ a.js\n@@ -1 +1 @@\n-old\n+new\n')
+    for (const input of ['plain.diff', 'noprefix.patch']) {
+      const { h, result } = await review(cwd, input, { git: false })
+      assert.equal(result.kind, 'success', input)
+      assert.deepEqual(steerSpec(h).args.scope.files, [], input)
+    }
+  } finally {
+    await cleanup(cwd)
+  }
+})
+
+test('a finder line array that is not exactly [start, end] fails the whole review', async () => {
+  await assert.rejects(() => runReviewScript({
+    finders: () => [{ file: 'a.js', line: [5], severity: 'medium', category: 'logic', evidence: 'x', recommendation: 'fix' }],
+    verdict: () => [],
+  }), /finder failed or returned invalid output/)
 })

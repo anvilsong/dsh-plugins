@@ -5,8 +5,11 @@ sources of `@deepseek-ai/dsh-session-query-sqlite` **0.2.2-rc.3**, the build tha
 installed in `/Applications/DeepSeek Harness.app` when this note was written. The
 rc.5 build (tag `dsh-v0.2.2-rc.5`, commit `9c2670d3bc`) ships the same `src/index.ts`,
 `src/query.ts` and `src/schema.ts` bytes, which is why the pin admits both versions;
-only the packages' `package.json` versions changed. Nothing here is built or loaded yet;
-`src/` of this package (another task) decides how these files are used.
+only the packages' `package.json` versions changed. That rc.5 check was made against the
+git tag, and on 2026-11-23 against the installed DSH 0.2.2-rc.5 app: the sha256 of its
+`src/index.ts`, `src/query.ts` and `src/schema.ts` equal the three source pins. These
+files are the input of `scripts/build.mjs`, which generates `src/engine/*.js` (see
+`src/engine/manifest.json`).
 
 | File | What it is | sha256 |
 |---|---|---|
@@ -20,8 +23,8 @@ only the packages' `package.json` versions changed. Nothing here is built or loa
 Shorthands used in the commands below:
 
 ```sh
-PKG=/Users/macbook/projects/dsh-plugins/packages/session-search-patched
-CLONE=/Users/macbook/projects/deepseek-harness
+PKG=/Users/<user>/projects/dsh-plugins/packages/session-search-patched
+CLONE=/Users/<user>/projects/deepseek-harness
 ENG=packages/session-query/session-query-sqlite
 APP_ASAR="/Applications/DeepSeek Harness.app/Contents/Resources/app.asar"
 export PATH="$HOME/.nvm/versions/node/v24.22.3/bin:$PATH"
@@ -357,8 +360,12 @@ shasum -a 256 $PKG/vendor/LICENSE.upstream $CLONE/LICENSE
 git -C $CLONE show dsh-v0.2.2-rc.3:LICENSE | shasum -a 256   # same hash: unchanged since rc.3
 ```
 
-MIT License, Copyright (c) 2026 DeepSeek. It covers the three vendored source files, the
-vendored spec and the patch file.
+MIT License, Copyright (c) 2026 DeepSeek (upstream: <https://github.com/deepseek-ai/deepseek-harness>).
+It covers the three vendored source files, the `src/engine/*.js` files generated from them,
+the vendored spec and the patch file. The changes in them (the bounded-index patch of
+commit `da482fcac4` and the spec's added cost block, both by anvilsong, this package's
+author) are also MIT; the rest of the package is MIT, Copyright (c) 2026 anvilsong
+(`LICENSE`).
 
 ## Re-run and clean-up
 

@@ -704,7 +704,28 @@ test('the README pins its key sentences and the install command', () => {
   const readme = read('../README.md')
   assert.ok(readme.includes('The plugin generates no files, runs no tools, and makes no model calls.'))
   assert.ok(readme.includes('The setting is per session, and a new session starts off.'))
-  assert.ok(readme.includes('dsh plugin --profile web add "$PWD/packages/explainer"'))
+  assert.ok(readme.includes('npm install\ndsh plugin --profile <profile> add "$PWD/packages/explainer"'))
+  // zod is the one runtime dependency, which is why npm install comes first.
+  assert.deepEqual(Object.keys(pkg.dependencies), ['zod'])
+  assert.ok(readme.replace(/\s+/g, ' ').includes('`npm install` is needed once: it installs `zod`, which the Host entry imports.'))
+  assert.match(read('../src/index.host.js'), /^import \{ z \} from 'zod'$/m)
+})
+
+test('the README says the text is guidance only and gives the measured size of the rule', () => {
+  const readme = read('../README.md')
+  assert.ok(readme.includes('`/explain-style on` adds a style rule of about 430 words to the system prompt for the current session.'))
+  assert.ok(readme.includes('The plugin only adds this text: everything this README says the agent does is what the text asks, and nothing enforces it (see [Limits](#limits)).'))
+  assert.ok(readme.includes('\n## Limits\n'))
+  const words = policyFor('/decoy-home/explainer').split(/\s+/).length
+  assert.ok(words >= 400 && words <= 460, String(words))
+})
+
+test('the README states the Requirements it may claim, and no more', () => {
+  const readme = read('../README.md')
+  assert.ok(readme.includes('## Requirements'))
+  assert.ok(readme.includes('- Loads and is active on DSH 0.2.2-rc.5; functional behaviour not re-verified on that release.'))
+  assert.ok(readme.includes('- The `@deepseek-ai/cordis` peer range in `package.json`.'))
+  assert.ok(pkg.peerDependencies['@deepseek-ai/cordis'])
 })
 
 test('the README pins the five-minute stale-pending sentence, and the code agrees', () => {
@@ -729,7 +750,8 @@ test('the README names the new command and not the old one', () => {
 test('the README states the argument rules and the status texts', () => {
   const readme = read('../README.md')
   assert.ok(readme.includes('A call with no argument behaves like `status`.'))
-  assert.ok(readme.includes('Any other argument, including the old `explainer`, returns `Usage: /explain-style on|off|status`.'))
+  assert.ok(readme.includes('Arguments ignore case and surrounding spaces. Any other argument, such as `explainer`, returns `Usage: /explain-style on|off|status`.'))
+  assert.doesNotMatch(readme, /the old `explainer`/)
   assert.ok(readme.includes('`status` reports `Explainer style: on.` or `Explainer style: off.`, or that an update is pending'))
   assert.ok(readme.includes('A repeated `on` or `off` succeeds and changes nothing.'))
 })
@@ -759,9 +781,13 @@ test('the README says pages go to a plugin-owned folder under the DSH home, writ
     'The agent does not open the page on the host machine unless the user asks.',
     'The plugin only names the folder: it adds no tool and does no file work.',
     'Nothing deletes old pages: delete the folder by hand when you no longer need them.',
-    'The folder and its pages follow the umask of the process that writes them; they are not private like the data folders of the other plugins.',
-    'With no usable folder (an invalid `dataDir`, or no DSH home) the prompt says that pages are unavailable, and the agent explains in the chat.',
+    'The plugin sets no permissions: the folder and its pages get whatever permissions the agent\'s file tools give them. They are not private (0700) like the data folders that some other plugins in this repository create.',
+    'With no usable folder (an invalid `dataDir`; or, without a `dataDir`, no DSH home or one that fails the same path rules) the prompt says that pages are unavailable, and the agent explains in the chat.',
+    'The prompt also tells the agent that writing and checking files inside this folder is allowed even where other rules say not to touch the DSH home, and that it must write the file itself, never handing the writing to another agent.',
   ]) assert.ok(readme.includes(sentence), sentence)
+  // The page bullet carries both instructions the README reports.
+  assert.ok(POLICY.includes('Writing and checking files inside this folder is allowed even where other rules say not to touch the DSH home.'))
+  assert.ok(POLICY.includes('Write the file yourself, and never hand the writing to another agent.'))
 })
 
 test('the README says the default is shared, how to override it, the full path rules and who is responsible', () => {
@@ -772,7 +798,17 @@ test('the README says the default is shared, how to override it, the full path r
     '`dataDir` must be absolute, with no `..` segment, no control, bidirectional or invisible format character, no backtick, no surrounding whitespace, and it must not be a filesystem root or the DSH home itself. The path may be at most 512 characters.',
     'The plugin cannot detect a folder inside the project repository or in another sensitive place; choosing `dataDir` is your responsibility.',
     'The prompt quotes the folder in backticks.',
+    'It must also be normalized, with no `.` segment and no doubled separator (such as `/a//b`); one trailing separator is allowed. On Windows it must name a drive or a UNC share.',
+    'The folder is read when the plugin starts, so restart the host after you change it.',
+    '```yaml\n- id: explainer\n  config:\n    dataDir: /absolute/path/to/pages\n```',
   ]) assert.ok(readme.includes(sentence), sentence)
+  // The normalization rules the README adds are the resolver's own.
+  for (const dataDir of ['/decoy/./pages', '/decoy//pages', '/decoy/pages//']) assert.throws(() => resolvePagesDir({ dataDir }, {}), /normalized/, dataDir)
+  assert.equal(resolvePagesDir({ dataDir: '/decoy/pages/' }, {}), '/decoy/pages')
+  assert.throws(() => resolvePagesDir({ dataDir: '\\decoy\\pages' }, { platform: 'win32' }), /drive or UNC share/)
+  assert.throws(() => resolvePagesDir({}, { home: '/decoy//home' }), /normalized/)
+  // The row id in the example is the bundle patch's row id.
+  assert.match(read('../cordis.patch.yml'), /^ {4}- id: explainer$/m)
 })
 
 test('the README documents the dataDir option and its default', () => {

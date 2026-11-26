@@ -5,9 +5,40 @@ advisor child on the **Advisor model** plans work and advises on design
 decisions and reviews. A read-only verifier child on the **Verifier model**
 then checks its claims against the repository.
 
+## Install
+
+Registry installation requires the package to be published on npm.
+
+- Desktop app: open **Settings → Plugins → Add plugin → Install a third-party
+  plugin**, enter `dsh-plugin-advisor`, install it, and enable it.
+- Web or CLI: `dsh plugin --profile web add dsh-plugin-advisor@latest`
+  (replace `web` with your profile name). From a checkout of this repository, run `npm ci` once at its root
+  (the Host half imports `zod`), then
+  `dsh plugin --profile web add "$PWD/packages/advisor"`.
+- Restart the Host and refresh the page. The Advisor switch and its two model
+  cells then appear in the model-options menu.
+
+Requirements:
+
+- Agent Teams must be enabled in the session; otherwise the Host refuses every
+  advisor-planner and advisor-consult child.
+- DSH's working-directory service must be available; without it every advisor
+  child and verifier is stopped (see
+  [Host enforcement](#host-enforcement-for-advisor-children)).
+- The three optional peers (the native tool executor and the two delegation
+  tool packages) are described under
+  [Sessions on the ptc preset](#sessions-on-the-ptc-preset) and
+  [Delegation tools in every preset](#delegation-tools-in-every-preset).
+
+To uninstall, disable or remove the plugin on **Settings → Plugins** and
+restart the Host; this README does not document a CLI remove command. The data
+folder stays (see [Data directory](#data-directory)); delete it by hand if you
+no longer need it.
+
 ## Use
 
 ```text
+/advisor
 /advisor on
 /advisor off
 /advisor status
@@ -19,19 +50,26 @@ then checks its claims against the repository.
 /advisor verifier-model <provider>/<model> [effort=<id>]
 ```
 
-`effort=<id>` is optional and only for an explicit route; see [Effort](#effort).
+`/advisor` without an argument toggles Advisor on or off. `effort=<id>` is
+optional and only for an explicit route; see [Effort](#effort).
 
 The model-options menu has one **Advisor** switch and two menu cells: **Advisor
 model** and **Verifier model**. Both cells are dimmed while Advisor is off.
 Each cell opens one side flyout of single-choice rows: **Inherit**, the
 authorized models grouped by provider, with the **Effort** rows of the model
 the cell shows (the saved model, or the one a pick is still saving) directly
-under that model's own row, indented, as in the Model router. A choice
+under that model's own row, indented, as in the menu of the Model router
+plugin (`dsh-plugin-router`, in this repository). A choice
 sends one complete command and closes the flyout; Tab also picks the focused
 row. The explanation lives in the Advisor info tooltip.
-Advisor off stops advisor runs and verification but keeps both model
-preferences. Every new session starts with Advisor off and both models on
-**Inherit**.
+Advisor off refuses new advisor and verifier children, removes the lead's
+Advisor instructions and the delegation tools Advisor mounted, and keeps both
+model preferences. It does not stop children that are already running: a
+running advisor child keeps its guards and keeps reading until it submits or
+ends, and a submitted result is then refused and recorded as `failed` with
+`failure_reason: advisor turned off`; a running verifier keeps its guards and
+can still finish and record. Every new session starts with Advisor off and
+both models on **Inherit**.
 
 What each row sends (`/advisor model` for the Advisor model,
 `/advisor verifier-model` for the Verifier model):
@@ -144,10 +182,12 @@ nothing. The key belongs to the GUI's origin (scheme, host and port), so:
 
 **Upgrade notes.**
 
-- 0.3.0 removed `/advisor verifier on|off`; Advisor on always verifies.
+- There is no separate verifier switch: `/advisor verifier on|off` returns an
+  error that says it was removed, and Advisor on always verifies. This
+  repository's history does not record the release that removed it.
 - 0.5.0 replaces earlier external consultations with in-process advisor children and adds
-  `/advisor model`. Development builds used `/advisor planner`; that command now
-  returns an error that points to `/advisor model`.
+  `/advisor model`. `/advisor planner` returns an error that points to
+  `/advisor model`.
 - The projection moved to state version 7 (a saved model can carry an
   effort), so cached Advisor state is rebuilt once from the session log.
 - An Advisor model saved without an effort gets its recommended effort once,
@@ -180,12 +220,16 @@ What the lead does with each choice:
   falls to the model's default.
 - **Explicit route with an effort:** passes that provider and model plus
   `reasoning_effort "<id>"`, and omits preset.
-- The Host refuses an advisor child whose route or effort differs from the
-  selection, or whose route is no longer authorized. An explicit-route spawn
-  failure is reported, with no silent fallback.
-- Model router exempts all Advisor children (`advisor-planner-*`,
-  `advisor-consult-*`, `advisor-verifier-*`) and leaves these choices to
-  Advisor.
+- The Host refuses an advisor-planner or advisor-consult child whose route or
+  effort differs from the Advisor model setting, or whose route is no longer
+  authorized. It refuses a verifier whose route or effort differs from the
+  Verifier model setting, but this plugin does not check that the Verifier
+  route is still authorized; whether the spawn then refuses it is up to DSH
+  and is not tested here. The lead is told not to fall back to another route
+  when an explicit-route spawn fails.
+- If the Model router plugin (`dsh-plugin-router`) is installed, it exempts
+  all Advisor children (`advisor-planner-*`, `advisor-consult-*`,
+  `advisor-verifier-*`) and leaves these choices to Advisor.
 
 ### Effort
 
@@ -208,10 +252,12 @@ What the lead does with each choice:
   there is no `effort=default` keyword. An empty `effort=` and `effort=` with
   Inherit are usage errors; only the second adds "Inherit takes no effort":
   Inherit never carries an effort.
-- Setting an effort checks it first with the same preflight a spawn runs, for
-  at most 10 seconds. An id the model does not advertise is refused with the
-  advertised ones as `id (name)`. If the check cannot run (no llm service,
-  another error such as missing credentials, or the 10 s limit), the command
+- Setting an effort checks it first with the llm service's
+  `resolveCallConfig`, which this plugin takes to be the spawn's own preflight
+  (the tests use a stand-in llm service), for at most 10 seconds. An id the
+  model does not advertise is refused with the advertised ones as
+  `id (name)`. If the check cannot run (no llm service, another error such as
+  missing credentials, or the 10 s limit), the command
   fails with `could not be checked: <reason>`. Either way nothing is stored.
   While the check runs, `/advisor status` reports that Advisor is updating and
   other changes are refused; when it ends, they work again. Setting a model
@@ -222,17 +268,17 @@ What the lead does with each choice:
   and absent when there is none or on Inherit. With a stored effort, the
   denial of a wrong or missing provider, model or `reasoning_effort` names the
   required provider, model and `reasoning_effort` and the reset command.
-  Without one, the denial texts are
-  the old ones, with one change of order: the advisor-planner/advisor-consult
-  guard now checks `reasoning_effort` after its lead and Advisor-on checks, so
-  a teammate's call or a call while Advisor is off that carries one gets "Only
-  the lead can start an advisor child." or "Advisor is off for this session;
-  enable Advisor first." instead of "must omit reasoning_effort" (still a
-  denial).
+  Without one, a `reasoning_effort` is refused with "must omit
+  reasoning_effort and agent_preset" and a wrong route with the plain route
+  texts. The advisor-planner/advisor-consult guard checks `reasoning_effort`
+  after its lead and Advisor-on checks, so a teammate's call or a call while
+  Advisor is off that carries one gets "Only the lead can start an advisor
+  child." or "Advisor is off for this session; enable Advisor first." instead
+  of "must omit reasoning_effort" (still a denial).
 - An `agent_preset` is refused before those checks. Without a stored effort
-  the denial keeps the old text, which says to omit `reasoning_effort` and
-  `agent_preset`; with one it says to omit `agent_preset` and repeats the
-  required provider, model, `reasoning_effort` and the reset command.
+  the denial says to omit `reasoning_effort` and `agent_preset`; with one it
+  says to omit `agent_preset` and repeats the required provider, model,
+  `reasoning_effort` and the reset command.
 - The effort is checked at delegation only, not at child start or submit:
   changing it mid-run keeps a finished run, while a model change still
   discards it.
@@ -253,24 +299,24 @@ What the lead does with each choice:
   the effort stored when the child first started (a child resumed after a
   Host restart keeps the value of its `started` line, whatever the setting is
   by then), `effort` what the child's own model selection reports (see
-  [What the Host records](#what-the-host-records)). The verifier's effort is
-  enforced at delegation only; its verification line records `effort` and
+  [What the Host records](#what-the-host-records)). The verifier's route and
+  effort are enforced at delegation only (its model is not checked at start or
+  at report time); its verification line records `effort` and
   `effort_requested` the same way (see
   [Verification records](#verification-records)).
 
-Live check, before the menu gains an effort choice:
+Manual check of a stored effort (not automated; no result is recorded in this
+README):
 
-1. Restart DSH so the Host loads this code, open a fresh session, and turn
-   Advisor on.
+1. Restart the DSH Host, open a fresh session, and turn Advisor on.
 2. Pick a model `P/M` that advertises at least two efforts and an id `E` that
    is not its default (`list_subagent_models`).
 3. Run `/advisor model P/M effort=E`, then let the lead start one
    `advisor-consult`.
 4. Pass: the guard admits the spawn, and the `ok` ledger line has
-   `effort_requested: E`. Its `effort` value tells whether the child's
-   selection reports the effort: `E` means it does, `null` means it does not
-   (keep the effort out of the start check); anything else means stop and
-   investigate first.
+   `effort_requested: E`. Its `effort` value shows whether the child's model
+   selection reports the effort: `E` if it does, `null` if it does not. Any
+   other value is a fault.
 
 ## Advisor runs
 
@@ -278,12 +324,13 @@ While Advisor is on, the lead consults the in-process advisor at three points:
 before non-trivial multi-step or hard-to-reverse work, at design decisions that
 are expensive to reverse, and for an outside review of substantial work.
 
-Limits:
+Limits (the first two are instructions to the lead; the Host does not count
+them):
 
 - Normally at most three advisor runs per task, failures included.
 - At most one plan per task, plus one re-plan, and only after the verifier
   forces a discard.
-- One advisor child at a time per session.
+- One advisor child at a time per session; the Host enforces this one.
 
 | Role | Child name | Records with | Result |
 |---|---|---|---|
@@ -294,17 +341,19 @@ The lead generates each `<id>` with `openssl rand -hex 6` (12 lowercase hex).
 The child's whole prompt is a self-contained briefing: the goal, verified
 ground truth with `file:line` references, the options or plan under review,
 pointed questions, and constraints. The child reads workspace files, and its
-model provider receives what it reads, so briefings never contain credentials
-or sensitive context.
+model provider receives what it reads, so the lead is instructed never to put
+credentials or sensitive context in a briefing. The Host does not check
+briefing content.
 
 ### Plan format
 
-1–25 tasks. Each task has:
+A plan has a `summary` (at most 2000 characters), 1–25 `tasks`, and
+plan-level `open_questions`. Each task has:
 
-- `id` and `title`
+- `id` (`T1` to `T99`) and `title`
 - `level` (`mechanical`, `ordinary`, or `hard`) and `level_reason`
-- `write_scopes`: workspace-relative files or prefixes
-- `acceptance`: criteria, each with a one-line `verify`
+- `write_scopes`: up to 20 workspace-relative files or prefixes
+- `acceptance`: 1–10 criteria, each with a one-line `verify`
 - `blocked_by` and `open_questions`
 
 Checks:
@@ -314,7 +363,8 @@ Checks:
 - Tasks with overlapping scopes are ordered by `blocked_by`. Overlap ignores
   case and Unicode normalization.
 - Mechanical tasks have no open questions.
-- Scopes are not absolute and contain no `~`, `..`, `.git`, or glob
+- Scopes are not absolute, do not start with `~`, are not the workspace root,
+  and contain no `..` or `.git` segment (`.git` in any case) and no glob
   characters (`*`, `?`, `[`, `]`, `{`, `}`).
 - Scopes contain no control, format or line separator characters and no
   unpaired surrogates, the same rule as evidence references: C1 controls such
@@ -330,13 +380,16 @@ Checks:
 ### Advice format
 
 - `question`, `recommendation`, and `rationale`
-- `options`: up to 8, each `recommended`, `viable`, or `rejected`; at most one
-  is recommended, and names are unique
-- `risks` and `do_not_build`
-- `claims`: the repository facts the advice relies on, each with 1–5
-  `path[:line[-line]]` references, for the verifier. The path follows the
-  scope rules, except that literal `[`, `]`, `{` and `}` are allowed (as in
-  `app/[id]/page.tsx:3`); `*` and `?` are refused as globs. A malformed line
+- `options`: up to 8, each with a `name`, a `verdict` (`recommended`,
+  `viable`, or `rejected`) and `tradeoffs`; at most one is recommended, and
+  names are unique regardless of case
+- `risks` and `do_not_build`, up to 10 each
+- `claims`: up to 30 repository facts the advice relies on, each a `claim`
+  with 1–5 `evidence` references `path[:line[-line]]`, for the verifier. The
+  path follows the scope rules, except that literal `[`, `]`, `{` and `}` are
+  allowed (as in `app/[id]/page.tsx:3`); `*` and `?` are refused as globs, and
+  a path that reaches a [protected name](#protected-names) is refused. A
+  malformed line
   suffix such as `a.js:12:5`, `a.js:12-` or `a.js:` is refused rather than read
   as part of the path; a colon followed by anything else, as in `dir/a:b.js`,
   belongs to the name. A reference may not contain control, format or line
@@ -350,23 +403,35 @@ attempts the child is stopped.
 
 ### What the Host records
 
-The Host writes the result as JSON to `<dataDir>/replies/<id>.md` (exclusive
-create) and appends to `<dataDir>/sessions.jsonl` in the line format below: a
-`started` line, then one terminal line with these fields:
+The Host writes the result to `<dataDir>/replies/<id>.md` (exclusive create)
+as indented JSON ending in a newline: `schema: advisor-plan/1` and `plan_id`
+followed by the plan, or `schema: advisor-advice/1` and `advice_id` followed
+by the advice. It appends to `<dataDir>/sessions.jsonl` in the line format
+below: a `started` line, then one terminal line (`ok` or `failed`). A child
+refused at start gets no `started` line, only a `failed` one when the folder
+can take it (none when its id already has a terminal line or belongs to
+another child). The lines carry these fields:
 
 - `consult_id` = `<id>`, `kind` (`plan` or `advice`), `advisor: dsh`, and
   `backend: dsh:<provider>/<model>`
+- `caller: advisor-plugin`, `ts` (Unix seconds), `status` (`started`, `ok`
+  or `failed`), `session_id` and `planner_session_id` (the agent ids of the
+  lead and of the child), `cwd` (the real path of the lead's workspace), and
+  `briefing_sha256` and `briefing_chars` (the hash and length of the child's
+  first message; `null` on the `started` line, like `topic`)
 - `model`; `effort`, the reasoning effort the child's own model selection
   reports (`null` when it reports none); and `effort_requested`, the Advisor
   model's stored effort when the child first started (`null` for none or
   Inherit). The `started` line carries these as well; a child resumed after a
   Host restart takes `effort_requested` from its `started` line.
-- `reply_file` and `reply_sha256`
-- `task_count` or `claim_count`
-- `submit_attempts`, `tool_calls`, and `duration_s`
-- token totals summed from the child's own session: `input_tokens`,
-  `output_tokens`, `cache_read_tokens`, `cache_write_tokens`,
-  `reasoning_tokens`, and `model_requests`
+- `reply_file` and `reply_sha256` (`ok` lines only)
+- `task_count` or `claim_count` (`ok` lines only)
+- `submit_attempts`, `tool_calls`, `duration_s` and `cost_usd` (always
+  `null`) on terminal lines
+- token totals summed from the child's own session, on terminal lines:
+  `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`,
+  `reasoning_tokens`, and `model_requests`; when the child's own log cannot be
+  read, only `input_tokens` and `output_tokens` appear, both `null`
 - `topic`: taken from an optional first briefing line `topic: <slug>`. The
   slug is 1–40 characters of lowercase letters, digits, and hyphens, and starts
   with a letter or digit; spaces or tabs may surround it. Otherwise `topic` is
@@ -403,7 +468,8 @@ profile, override the `advisor` row in that profile's `cordis.patch.yml` with an
 absolute `dataDir`. An override replaces the whole `config` block, so restate
 `dataDir`. A home-level `<DSH home>/cordis.patch.yml` applies after the profile
 patch and can replace that override too, so check both when isolating a
-profile.
+profile. How `dshHomePath`, `DSH_HOME`, profile sharing and patch layering
+behave is DSH's; this package's tests do not cover them.
 
 `dataDir` rules:
 
@@ -483,11 +549,13 @@ Why files and not the DSH storage service: the verifier cites ledger lines and
 reply lines, and the lead checks reply hashes with a shell. Both need the exact
 bytes in plain files. Guards also need a fresh read of the ledger written by
 other hosts. The storage service is key/value only, loads every record when it
-opens, and shows changes only within one process.
+opens, and shows changes only within one process. (This describes DSH's
+storage service; this package's tests do not check it.)
 
-The data stays when the plugin is removed or a profile is deleted; DSH has no
-cleanup hook for plugin data. Delete the folder by hand if you no longer need
-it. There is no rotation; the guards read the whole ledger, so revisit this if
+The plugin never deletes its data, and this README knows of no DSH cleanup
+hook for plugin data, so the folder is expected to stay when the plugin is
+removed or a profile is deleted (not tested). Delete the folder by hand if you
+no longer need it. There is no rotation; the guards read the whole ledger, so revisit this if
 `sessions.jsonl` grows past about 5 MB.
 
 ### What the lead does next
@@ -497,8 +565,8 @@ it. There is no rotation; the guards read the whole ledger, so revisit this if
 2. It relies on confirmed claims, drops refuted ones, and treats unverifiable
    ones as opinion. A verdict is cited only by its ledger `consult_id`.
 3. For plans:
-   - A refuted task stays off the board unless the lead fixes it from the
-     verifier's cited fact.
+   - A refuted task, and every task transitively blocked by it, stays off the
+     board unless the lead fixes it from the verifier's cited fact.
    - An unverifiable task keeps its confirmed level, except that one confirmed as mechanical goes up to ordinary (one raised to hard stays hard); the doubt is copied into its description.
    - A plan is discarded if a root task's premise is refuted or more than a
      third of its tasks are refuted.
@@ -546,13 +614,17 @@ Execution:
 Limits of this iteration:
 
 - `cost_usd` is `null`, because the Host knows tokens but not prices.
-- `backend` is `dsh:unknown` if the child's model cannot be read.
+- If the child's model cannot be read, `backend` and `model` fall back to the
+  selected route (with `effort: null`); only with Inherit are they
+  `dsh:unknown` and `null`.
 - `effort` is `null` when the child's selection does not report its effort;
   `effort_requested` is then the only record of a requested effort.
 - The Host's hash pin lives in memory and is lost on restart; the lead's own
   hash check still applies.
 - `glob` can still list the names, but not the contents, of protected files.
-- Grep results over 250 matches do not get the saved full-result file.
+- Whether grep results over 250 matches still get the Host's saved
+  full-result file through the scoped grep wrapper is not tested; assume they
+  do not.
 
 ### Sessions on the ptc preset
 
@@ -593,9 +665,11 @@ What the plugin does:
 - Each child gets one Host log line, info when mounted and warn otherwise, such
   as `advisor planner: advisor-consult-<id>: native executor mounted on the
   child's Agent scope (…); fiber state 2 active; run_code in tools: no`
-  (verifiers: `advisor: advisor-verifier-<id>: …`). `run_code in tools` is `no`
-  on DSH 0.2.2-rc.3 in either preset; it would show a Host that registers the
-  transport as a tool. At plugin start one line says whether the import worked:
+  (verifiers: `advisor: advisor-verifier-<id>: …`). The DSH 0.2.2-rc.3 sources
+  keep the `run_code` transport out of the registered tools, so
+  `run_code in tools` should read `no` in either preset (the live check below
+  did not see this line); `yes` would show a Host that registers the transport
+  as a tool. At plugin start one line says whether the import worked:
   `advisor: native executor for Advisor children: loaded`, or `not loaded
   (<reason>)`.
 
@@ -648,13 +722,24 @@ consult ran on the lead's model because that session had no Advisor model set.
 ### Delegation tools in every preset
 
 While Advisor is on, it also supplies the lead's missing delegation tools. Standard,
-cordis and ptc declare them in a delegation group; **minimal does not**. At apply
-for live root Agents and on `agent/created`, the plugin mounts the host's own
-`tool-subagent` (provider `spawn`, `modelSelection` and `modelDiscovery` on) and
-`tool-subagent-control` (`interrupt: false`) on the root Agent's own scope only
-when those definitions are absent. A missing `list_subagent_models` alone never
-causes a second `subagent` mount. Existing definitions are never replaced, and
-non-root Agents (including every Advisor child) get no such mount.
+cordis and ptc declare them in a delegation group; **minimal does not** (a fact
+about DSH's shipped presets that this package's tests do not check). At apply
+for live root Agents and on `agent/created`, the plugin mounts on the root
+Agent's own scope the host's own `tool-subagent` (provider `spawn`,
+`modelSelection` and `modelDiscovery` on) when `subagent` is missing, and
+`tool-subagent-control` (`interrupt: false`) when any of `wait_agent`,
+`list_agents` and `send_message` is missing. A missing `list_subagent_models`
+alone never causes a second `subagent` mount. Nothing is mounted when
+`subagent` and all three control tools exist, and non-root Agents (including
+every Advisor child) get no such mount.
+
+Each package is mounted whole: `tool-subagent` with `modelDiscovery` on also
+registers `list_subagent_models`, and `tool-subagent-control` registers all
+three control tools. If only some of a package's tools are missing, the ones
+that already exist are registered a second time on the root Agent's scope,
+where they may shadow the existing definitions or fail to register (the mount
+then fails with a warning). This partial case is not tested and has not been
+seen live.
 
 The mounts are removed when Advisor is turned off, when the Agent is disposed,
 and when the plugin unloads. Turning Advisor on again mounts them again, without
@@ -677,7 +762,8 @@ minimal session.
 
 Peer dependency. `package.json` lists `@deepseek-ai/dsh-tool-executor-native`
 in `peerDependencies` with the range `*`, marked optional in
-`peerDependenciesMeta`, and adds no runtime dependency. A bare import of a Host
+`peerDependenciesMeta`; this feature adds no runtime dependency (the package's
+only runtime dependency is `zod` 4.4.3). A bare import of a Host
 package resolves to the installation's copy only when the importing package
 lists it there; an undeclared one is not found, or resolves a private copy. The
 range is `*` on purpose: a bundle without `engines.dsh` has its
@@ -688,9 +774,12 @@ bound would buy nothing and could remove the Advisor on a DSH version outside it
 There is no `engines.dsh` pin, for the same reason. `optional` keeps npm (this
 repository's workspace) from installing the package and pnpm from reporting
 it missing; DSH reads only `peerDependencies`. A `link:` install through
-pnpm (tested offline with pnpm 10.32.1) completes without a peer warning, with or
-without `optional`; for other install kinds the Host resolves the peer. Changes take effect after a Host
-restart.
+pnpm (a manual offline test with pnpm 10.32.1, not part of the test suite)
+completes without a peer warning, with or without `optional`; for other
+install kinds the Host resolves the peer. Changes take effect after a Host
+restart. The resolution and compatibility rules in this paragraph come from
+reading DSH's `dsh-app-boot` sources (cited in `src/executor.js`), not from
+tests; the package's tests check only the manifest fields.
 
 In the ledger: a run stopped this way has `status: failed`, a `failure_reason`
 that starts with `run_code was requested`, and usually `tool_calls: 0`. Runs in
@@ -732,10 +821,12 @@ regard to case.
   or `app/reset-password/`, is ordinary, and its files are judged by their own
   names. An existing folder given as a `grep` or `glob` path is judged the
   same way; a path that does not exist, and every evidence reference, is
-  judged as a file name. The file rules below also apply to a folder's own
-  name when it is given as a path, so a `grep` path `secret/` or `id_rsa_keys/`
-  is refused even though the files inside `secret/` are judged by their own
-  names.
+  judged as a file name. The dotenv, key, credential-dotfile, exact-name and
+  Terraform rules below also apply to a folder's own name when it is given as
+  a path, so a `grep` path `secret/` or `id_rsa_keys/` is refused even though
+  the files inside `secret/` are judged by their own names. The secret-word
+  rule does not apply to an existing folder: `api-keys/` is ordinary as an
+  existing folder, but refused as a path that does not exist.
 - dotenv and direnv files: `.env` and `.env.*` and `.envrc` and `.envrc.*`,
   except the templates `.env.example`, `.env.sample`, `.env.template` and
   `.env.dist` and the same four endings after `.envrc`; `*.env` (`prod.env`).
@@ -789,7 +880,8 @@ regard to case.
 
 ## Evidence verification
 
-After an advisor run whose terminal ledger line has status `ok`:
+After an advisor run whose terminal ledger line has status `ok` (the verifier
+also accepts `degraded`, which this plugin does not write):
 
 1. The lead matches the terminal ledger `consult_id` and `reply_file`, and
    checks the reply against the ledger's `reply_sha256`.
@@ -897,7 +989,12 @@ The verifier boundary is default-deny:
   data directory, the verifier is stopped and every tool is denied.
 - Reserved delegations with malformed names, a non-spawn backend, Advisor off,
   a route different from the stored selection, or a `reasoning_effort` other
-  than its stored effort are rejected.
+  than its stored effort are rejected. The Host does not check that the
+  Verifier route is still authorized, does not check Agent Teams, sets no
+  one-at-a-time limit for verifiers, and does not check the verifier's model
+  at start or at report time. At start it requires, besides the workspace and
+  data-directory rules above, that the lead started the verifier through the
+  in-process spawn; any other verifier is stopped.
 - Guards belong to the child's lifetime, so switching Advisor off mid-run does
   not lift them.
 
@@ -917,8 +1014,8 @@ Limits of the verifier:
   response differ, the final response counts.
 
 The plugin keeps one ledger in its `dataDir` and creates no plan store, retry
-engine, or orchestration framework. Restart DSH manually after Host code changes; the
-existing Web URL and `app.asar` are left untouched.
+engine, or orchestration framework. After installing or upgrading the plugin,
+restart the DSH Host and refresh the page.
 
 ### Verification records
 
@@ -940,8 +1037,9 @@ Its one argument, `entries`, holds 1 to 100 entries:
 - `status`: `confirmed`, `refuted`, or `unverifiable`.
 - `reply_line`: the physical reply line of the claim, a positive integer.
 - `evidence`: 0 to 5 workspace-relative references in the grammar of advice
-  claims (`path`, `path:line` or `path:start-end`; no absolute, `~`, `..`,
-  `.git`, glob (`*` or `?`; literal brackets and braces are allowed) or
+  claims (`path`, `path:line` or `path:start-end`; no absolute path, leading
+  `~`, `..` or `.git` segment, glob (`*` or `?`; literal brackets and braces
+  are allowed) or
   protected path, no malformed line suffix such as `:12:5`, and no control,
   format or line separator character or unpaired surrogate). `confirmed` and
   `refuted` need at least one.
@@ -958,8 +1056,9 @@ entries are invalid or the record would exceed 64 KB; when the reply is
 withheld or unreadable, exactly as for `advisor_evidence_get`, or the last
 terminal ledger line is not an `ok` or `degraded` plan or advice run with its
 count and `reply_sha256`; or when the bytes it reads no longer hash to that
-`reply_sha256`. After five refused calls the tool closes; the verifier is never
-stopped over it. A synchronous latch lets only one call write. A valid report
+`reply_sha256`. (`degraded` is accepted, but this plugin itself writes only
+`started`, `ok` and `failed` lines for advisor runs.) After five refused
+calls the tool closes; the verifier is never stopped over it. A synchronous latch lets only one call write. A valid report
 is written once:
 
 1. `<dataDir>/replies/<id>.verification.json`, created exclusively with mode

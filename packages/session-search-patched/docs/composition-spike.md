@@ -313,7 +313,7 @@ running host:
 | `@deepseek-ai/dsh-session-query` | `…/app.asar/dsh/node_modules/@deepseek-ai/dsh-session-query/lib/index.js` | ok |
 | `@deepseek-ai/dsh-session-query-sqlite` | `…/app.asar/dsh/node_modules/@deepseek-ai/dsh-session-query-sqlite/lib/index.js` | ok |
 | `node:sqlite` | `node:sqlite` (builtin) | ok |
-| `@deepseek-ai/cosmokit` (no peer declared, control) | `file:///Users/macbook/projects/dsh-plugins/node_modules/@deepseek-ai/cosmokit/lib/index.js` — a private copy | ok |
+| `@deepseek-ai/cosmokit` (no peer declared, control) | `file:///Users/<user>/projects/dsh-plugins/node_modules/@deepseek-ai/cosmokit/lib/index.js` — a private copy | ok |
 | `@deepseek-ai/dsh-app-boot` (no peer declared, control) | `ERR_MODULE_NOT_FOUND` | ERR_MODULE_NOT_FOUND |
 
 The first five resolve to the host copies **because** the probe's package.json lists them in
@@ -322,7 +322,7 @@ The first five resolve to the host copies **because** the probe's package.json l
 package.json lists the name as a peer it answers with the installation copy, otherwise a physical
 copy at that position wins. This repository's root `node_modules` holds private copies of
 `@deepseek-ai/cordis`, `cosmokit`, `dsh-brand` and `dsh-typert-protocol`. Control run H13 removed
-the cordis peer: `@deepseek-ai/cordis` then resolved to `/Users/macbook/projects/dsh-plugins/node_modules/@deepseek-ai/cordis/lib/index.js`
+the cordis peer: `@deepseek-ai/cordis` then resolved to `/Users/<user>/projects/dsh-plugins/node_modules/@deepseek-ai/cordis/lib/index.js`
 and `ctx instanceof Context` became `false` — class identity split. `Context.is(ctx)` stayed `true`
 (a global brand), so it cannot detect the split; `instanceof` can. With the peers declared:
 `ctx instanceof Context` true, the engine's default export extends the imported `SessionQueryEngine`.

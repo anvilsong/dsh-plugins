@@ -26,19 +26,19 @@ Findings of the store-safety spike (plan task T3). They decide the move order, t
 |---|---|
 | `rc4:` | Upstream source checkout, version `0.2.2-rc.4` (branch `fix/session-search-bounded-index`, head `e1f2349309`). Paths are relative to the checkout. |
 | `rc3:` | The installed app, version `0.2.2-rc.3`: `/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/<package>/src/…`. Read only, never run. |
-| `inspect:` | Host service catalog of the running app, saved by the inspect tool to `/tmp/sessions-plugin-inspect/host-services-listService.txt` (line numbers of that file). |
+| `inspect:` | Host service catalog of the running app, saved by the inspect tool to a temporary file, `host-services-listService.txt` (line numbers of that file; the file is not committed). |
 | `S1`…`C1` | Tests in [../test/upstream-persistence.test.mjs](../test/upstream-persistence.test.mjs). Each test prints its observations as one JSON diagnostic line. |
 
 Every experiment ran against the rc.4 sources (JSONL backend, storage-json, storage-domain, workspace registry) loaded through the checkout's own tsx and tsconfig paths, on stores created with `fs.mkdtemp` under `os.tmpdir()`, with decoy `HOME`, `DSH_HOME` and XDG roots that the last test asserts stayed empty.
 
 ```sh
-export PATH="$HOME/.nvm/versions/node/v24.22.3/bin:$PATH"   # the checkout needs Node >= 24.9
-DSH_UPSTREAM_DIR=/Users/macbook/projects/deepseek-harness \
+node --version   # the checkout needs Node >= 24.9 on PATH
+DSH_UPSTREAM_DIR=/path/to/deepseek-harness \
   node --test packages/sessions/test/upstream-persistence.test.mjs
 # without DSH_UPSTREAM_DIR: 1 test, skipped, exit 0
 ```
 
-Last run on this machine (macOS 26, darwin 25.5.0, APFS): 11 tests, 11 passed, 0 failed, 16.9 s (14 s of it is seeding 400 sessions for C1).
+Last recorded run, on the author's machine (macOS 26, darwin 25.5.0, APFS; no output file is committed): 11 tests, 11 passed, 0 failed, 16.9 s (14 s of it is seeding 400 sessions for C1).
 
 ## Decisions in brief
 
@@ -108,12 +108,12 @@ Evidence:
 
 Prune (after the manifest and the rename): **unpin → detach → unarchive**, each idempotent.
 
-- Record in the manifest before the move, per member: owning `workspaceId` (find it while the id is still visible), its position (the next id in that workspace's `sessionIds`), `archived`, `pinned`.
+- Record before the move, per member: owning `workspaceId` (find it while the id is still visible), its position (the next id in that workspace's `sessionIds`), `archived`, `pinned`. (As built: `manifest.json` holds `workspaceId`, `archived` and `pinned`; the position, the following ids used as anchors and the archive and pin order are in the batch's registry hints, `registry.json`.)
 - Call `detachSession` on the recorded workspace. After a restart the id is hidden but still in the raw account, and `detachSession` still removes it.
 
 Restore: **move back → verify → attach → reorder → archive → pin**.
 
-1. Move back to the exact recorded folder; then `stat(id)` must return the recorded `revision` and `sizeBytes` (S5 shows both are unchanged by a same-device rename round trip).
+1. Move back to the exact recorded folder; then `stat(id)` must return the recorded `revision` and `sizeBytes` (S5 shows both are unchanged by a same-device rename round trip). (As built: the comparison uses the revision's file part, its first five fields, and the size of the log as journaled in a `logs` line right after the move; only the restore call itself is strict about it, and a later recovery accepts a changed log.)
 2. `get(workspaceId).attachSession(id)`, then check `workspace.sessionIds.includes(id)`: a resolved attach does not prove membership (G1b).
 3. `insertSessionBefore(id, anchor)`, with the anchor taken from the recorded order. Handle members in reverse recorded order so that every anchor is back first (G2).
 4. `archiveSession(id)` without `stopActivity` for members that were archived. It re-dispatches `workspace/session-archived` follow-ups (for example worktree reclamation); they already ran when the session was first archived.
@@ -135,8 +135,8 @@ All on a fresh temp store with the rc.4 JSONL backend (`compression: 'zstd'`), t
 | S2 | Open and read a session (12 events, now in the cold-log memo), keep the read handle open, move the folder, then `open()` again and `read()` on the old handle; move back and read again. | Both the new open and the old handle's `read()` reject `SessionPersistenceNotFoundError`: the memo is checked only after `findLog` found the file (`:650-654`, `:700-706`). After the move back the memo answered with 0 whole-log reads (same id, same revision). | **Safe** for current-format (v4) logs; no restart needed. Exception, by source only: an open *read* handle on a historical (v<4) generation keeps serving its primed events from memory (`rc4:…jsonl/src/storage.ts:135-146`). |
 | S3 | Open a write handle, move the folder, then `append`, handle `flush`, service `flush`, `close`. | `append` rejects `ENOENT` (`open(path,'a')` at the old path, `index.ts:1529-1532`); both flushes resolve (a materialized handle's flush is a no-op, `storage.ts:211`); `close` resolves; the old folder is not recreated; the moved log is unchanged (596 → 596 bytes); after moving back the log has the original 6 events. The writer's flock travels with the folder (probe at the trash path: `held`). | **Refuse** `live` and `locked` before the move: a moved writer loses every later append, and flush gives no signal. Hold the lock across the rename (L3). |
 | S4 | `session.lock` stale and held; see [Locks](#locks). | Stale lock files never block; a held lock blocks a second host's write open, not its reads; the file stays after release. A folder holding only `session.lock` is not a session (not listed, `stat` undefined). | **Refuse** `locked` on a *held* probe only. A stale lock file needs no replacement and no journal. |
-| S5 | Snapshot (revision, size, events), move out, move back to the exact folder, compare; then append; then put the folder under another project directory; then rename onto existing directories. | Same `revision` string (`dev:ino:size:mtimeNs:ctimeNs`) on this and on a fresh backend instance, same `sizeBytes` (1001), same `location.path`, same event count (12); the revision changes after an append. A folder under the wrong project directory makes **`list()` and `stat()` reject for the whole store** (`corrupt session log … header id and cwd identify …`, `index.ts:1719-1746` via `:1274-1286`). `rename(2)` onto an existing **empty** directory succeeds and replaces it; onto a non-empty one it fails `ENOTEMPTY`. | **Verify after move back**: `stat(id).revision` and `sizeBytes` equal the manifest. Restore only to the exact recorded folder; check that the destination is absent (`lstat` → `ENOENT`) under the plugin's trash lock before renaming, because rename does not refuse an empty destination. |
-| S6 | 60 sessions in 3 projects; 30 `list()` calls started while 30 session folders are moved one per event-loop turn; then a project directory removed between the root and project reads (deterministic hook on `readdir`). | All 30 concurrent listings resolve (each saw 30–60 sessions); the final listing has 30. The vanished project directory makes `list()` reject `ENOENT` (`listSessionDirs` does not catch it, `index.ts:1801-1809`); the next listing recovers. | **Safe** to move session folders while the host lists. **Never** move, remove or rename a project directory (`<root>/--…--/`), not even an empty one; restore creates a missing project directory with `mkdir -p`, mode `0700`. |
+| S5 | Snapshot (revision, size, events), move out, move back to the exact folder, compare; then append; then put the folder under another project directory; then rename onto existing directories. | Same `revision` string (`dev:ino:size:mtimeNs:ctimeNs`) on this and on a fresh backend instance, same `sizeBytes` (1001), same `location.path`, same event count (12); the revision changes after an append. A folder under the wrong project directory makes **`list()` and `stat()` reject for the whole store** (`corrupt session log … header id and cwd identify …`, `index.ts:1719-1746` via `:1274-1286`). `rename(2)` onto an existing **empty** directory succeeds and replaces it; onto a non-empty one it fails `ENOTEMPTY`. | **Verify after move back**: `stat(id).revision` (its file part) and `sizeBytes` equal the facts recorded at the move. Restore only to the exact recorded folder; check that the destination is absent (`lstat` → `ENOENT`) under the plugin's trash lock before renaming, because rename does not refuse an empty destination. |
+| S6 | 60 sessions in 3 projects; 30 `list()` calls started while 30 session folders are moved one per event-loop turn; then a project directory removed between the root and project reads (deterministic hook on `readdir`). | All 30 concurrent listings resolve (each saw 30–60 sessions); the final listing has 30. The vanished project directory makes `list()` reject `ENOENT` (`listSessionDirs` does not catch it, `index.ts:1801-1809`); the next listing recovers. | **Safe** to move session folders while the host lists. **Never** move, remove or rename a project directory (`<root>/--…--/`), not even an empty one; restore recreates a missing project directory (one level, mode `0700`) only when the manifest recorded it, and never creates the sessions tree. |
 
 ## Locks
 
@@ -224,7 +224,7 @@ Recommendation: keep `snapshotTtlMs` at 15,000 and never list per row or per key
 Measurement command (the size knobs are optional):
 
 ```sh
-DSH_UPSTREAM_DIR=/Users/macbook/projects/deepseek-harness SPIKE_SESSIONS=400 SPIKE_PAYLOAD_BYTES=32768 \
+DSH_UPSTREAM_DIR=/path/to/deepseek-harness SPIKE_SESSIONS=400 SPIKE_PAYLOAD_BYTES=32768 \
   node --test --test-name-pattern='^C1' packages/sessions/test/upstream-persistence.test.mjs
 ```
 
@@ -251,16 +251,21 @@ Consolidated from the sections above; T6/T9 implement them.
 
 1. The unit of transfer is the session folder `dirname(snapshot.location.path)`, moved with `rename` only (same device, no copy). Trash lives outside the sessions root. Project directories are never moved or removed.
 2. Refuse before the move: `live` (`sessions.get(id)`), `locked` (lock probe `held` or `busy`), and the existing codes. On darwin, hold the probe descriptor across the rename and close it afterwards.
-3. After each move: `stat(id)` must be `undefined`; otherwise warn `stale-backend-entry` and stop that unit.
+3. After each move: `stat(id)` must be `undefined`; otherwise warn `stale-backend-entry` (with `restart-recommended`) and leave that unit's registry steps for a later recovery.
 4. Registry at prune (`at-prune`): unpin → detach (recorded workspace) → unarchive, each idempotent and journaled; the manifest is written first.
-5. Restore: the destination must be absent (`lstat` → `ENOENT`; a lock-only folder is `conflict`); move back to the exact recorded folder; `stat(id).revision` and `sizeBytes` must equal the manifest; then attach, check membership, `insertSessionBefore` with the recorded anchor, archive, pin (non-archived members only).
+5. Restore: the destination must be absent (`lstat` → `ENOENT`; a lock-only folder is `conflict`); move back to the exact recorded folder; `stat(id).revision` (its file part) and `sizeBytes` must equal the facts recorded at the move (journaled right after it; strict only in the restore call itself); then attach, check membership, `insertSessionBefore` with the recorded anchor, archive, pin (non-archived members only).
 6. Never write `workspace.json`, `session.lock`, the projection-cache folder or the search database.
 7. Snapshot TTL 15 s; sizes from per-file `stat` in the folder.
 8. Prune and restore assume one host (or accept the registry race in [Locks](#locks)).
 
 ## Conflicts with design.md
 
-For the user to decide; design.md is unchanged.
+Resolved: design.md D5, D6, D12 and D14 now follow these findings. The list is
+kept as a record of what the spike changed. (As built, the D14 point below no
+longer arises for old-format logs: sessions with `formatStatus:
+'migration-required'` are refused with `legacy-format`, and *restart
+recommended* is returned only when the backend still lists a moved session; the
+plugin cannot detect a second host.)
 
 - **D6** ("refuse on a present, non-stale `session.lock` … a stale lock whose recorded pid is dead is replaced automatically and journaled"): the lock file records no pid and is never stale in that sense. Every written session has one. Replacing it would break the backend's inode check. The finding is: refuse on a held flock probe; never replace or touch the file.
 - **D12** ("stale entries stay until the host restarts"): true for projection-cache rows (they stay forever, unserved); false for the search index, which drops unlisted sessions at its next search.

@@ -4,6 +4,13 @@
   "description": "Opt-in in-process advisor (plans and design/review advice) with read-only evidence verification.",
   "type": "module",
   "main": "src/index.host.js",
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
   "meta": {
     "title": "Advisor",
     "description": "Toggle the in-process advisor and read-only verification, and choose their models, for this session."
@@ -53,5 +60,14 @@
       "optional": true
     }
   },
-  "license": "MIT"
+  "license": "MIT",
+  "author": "anvilsong",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anvilsong/dsh-plugins.git",
+    "directory": "packages/advisor"
+  },
+  "homepage": "https://github.com/anvilsong/dsh-plugins/tree/main/packages/advisor#readme",
+  "bugs": "https://github.com/anvilsong/dsh-plugins/issues",
+  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "advisor", "subagent", "review", "planning"]
 }

@@ -52,10 +52,8 @@ they never excuse a critical or high defect.
 
 - Tests never touch the real profile, the real store or `~/.dsh`: use `mkdtemp`
   and decoy home variables. Destructive paths get crash-point and mutation tests.
-- New packages do not name the external CLI helper or its script, and use no
-  agent tools unless the package is about them.
+- A package uses no agent tools unless the package is about them.
 - Commits use `feat:`, `fix:`, `docs:` or `test:`, one logical change each.
-  Nothing is pushed to the upstream repository.
 - Docs must match the code: a README or design claim that the code does not
   back is a defect, not a nit.
 

@@ -1,6 +1,6 @@
 # S1 spike: module resolution from the link-installed probe plugin inside the running scratch host
 # host run H1, 2026-11-18T09:14:36.588Z, pid 61563, row session-query-sqlite-patched
-# probe: docs/spike/probe/index.js, link-installed with `dsh plugin --profile web add <abs path>` (profile dependency "link:/Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/probe")
+# probe: docs/spike/probe/index.js, link-installed with `dsh plugin --profile web add <abs path>` (profile dependency "link:/Users/<user>/projects/dsh-plugins/packages/session-search-patched/docs/spike/probe")
 # probe package.json declares peerDependencies: @deepseek-ai/cordis ~4.1.0, @deepseek-ai/schemastery ~3.19.0, @deepseek-ai/dsh-session 0.2.2-rc.3, @deepseek-ai/dsh-session-query 0.2.2-rc.3, @deepseek-ai/dsh-session-query-sqlite 0.2.2-rc.3
 # @deepseek-ai/cosmokit and @deepseek-ai/dsh-app-boot are probed on purpose WITHOUT a peer declaration
 
@@ -11,8 +11,8 @@ specifier                                  import.meta.resolve                  
 @deepseek-ai/dsh-session-query             file:///Applications/DeepSeek%20Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-session-query/lib/index.js ok
 @deepseek-ai/dsh-session-query-sqlite      file:///Applications/DeepSeek%20Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-session-query-sqlite/lib/index.js ok
 node:sqlite                                node:sqlite                                                                                                              ok
-@deepseek-ai/cosmokit                      file:///Users/macbook/projects/dsh-plugins/node_modules/@deepseek-ai/cosmokit/lib/index.js                               ok
-@deepseek-ai/dsh-app-boot                  ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/dsh-app-boot' imported from /Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/probe/index.js ERR_MODULE_NOT_FOUND
+@deepseek-ai/cosmokit                      file:///Users/<user>/projects/dsh-plugins/node_modules/@deepseek-ai/cosmokit/lib/index.js                               ok
+@deepseek-ai/dsh-app-boot                  ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/dsh-app-boot' imported from /Users/<user>/projects/dsh-plugins/packages/session-search-patched/docs/spike/probe/index.js ERR_MODULE_NOT_FOUND
 
 # identity checks
 ctxInstanceOfImportedContext: true
@@ -27,13 +27,13 @@ cosmokitLoaded: true
 # reading
 - every declared peer resolves to the copy inside app.asar (the host copy): class and service identity hold (ctx instanceof imported Context is true; the engine class extends the imported SessionQueryEngine).
 - node:sqlite is a builtin of the Electron 44 / Node 24.21 runtime and imports.
-- an undeclared host package that exists in the repository root node_modules resolves to that PRIVATE copy (@deepseek-ai/cosmokit -> /Users/macbook/projects/dsh-plugins/node_modules/...): the same would happen to @deepseek-ai/cordis without the peer declaration, because the repository root node_modules holds a private cordis copy.
+- an undeclared host package that exists in the repository root node_modules resolves to that PRIVATE copy (@deepseek-ai/cosmokit -> /Users/<user>/projects/dsh-plugins/node_modules/...): the same would happen to @deepseek-ai/cordis without the peer declaration, because the repository root node_modules holds a private cordis copy.
 - an undeclared host package that is not in any ancestor node_modules fails with ERR_MODULE_NOT_FOUND (@deepseek-ai/dsh-app-boot).
 - mechanism (rc.3 dsh-app-boot/src/profile-resolution/resolver.ts routeLinked, lines 636-675): for an importer below a linked root, each ancestor node_modules position is checked in order; when the package.json of the directory owning that position lists the name in peerDependencies, the request is answered with the installation entry; otherwise a physical copy at that position wins.
 
 # control run H13: the same probe with @deepseek-ai/cordis REMOVED from peerDependencies (restored afterwards)
 # 2026-11-18T09:25:41.233Z pid 85437
-@deepseek-ai/cordis -> file:///Users/macbook/projects/dsh-plugins/node_modules/@deepseek-ai/cordis/lib/index.js
+@deepseek-ai/cordis -> file:///Users/<user>/projects/dsh-plugins/node_modules/@deepseek-ai/cordis/lib/index.js
 ctxInstanceOfImportedContext: false   (class identity split: a private copy)
 importedContextIsHostContext (Context.is, global brand): true   (so Context.is cannot detect the split)
 

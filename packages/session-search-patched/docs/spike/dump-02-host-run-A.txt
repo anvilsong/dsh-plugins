@@ -1309,21 +1309,21 @@
         persistedReadConcurrency: 1
     - id: spike-reporter-group
       name: >-
-        file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
+        file:///Users/<user>/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
       config:
         where: group
         search: true
 # == /private/var/folders/57/z_n0xdr53nq701cxgc79lkpc0000gn/T/dsh-scratch-rfXeUA/home/.dsh/profiles/web/cordis.patch.yml
 - id: spike-reporter-root
   name: >-
-    file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
+    file:///Users/<user>/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
   config:
     where: root
     search: true
     snapshots: true
 - id: spike-js-scope
   name: >-
-    file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
+    file:///Users/<user>/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
   disabled: !!js >-
     (process.getBuiltinModule('node:fs').appendFileSync(process.env.SPIKE_REPORT,
     JSON.stringify({ event: 'js-scope', row: 'spike-js-scope', props:
@@ -1337,7 +1337,7 @@
     + ': ' + String(e.message).split('\n')[0]] } })) }) + '\n'), true)
 - id: spike-js-version-eq
   name: >-
-    file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
+    file:///Users/<user>/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
   disabled: !!js >-
     ctx.get('pluginPackages')?.resolution?.entries.find(e => e.name ===
     '@deepseek-ai/dsh-session-query-sqlite')?.version === '0.2.2-rc.3'
@@ -1345,7 +1345,7 @@
     where: js-version-eq-rc3-should-stay-disabled
 - id: spike-js-version-ne
   name: >-
-    file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
+    file:///Users/<user>/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
   disabled: !!js >-
     ctx.get('pluginPackages')?.resolution?.entries.find(e => e.name ===
     '@deepseek-ai/dsh-session-query-sqlite')?.version !== '0.2.2-rc.3'
@@ -1353,7 +1353,7 @@
     where: js-version-ne-rc3-should-mount
 - id: spike-js-version-other
   name: >-
-    file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
+    file:///Users/<user>/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
   disabled: !!js >-
     ctx.get('pluginPackages')?.resolution?.entries.find(e => e.name ===
     '@deepseek-ai/dsh-session-query-sqlite')?.version === '0.2.2-rc.4'
@@ -1361,7 +1361,7 @@
     where: js-version-eq-rc4-should-mount
 - id: spike-js-anchor
   name: >-
-    file:///Users/macbook/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
+    file:///Users/<user>/projects/dsh-plugins/packages/session-search-patched/docs/spike/reporter/index.js
   disabled: !!js >-
     JSON.parse(process.getBuiltinModule('node:fs').readFileSync(ctx.get('profileContext').installAnchor,
     'utf8')).version === '0.2.2-rc.3'
