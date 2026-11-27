@@ -38,6 +38,10 @@ A call with no argument behaves like `status`. Arguments ignore case and surroun
 
 ## The switch
 
+![The model-options menu with the Ultracode and Explainer style (ASD-STE100) switches, both on; redrawn from the plugins' own styles](https://raw.githubusercontent.com/anvilsong/dsh-plugins/main/docs/images/ultracode-explainer-switches.webp)
+
+*The picture is a redraw, not a capture: the rows, labels and spacing are the plugins' own styles and strings on DSH's dark theme tokens, and the switches are drawn approximately because DSH supplies them. The page that draws it is `docs/images/src/ultracode-explainer-switches.html` in the repository.*
+
 The model-options menu of a conversation has an **Explainer style (ASD-STE100)** switch. Hover the row to see its tooltip: Plain explanations. Short prose follows ASD-STE100 writing rules (a subset); text diagrams and offered pages. The label names the standard the style is based on; it is not a claim of conformance. The style follows only a subset of ASD-STE100: sentence length limits (20 words for procedures, 25 for descriptions), active voice, one instruction per sentence, one term per concept, no phrasal verbs or idioms, and numbered steps. It applies them to short prose only, not to text diagrams or pages. It does not use the controlled vocabulary. The row shows no line of text under the label, so the menu keeps its size. The switch shows what the session has now, as the Ultracode and Router switches do. Pressing the switch runs `/explain-style on` or `/explain-style off`, the opposite of what the session shows, and it works from the keyboard like any button. While a change is pending the switch shows a spinner. A press during a pending change is ignored, not queued: the switch accepts a press again when the change finishes, after 30 seconds if the command itself never settles, or after five minutes if the session keeps showing the change as pending. If the command fails, the menu shows the error in its composer toast; without that channel the switch shows it inline. Until the session has a value, nothing is shown.
 
 ## Configuration

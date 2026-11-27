@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<style>
+/* Dark-theme tokens copied from @deepseek-ai/dsh-client-ui-theme (design-platform.css, body[data-ds-dark-theme]). */
+:root{
+  --dsw-alias-bg-base: rgb(21,21,23);
+  --dsw-alias-label-primary: rgb(249,250,251);
+  --dsw-alias-label-secondary: rgb(207,211,214);
+  --dsw-alias-label-tertiary: rgb(173,178,184);
+  --dsw-alias-label-caption: rgb(129,133,140);
+  --dsw-alias-border-l1: rgba(255,255,255,.06);
+  --dsw-alias-border-l2: rgba(255,255,255,.12);
+  --dsw-alias-interactive-bg-hover: rgba(255,255,255,.08);
+  --dsw-menu-surface-fill: rgba(48,49,54,.64);
+  --dsw-alias-menu-icon: rgb(244,246,247);
+  --dsw-alias-brand-primary: rgb(249,250,251);
+  --dsw-radius-md:12px; --dsw-radius-lg:16px;
+  --dsw-font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei','Helvetica Neue',Helvetica,Arial,sans-serif;
+}
+html,body{margin:0;background:var(--dsw-alias-bg-base);-webkit-font-smoothing:antialiased;font-family:var(--dsw-font-family)}
+#stage{display:inline-flex;align-items:flex-start;gap:8px;padding:28px}
+.menu,.router-flyout{box-sizing:border-box;padding:4px;border-radius:var(--dsw-radius-lg);
+  background:linear-gradient(var(--dsw-menu-surface-fill),var(--dsw-menu-surface-fill)),var(--dsw-alias-bg-base);
+  box-shadow:0 0 0 .5px var(--dsw-alias-border-l1),0 8px 28px rgba(0,0,0,.5);color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}
+.menu{width:332px}
+.router-flyout{display:flex;flex-direction:column;width:max-content;min-width:220px;max-width:340px}
+/* Rules from packages/ultracode/src/client.js (.uc-*) and packages/explainer/src/client.js (.ex-*). */
+.uc-row,.ex-row{border-radius:var(--dsw-radius-md);min-height:34px;color:var(--dsw-alias-label-primary);justify-content:space-between;align-items:center;gap:16px;padding:0 8px;font-size:13px;line-height:20px;display:flex;position:relative}
+.uc-label{align-items:center;gap:4px;min-width:0;display:inline-flex}
+.uc-info{width:20px;height:20px;color:var(--dsw-alias-label-caption);flex:none;padding:0;display:grid;place-items:center}
+.ex-label{align-items:center;min-width:0;display:inline-flex}
+.ex-end{align-items:center;gap:8px;flex:none;display:inline-flex}
+/* The switch is a host primitive; drawn approximately. */
+.toggle{width:30px;height:18px;border-radius:9px;background:var(--dsw-alias-brand-primary);position:relative;flex:none}
+.toggle:after{content:"";position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:50%;background:var(--dsw-alias-bg-base)}
+</style></head><body>
+<div id="stage">
+ <div class="menu" id="menu">
+  <div class="uc-row"><span class="uc-label"><span>Ultracode</span>
+    <span class="uc-info"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor"/><path d="M8 7v4" stroke="currentColor" stroke-linecap="round"/><circle cx="8" cy="5" r=".7" fill="currentColor"/></svg></span></span>
+    <span class="toggle"></span></div>
+  <div class="ex-row"><span class="ex-label">Explainer style (ASD-STE100)</span>
+    <span class="ex-end"><span class="toggle"></span></span></div>
+ </div>
+</div>
+</body></html>

@@ -53,6 +53,10 @@ no longer need it.
 `/advisor` without an argument toggles Advisor on or off. `effort=<id>` is
 optional and only for an explicit route; see [Effort](#effort).
 
+![The model-options menu with the Advisor switch on, its Advisor model and Verifier model cells, and the Advisor model flyout open beside it: Inherit, models grouped by provider, and the effort rows under the chosen GPT model; sample data, redrawn from the plugin's own styles](https://raw.githubusercontent.com/anvilsong/dsh-plugins/main/docs/images/advisor-model-menu.webp)
+
+*The picture is a redraw, not a capture: the rows, labels and spacing are the plugin's own styles and strings on DSH's dark theme tokens, and the switch is drawn approximately because DSH supplies it. The model names are sample data. The page that draws it is `docs/images/src/advisor-model-menu.html` in the repository.*
+
 The model-options menu has one **Advisor** switch and two menu cells: **Advisor
 model** and **Verifier model**. Both cells are dimmed while Advisor is off.
 Each cell opens one side flyout of single-choice rows: **Inherit**, the

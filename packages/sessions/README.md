@@ -4,6 +4,10 @@ An owner-only **Sessions** page for DeepSeek Harness: what the session store
 holds, which archived sessions take the room, and a reversible prune that moves
 archived sessions into a trash folder.
 
+![The Sessions page on its Overview tab: header with the store folder, Prune available and Refresh, three tabs, five cards (Total, On disk with the search index load High, Archived, Reclaimable with Review prune, Largest), a workspace table with size bars and the largest sessions with live, archived and child badges; sample data, redrawn from the plugin's own styles](https://raw.githubusercontent.com/anvilsong/dsh-plugins/main/docs/images/sessions-overview.webp)
+
+*The picture is a redraw, not a capture: the page rules are the plugin's own stylesheet on DSH's dark theme tokens, and the window frame and sidebar are left out. Every name, path and figure is sample data, and the largest-sessions list is shortened to five rows. The page that draws it is `docs/images/src/sessions-overview.html` in the repository.*
+
 ## What it is
 
 DSH (as of 0.2.2-rc.4) has no session delete. Archiving only hides a session:

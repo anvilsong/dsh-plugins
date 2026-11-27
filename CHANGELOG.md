@@ -40,3 +40,5 @@ its `package.json`; the entries below describe changes by package.
 - **session-search-patched**: peer pins admit rc.3 and rc.5 together.
 - **repository**: package metadata, LICENSE files, CI workflow, lockfile, SECURITY and
   CONTRIBUTING, and scrubbed personal paths from tracked text files.
+- **docs**: redrawn menu and page images (marked as redraws, with sample data) in the router, advisor, ultracode,
+  explainer and sessions READMEs; their sources are in `docs/images/src`.

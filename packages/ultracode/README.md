@@ -52,6 +52,10 @@ such a command can now count as a toggle that the old state ignored.
 Ultracode does not enable or disable AgentTeam. Enable Team separately when
 you want durable roles; the policy uses Team only when it is already enabled.
 
+![The model-options menu with the Ultracode and Explainer style (ASD-STE100) switches, both on; redrawn from the plugins' own styles](https://raw.githubusercontent.com/anvilsong/dsh-plugins/main/docs/images/ultracode-explainer-switches.webp)
+
+*The picture is a redraw, not a capture: the rows, labels and spacing are the plugins' own styles and strings on DSH's dark theme tokens, and the switches are drawn approximately because DSH supplies them. The page that draws it is `docs/images/src/ultracode-explainer-switches.html` in the repository.*
+
 The composer's model-options menu, where DSH's **Enable agent teamwork** switch
 also sits, gets an **Ultracode** switch. It runs `/ultracode on` or
 `/ultracode off` and shows the current state. An info button next to the label

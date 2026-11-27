@@ -70,6 +70,10 @@ For example:
 sets Hard judgment to two entries: Opus with effort `xhigh`, and Flash at its
 own default effort. See [Effort per entry](#effort-per-entry).
 
+![The model-options menu with the Model router switch on and its three level cells, the Hard judgment flyout open beside it: Inherit, models grouped by provider with checks, and effort rows under the selected GLM model; sample data, redrawn from the plugin's own styles](https://raw.githubusercontent.com/anvilsong/dsh-plugins/main/docs/images/router-model-menu.webp)
+
+*The picture is a redraw, not a capture: the rows, labels and spacing are the plugin's own styles and strings on DSH's dark theme tokens, and the switch is drawn approximately because DSH supplies it. The model names are sample data. The page that draws it is `docs/images/src/router-model-menu.html` in the repository.*
+
 The model-options menu has one **Model router** switch followed by three
 native-style menu cells: **Mechanical**, **Ordinary**, and **Hard judgment**.
 Each cell shows its current choice (for example `Inherit`, or

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<style>
+/* Dark-theme tokens copied from @deepseek-ai/dsh-client-ui-theme (design-platform.css, body[data-ds-dark-theme]). */
+:root{
+  --dsw-alias-bg-base: rgb(21,21,23);
+  --dsw-alias-label-primary: rgb(249,250,251);
+  --dsw-alias-label-secondary: rgb(207,211,214);
+  --dsw-alias-label-tertiary: rgb(173,178,184);
+  --dsw-alias-label-caption: rgb(129,133,140);
+  --dsw-alias-border-l1: rgba(255,255,255,.06);
+  --dsw-alias-border-l2: rgba(255,255,255,.12);
+  --dsw-alias-interactive-bg-hover: rgba(255,255,255,.08);
+  --dsw-menu-surface-fill: rgba(48,49,54,.64);
+  --dsw-alias-menu-icon: rgb(244,246,247);
+  --dsw-alias-brand-primary: rgb(249,250,251);
+  --dsw-radius-md:12px; --dsw-radius-lg:16px;
+  --dsw-font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei','Helvetica Neue',Helvetica,Arial,sans-serif;
+}
+html,body{margin:0;background:var(--dsw-alias-bg-base);-webkit-font-smoothing:antialiased;font-family:var(--dsw-font-family)}
+#stage{display:inline-flex;align-items:flex-start;gap:8px;padding:28px}
+.menu,.adv-flyout{box-sizing:border-box;padding:4px;border-radius:var(--dsw-radius-lg);
+  background:linear-gradient(var(--dsw-menu-surface-fill),var(--dsw-menu-surface-fill)),var(--dsw-alias-bg-base);
+  box-shadow:0 0 0 .5px var(--dsw-alias-border-l1),0 8px 28px rgba(0,0,0,.5);color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}
+.menu{width:332px}
+.adv-flyout{margin-top:38px;display:flex;flex-direction:column;width:max-content;min-width:220px;max-width:340px}
+/* Advisor rules, verbatim from packages/advisor/src/client.js (anchor positioning replaced by the flex layout above). */
+.adv-row{border-radius:var(--dsw-radius-md);min-height:34px;color:var(--dsw-alias-label-primary);justify-content:space-between;align-items:center;gap:16px;padding:0 8px;font-size:13px;line-height:20px;display:flex;position:relative}
+.adv-label{align-items:center;gap:4px;min-width:0;display:inline-flex}
+.adv-info{width:20px;height:20px;color:var(--dsw-alias-label-caption);flex:none;padding:0;display:grid;place-items:center}
+.adv-cell{box-sizing:border-box;display:flex;align-items:center;gap:6px;width:auto;min-width:100%;height:34px;padding:0 8px 0 20px;border:none;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px;text-align:left}
+.adv-cell[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover)}
+.adv-cell-label{flex:0 0 auto;white-space:nowrap}
+.adv-cell-value{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;color:var(--dsw-alias-label-tertiary)}
+.adv-cell-value[data-effort]{display:flex;justify-content:flex-end}
+.adv-cell-model{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.adv-cell-effort{flex:none;white-space:pre}
+.adv-chevron{display:grid;place-items:center;flex:0 0 12px;width:12px;height:12px;color:var(--dsw-alias-menu-icon)}
+.adv-option{box-sizing:border-box;display:flex;flex:none;align-items:center;gap:6px;width:auto;min-width:100%;min-height:34px;padding:5px 7px;border:none;border-radius:var(--dsw-radius-md);background:transparent;color:inherit;font:inherit;font-size:13px;line-height:18px;text-align:left}
+.adv-option-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.adv-check{display:grid;place-items:center;flex:0 0 14px;color:var(--dsw-alias-label-primary)}
+.adv-option-note{flex:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}
+.adv-efforts{display:flex;flex:none;flex-direction:column}
+.adv-option-effort{padding-inline-start:23px}
+.adv-option-effort .adv-option-label{color:var(--dsw-alias-label-secondary)}
+.adv-group+.adv-group{margin-top:3px}
+.adv-heading{padding:4px 7px 2px;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;font-weight:500}
+.adv-separator{flex:none;height:.5px;margin:3px 8px;background:var(--dsw-alias-border-l2)}
+.adv-note{flex:none;padding:4px 7px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;white-space:normal}
+/* The switch is a host primitive; drawn approximately. */
+.toggle{width:30px;height:18px;border-radius:9px;background:var(--dsw-alias-brand-primary);position:relative;flex:none}
+.toggle:after{content:"";position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:50%;background:var(--dsw-alias-bg-base)}
+</style></head><body>
+<div id="stage">
+ <div class="menu" id="menu">
+  <div class="adv-row"><span class="adv-label"><span>Advisor</span>
+    <span class="adv-info"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor"/><path d="M8 7v4" stroke="currentColor" stroke-linecap="round"/><circle cx="8" cy="5" r=".7" fill="currentColor"/></svg></span></span>
+    <span class="toggle"></span></div>
+  <button class="adv-cell" aria-expanded="true"><span class="adv-cell-label">Advisor model</span><span class="adv-cell-value" data-effort><span class="adv-cell-model">gpt-6-astra</span><span class="adv-cell-effort"> · xhigh</span></span><span class="adv-chevron"><svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M6 12L9.29289 8.70711C9.68342 8.31658 9.68342 7.68342 9.29289 7.29289L6 4" stroke="currentColor"/></svg></span></button>
+  <button class="adv-cell"><span class="adv-cell-label">Verifier model</span><span class="adv-cell-value">k3.1-pro</span><span class="adv-chevron"><svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M6 12L9.29289 8.70711C9.68342 8.31658 9.68342 7.68342 9.29289 7.29289L6 4" stroke="currentColor"/></svg></span></button>
+ </div>
+ <div class="adv-flyout" id="flyout">
+  <div class="adv-option"><span class="adv-option-label">Inherit</span><span class="adv-check"></span></div>
+  <div class="adv-separator"></div>
+  <div class="adv-group"><div class="adv-heading">anthropic</div>
+   <div class="adv-option"><span class="adv-option-label">claude-opus-5-5</span><span class="adv-check"></span></div>
+   <div class="adv-option"><span class="adv-option-label">claude-fable-5-2</span><span class="adv-check"></span></div>
+  </div>
+  <div class="adv-group"><div class="adv-heading">openai-codex</div>
+   <div class="adv-option"><span class="adv-option-label">gpt-6-astra</span><span class="adv-check"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2.25 8.5L5.49732 11.7473C5.90519 12.1552 6.57263 12.1344 6.95426 11.7018L13.75 4" stroke="currentColor"/></svg></span></div>
+   <div class="adv-efforts">
+    <div class="adv-option adv-option-effort"><span class="adv-option-label">Default</span><span class="adv-check"></span></div>
+    <div class="adv-option adv-option-effort"><span class="adv-option-label">high</span><span class="adv-check"></span></div>
+    <div class="adv-option adv-option-effort"><span class="adv-option-label">xhigh</span><span class="adv-option-note">recommended</span><span class="adv-check"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2.25 8.5L5.49732 11.7473C5.90519 12.1552 6.57263 12.1344 6.95426 11.7018L13.75 4" stroke="currentColor"/></svg></span></div>
+   </div>
+   <div class="adv-option"><span class="adv-option-label">gpt-6.2-sol</span><span class="adv-check"></span></div>
+  </div>
+  <div class="adv-group"><div class="adv-heading">kimi-coding</div>
+   <div class="adv-option"><span class="adv-option-label">k3.1-pro</span><span class="adv-check"></span></div>
+   <div class="adv-option"><span class="adv-option-label">k3</span><span class="adv-check"></span></div>
+  </div>
+ </div>
+</div>
+</body></html>
